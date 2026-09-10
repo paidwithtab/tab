@@ -274,7 +274,7 @@ async function main(): Promise<void> {
 
   const webMandate = issueMandate(owner, { agent: webAgent.publicKey, budgetUsd: '0.50', window: 'day', maxPerCallUsd: '0.05', allow: ['quotes.local'] });
   const catStore = new CatalogStore(join(scratch, 'catalog.db'));
-  const catalog = createCatalog({ store: catStore, tryAgent: webAgent, tryMandate: webMandate, tryMaxPerCallUsd: '0.05' });
+  const catalog = createCatalog({ store: catStore, tryAgent: webAgent, tryMandate: webMandate, tryMaxPerCallUsd: '0.05', allowPrivateOrigins: true });
   const catPort = await listen(catalog);
   const CAT = `http://127.0.0.1:${catPort}`;
 

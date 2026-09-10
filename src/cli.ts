@@ -25,7 +25,7 @@ const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed man
   tab balance --wallet <pub|file> [--db tab.db]
   tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin url]
   tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
-                    [--try-max-per-call 0.05] [--seed origin]...
+                    [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
   tab solana approve --owner key.json --agent <pub|file> --amount 1.00 --mint <addr> [--rpc url] [--fee-payer key.json]
   tab solana revoke  --owner key.json --mint <addr> [--rpc url]
   tab solana balance --wallet <pub|file> --mint <addr> [--rpc url]
@@ -167,6 +167,7 @@ async function main(): Promise<void> {
         'try-agent': { type: 'string' },
         'try-mandate': { type: 'string' },
         'try-max-per-call': { type: 'string' },
+        'allow-private-origins': { type: 'boolean', default: false },
         seed: { type: 'string', multiple: true },
       });
       const store = new CatalogStore(values.db as string);
@@ -184,6 +185,7 @@ async function main(): Promise<void> {
         tryAgent,
         tryMandate,
         tryMaxPerCallUsd: values['try-max-per-call'] as string | undefined,
+        allowPrivateOrigins: values['allow-private-origins'] as boolean,
         log,
       });
       const port = Number(values.port);

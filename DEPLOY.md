@@ -53,7 +53,7 @@ node --version   # must be >= v22.13
 
 ## 3. Getting the code onto the VPS
 
-The working tree is **not a git repository**. Copy it with rsync, excluding everything `.gitignore` excludes (state, secrets, build output):
+The working tree is a git repository (the pre-hardening baseline is tagged `draft-0`). Clone it, or copy it with rsync excluding everything `.gitignore` excludes (state, secrets, build output):
 
 ```sh
 rsync -av --delete \
@@ -89,6 +89,7 @@ examples/
   demo.sh  demo-solana.sh   # one-command sandboxes
   make-mint.ts              # fabricate a 6-decimal SPL mint on a local validator
 test/e2e.ts                 # 51 in-process checks, temp DB, ~1-2 min
+test/adversarial.ts         # 24 hostile checks: concurrency, replay, mutation, SSRF, forgery
 test/solana.ts              # 26 on-chain checks, needs a validator at SOLANA_RPC
 ```
 
@@ -101,9 +102,10 @@ cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 51 passed, 0 failed on the dev box
+npm run test:adversarial    # 24 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery
 ```
 
-`npm test` runs everything in one process on random ports with a temp SQLite file, so it is safe to run on a box that already has a gateway up.
+Both suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up. The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
 
 Two ways to run the code:
 
@@ -178,7 +180,7 @@ tab mint    --wallet <pub|file> --amount 5.00 [--db tab.db]        sandbox: crea
 tab balance --wallet <pub|file> [--db tab.db]
 tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin http://host:1402]
 tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
-                  [--try-max-per-call 0.05] [--seed origin]...
+                  [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
 tab solana approve --owner key.json --agent <pub|file> --amount 1.00 --mint <addr> [--rpc url] [--fee-payer key.json]
 tab solana revoke  --owner key.json --mint <addr> [--rpc url]
 tab solana balance --wallet <pub|file> --mint <addr> [--rpc url]
@@ -197,6 +199,7 @@ Notes:
 - `tab fetch` exit codes: 0 paid and 2xx, 1 non-2xx, 2 refused by the client's own cap before paying.
 - `tab serve --announce` retries the catalog for 10 seconds, then gives up with a log line; the gateway keeps running either way. `--origin` is what the catalog will store and what buyers will call, so it must be the **public** URL, not 127.0.0.1, in production.
 - `tab catalog serve --seed` pre-loads gateways at startup; `--announce` from the gateway side does the same at runtime.
+- The catalog refuses to announce (or fetch) origins on private, loopback, link-local, CGNAT or cloud-metadata addresses, refuses redirects, and caps discovery documents at 1 MB — SSRF protection for a public catalog. `--allow-private-origins` disables the address check for local development (the demo passes it); never use it on a catalog reachable from the internet. `/v1/wallet` only proxies to origins already in the catalog.
 
 ---
 
@@ -575,6 +578,8 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 | `error: mandate is not for this agent key` | agent key file and mandate disagree | re-issue with `--agent` pointing at the right key |
 | `could not announce to http://…` | catalog not up within 10 s, or wrong URL | start the catalog, then `curl -X POST catalog/v1/announce -d '{"origin":"https://pay.example.com"}'` |
 | catalog stores the gateway with `ok: false` | catalog could not fetch `<origin>/.well-known/tab` | `--origin` must be reachable **from the catalog**; use the public URL |
+| `POST /v1/announce` returns 403 `refused: … is not a public address` | SSRF guard: the origin is on a private/loopback address | use the public origin, or `--allow-private-origins` on a local dev catalog |
+| 402 `verification-failed: request does not match the signed commitment` | body or query string changed between signing and sending | send exactly the bytes the credential signed (the built-in client does) |
 | 402 `mandate-denied: realm … not in mandate allow list` | mandate `--allow` does not match the spec's `realm` | issue a mandate with `--allow <realm>` or `*` |
 | 402 `mandate-exceeded` | per-call cap or window budget hit | wait for the next UTC day, or issue a bigger mandate |
 | 402 `insufficient-funds` on ledger | owner wallet empty in **this gateway's** `tab.db` | `tab mint --db <that db>`; ledger balances are per gateway database |
@@ -597,10 +602,12 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 - [ ] Upstream API keys live in `EnvironmentFile`, mode 0600, not in the spec.
 - [ ] `public_receipts` off if payer and owner wallet ids should not be public.
 - [ ] Backups of `keys/` and `*.db` tested.
-- [ ] Read `SPEC.md` section 9 and "Not in draft 0": no body-digest binding (a POST credential does not bind the body), no Token-2022, no versioned transactions, no dispute window.
+- [ ] `npm run test:adversarial` passes on the box (money invariants under concurrency, replay, mutation, SSRF).
+- [ ] Catalog running **without** `--allow-private-origins` if it is reachable from the internet.
+- [ ] Read `SPEC.md` section 9 and "Not in draft 0.1": credentials bind method, path, query and body digest, but **not headers**; no Token-2022, no versioned transactions, no dispute window.
 
 ---
 
 ## 18. What is not built yet
 
-From the README roadmap, so you do not go looking for it: x402 client compatibility, agents acting as sellers, per-token or metered pricing and payment channels, windowed budgets on-chain, body digest binding, subscriptions, fee splits, Token-2022.
+From the README roadmap, so you do not go looking for it: x402 client compatibility, agents acting as sellers, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, Token-2022. (Body digest and query binding shipped in draft 0.1.)

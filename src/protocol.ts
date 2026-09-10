@@ -117,23 +117,46 @@ export function parseChallengeHeader(header: string | null | undefined): Challen
 // ---------------------------------------------------------------------------
 // credentials
 
+/**
+ * Draft 0.1: the credential commits to the exact request, not just the priced
+ * resource. `query` is the URL search string as sent (may be ""), `body_sha256`
+ * is the SHA-256 of the request body (of zero bytes for bodyless requests),
+ * base64url. The gateway recomputes both from the request it actually received.
+ */
+export interface RequestCommitment {
+  query: string;
+  body_sha256: string;
+}
+
+export function bodyDigest(body?: string | Uint8Array | null): string {
+  return sha256b64url(body == null ? new Uint8Array(0) : body);
+}
+
 export interface Credential {
   ver: string;
   agent: string; // wallet id of the paying agent
   challenge: Challenge; // echoed back verbatim
   mandate: Mandate;
+  request: RequestCommitment;
   sig: string; // agent signature, see credentialMessage
   solana?: { tx: string }; // base64 partially-signed legacy transaction
 }
 
-/** What the agent signs: a canonical binding of challenge, mandate and payer. */
-export function credentialMessage(agent: string, chal: Challenge, mandateId: string): Uint8Array {
+/** What the agent signs: a canonical binding of challenge, mandate, payer and request. */
+export function credentialMessage(
+  agent: string,
+  chal: Challenge,
+  mandateId: string,
+  request: RequestCommitment,
+): Uint8Array {
   return Buffer.from(
     canonicalJson({
       agent,
       amount: chal.amount,
+      body: request.body_sha256,
       challenge: chal.id,
       mandate: mandateId,
+      query: request.query,
       realm: chal.realm,
       recipient: chal.recipient,
       resource: chal.resource,
@@ -141,18 +164,32 @@ export function credentialMessage(agent: string, chal: Challenge, mandateId: str
   );
 }
 
+export interface SignCredentialOptions {
+  query?: string;
+  body?: string | Uint8Array | null;
+  solana?: { tx: string };
+}
+
 export function signCredential(
   agent: KeyPair,
   chal: Challenge,
   mandate: Mandate,
-  solana?: { tx: string },
+  opts: SignCredentialOptions = {},
 ): Credential {
-  const sig = signBytes(agent, credentialMessage(agent.publicKey, chal, mandate.id));
-  return { ver: VERSION, agent: agent.publicKey, challenge: chal, mandate, sig, solana };
+  const request: RequestCommitment = { query: opts.query ?? '', body_sha256: bodyDigest(opts.body) };
+  const sig = signBytes(agent, credentialMessage(agent.publicKey, chal, mandate.id, request));
+  return { ver: VERSION, agent: agent.publicKey, challenge: chal, mandate, request, sig, solana: opts.solana };
 }
 
 export function verifyCredentialSig(cred: Credential): boolean {
-  return verifyBytes(cred.agent, credentialMessage(cred.agent, cred.challenge, cred.mandate.id), cred.sig);
+  if (!cred.request || typeof cred.request.query !== 'string' || typeof cred.request.body_sha256 !== 'string') {
+    return false;
+  }
+  return verifyBytes(
+    cred.agent,
+    credentialMessage(cred.agent, cred.challenge, cred.mandate.id, cred.request),
+    cred.sig,
+  );
 }
 
 // Authorization: Tab <base64url of the credential JSON>

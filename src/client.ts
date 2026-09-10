@@ -83,7 +83,15 @@ export class TabClient {
     if (chal.rail === 'solana') {
       solana = { tx: buildSignedPaymentTx(chal, this.opts.mandate.owner, this.opts.agent) };
     }
-    const cred = signCredential(this.opts.agent, chal, this.opts.mandate, solana);
+    const body = init.body;
+    if (body != null && typeof body !== 'string' && !(body instanceof Uint8Array)) {
+      throw new Error('tab client supports only string or byte request bodies (they are signed)');
+    }
+    const cred = signCredential(this.opts.agent, chal, this.opts.mandate, {
+      solana,
+      query: new URL(url).search,
+      body,
+    });
     const headers = new Headers(init.headers);
     headers.set('authorization', encodeCredentialHeader(cred));
     return doFetch(url, { ...init, headers });

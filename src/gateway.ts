@@ -14,6 +14,7 @@ import {
   problemBody,
   randomId,
   resourceOf,
+  sha256b64url,
   usdToMicro,
   verifyChallengeId,
   verifyCredentialSig,
@@ -128,7 +129,10 @@ export interface GatewayOptions {
   rail?: Rail;
   log?: (msg: string) => void;
   challengeTtlMs?: number; // default: 120 s ledger, 60 s solana
+  upstreamTimeoutMs?: number; // default 60 s
 }
+
+const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -141,9 +145,16 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(data);
 }
 
+class BodyTooLarge extends Error {}
+
 async function readBody(req: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
+  let size = 0;
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > MAX_BODY_BYTES) throw new BodyTooLarge();
+    chunks.push(chunk as Buffer);
+  }
   return Buffer.concat(chunks);
 }
 
@@ -152,6 +163,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   const rail = opts.rail ?? createRail(spec, store);
   const log = opts.log ?? (() => {});
   const ttlMs = opts.challengeTtlMs ?? (rail.name === 'solana' ? 60_000 : 120_000);
+  const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? 60_000;
 
   const discovery = () => ({
     ver: VERSION,
@@ -198,8 +210,32 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     res.end(problemBody(code, detail, status));
   }
 
+  /** A 402 with a fresh challenge — or 502 if the rail cannot mint one (e.g. dead RPC). */
+  async function respondChallenge(
+    res: ServerResponse,
+    code: ProblemCode,
+    detail: string,
+    priceMicro: number,
+    resource: string,
+  ): Promise<void> {
+    let chal: Challenge;
+    try {
+      chal = await freshChallenge(priceMicro, resource);
+    } catch (err) {
+      await respondProblem(res, 'upstream-failed', `payment rail unavailable: ${(err as Error).message}`, 502);
+      return;
+    }
+    await respondProblem(res, code, detail, 402, chal);
+  }
+
   /** All the checks before money moves. Throws PayError. Returns the hold. */
-  function verifyAndReserve(cred: Credential, priceMicro: number, resource: string, now: Date): HoldRow {
+  function verifyAndReserve(
+    cred: Credential,
+    priceMicro: number,
+    resource: string,
+    actual: { query: string; bodySha256: string },
+    now: Date,
+  ): HoldRow {
     const chal = cred.challenge;
     if (cred.ver !== VERSION) throw new PayError('malformed-credential', `unsupported version ${cred.ver}`);
     if (!chal || typeof chal.id !== 'string' || !verifyChallengeId(store.secret, chal)) {
@@ -224,8 +260,14 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     if (cred.agent !== cred.mandate.agent) {
       throw new PayError('verification-failed', 'credential agent does not match the mandate agent');
     }
+    if (!cred.request || typeof cred.request.body_sha256 !== 'string' || typeof cred.request.query !== 'string') {
+      throw new PayError('malformed-credential', 'credential carries no request commitment');
+    }
     if (!verifyCredentialSig(cred)) {
       throw new PayError('verification-failed', 'agent signature invalid');
+    }
+    if (cred.request.query !== actual.query || cred.request.body_sha256 !== actual.bodySha256) {
+      throw new PayError('verification-failed', 'request does not match the signed commitment');
     }
     if (!realmAllowed(cred.mandate, spec.realm)) {
       throw new PayError('mandate-denied', `realm ${spec.realm} not in mandate allow list`);
@@ -292,7 +334,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       headers,
       body: method === 'GET' || method === 'HEAD' ? undefined : new Uint8Array(body),
       redirect: 'manual',
-      signal: AbortSignal.timeout(60_000),
+      signal: AbortSignal.timeout(upstreamTimeoutMs),
     });
   }
 
@@ -375,25 +417,22 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
 
       const auth = req.headers.authorization;
       if (!auth) {
-        const chal = await freshChallenge(priceMicro, resource);
-        await respondProblem(res, 'payment-required', `payment of ${microToUsd(priceMicro)} USD required`, 402, chal);
+        await respondChallenge(res, 'payment-required', `payment of ${microToUsd(priceMicro)} USD required`, priceMicro, resource);
         return;
       }
       const cred = parseCredentialHeader(auth);
       if (!cred) {
-        const chal = await freshChallenge(priceMicro, resource);
-        await respondProblem(res, 'malformed-credential', 'Authorization header is not a Tab credential', 402, chal);
+        await respondChallenge(res, 'malformed-credential', 'Authorization header is not a Tab credential', priceMicro, resource);
         return;
       }
 
       let hold: HoldRow;
       try {
-        hold = verifyAndReserve(cred, priceMicro, resource, new Date());
+        hold = verifyAndReserve(cred, priceMicro, resource, { query: u.search, bodySha256: sha256b64url(body) }, new Date());
       } catch (err) {
         if (err instanceof PayError) {
-          const chal = await freshChallenge(priceMicro, resource);
           log(`${method} ${pathname} -> 402 ${err.code}: ${err.detail}`);
-          await respondProblem(res, err.code, err.detail, err.status, chal);
+          await respondChallenge(res, err.code, err.detail, priceMicro, resource);
           return;
         }
         throw err;
@@ -406,9 +445,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           store.refundSpend(hold.mandate_id, hold.window_key, hold.amount);
           store.setHoldState(hold.id, 'voided');
           const pe = err instanceof PayError ? err : new PayError('verification-failed', String((err as Error).message));
-          const chal = await freshChallenge(priceMicro, resource);
           log(`${method} ${pathname} -> 402 ${pe.code}: ${pe.detail}`);
-          await respondProblem(res, pe.code, pe.detail, pe.status, chal);
+          await respondChallenge(res, pe.code, pe.detail, priceMicro, resource);
           return;
         }
       }
@@ -457,6 +495,11 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         log(`${method} ${pathname} -> ${upstream.status} voided ${hold.id}`);
       }
     } catch (err) {
+      if (err instanceof BodyTooLarge) {
+        if (!res.headersSent) sendJson(res, 413, { error: `request body exceeds ${MAX_BODY_BYTES} bytes` });
+        else res.end();
+        return;
+      }
       log(`error: ${(err as Error).stack ?? err}`);
       if (!res.headersSent) sendJson(res, 500, { error: 'internal error' });
       else res.end();

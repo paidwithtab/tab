@@ -175,12 +175,12 @@ async function main(): Promise<void> {
   chalA = await freshChal();
   const wrongAmount = { ...chalA, amount: '1' };
   const tamperedTx = buildSignedPaymentTx(wrongAmount, mandate.owner, agent);
-  const tampered = await fetch(`${GW}/quote`, { headers: { authorization: encodeCredentialHeader(signCredential(agent, chalA, mandate, { tx: tamperedTx })) } });
+  const tampered = await fetch(`${GW}/quote`, { headers: { authorization: encodeCredentialHeader(signCredential(agent, chalA, mandate, { solana: { tx: tamperedTx } })) } });
   check('transaction not matching the challenge is rejected', tampered.status === 402
     && ((await tampered.json()) as any).type === 'urn:tab:problem:verification-failed');
 
   chalA = await freshChal();
-  const goodCred = encodeCredentialHeader(signCredential(agent, chalA, mandate, { tx: buildSignedPaymentTx(chalA, mandate.owner, agent) }));
+  const goodCred = encodeCredentialHeader(signCredential(agent, chalA, mandate, { solana: { tx: buildSignedPaymentTx(chalA, mandate.owner, agent) } }));
   const ok1 = await fetch(`${GW}/quote`, { headers: { authorization: goodCred } });
   const ok2 = await fetch(`${GW}/quote`, { headers: { authorization: goodCred } });
   check('challenge redeems once on the solana rail', ok1.status === 200 && ok2.status === 402

@@ -29,7 +29,7 @@ Then open http://127.0.0.1:1403/ or pay from the command line:
 npm run cli -- fetch --agent keys/agent-claude.json --mandate keys/mandate-claude.json http://127.0.0.1:1402/quote
 ```
 
-`npm test` runs 51 end-to-end checks in-process; `npm run test:solana` runs 26 on-chain checks against a local validator (`npm run demo:solana` starts one).
+`npm test` runs 51 end-to-end checks in-process; `npm run test:adversarial` runs 24 hostile checks (replay, concurrency exactness, request mutation, mandate forgery, catalog SSRF); `npm run test:solana` runs 26 on-chain checks against a local validator (`npm run demo:solana` starts one).
 
 ## Documents
 
@@ -38,4 +38,4 @@ npm run cli -- fetch --agent keys/agent-claude.json --mandate keys/mandate-claud
 
 ## Roadmap
 
-x402 client compatibility · agents as sellers · per-token and metered pricing, payment channels · windowed budgets on-chain · body digest binding · subscriptions · fee splits · Token-2022.
+x402 client compatibility · agents as sellers · per-token and metered pricing, payment channels · windowed budgets on-chain · header binding · subscriptions · fee splits · Token-2022.

@@ -5,6 +5,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { lookup } from 'node:dns/promises';
+import { isIP } from 'node:net';
 import { usdToMicro, microToUsd, type Receipt } from './protocol.js';
 import { verifyMandate, mandateExpired, realmAllowed, type Mandate } from './mandate.js';
 import type { KeyPair } from './keys.js';
@@ -16,7 +18,64 @@ export interface CatalogOptions {
   tryAgent?: KeyPair;
   tryMandate?: Mandate;
   tryMaxPerCallUsd?: string;
+  /**
+   * Accept announcements of origins on private/loopback/link-local addresses.
+   * Off by default: a hostile announce must not be able to point the catalog
+   * at internal infrastructure or cloud metadata services (SSRF).
+   */
+  allowPrivateOrigins?: boolean;
   log?: (msg: string) => void;
+}
+
+const MAX_DISCOVERY_BYTES = 1_000_000;
+
+function isPrivateIp(ip: string): boolean {
+  if (ip.toLowerCase().startsWith('::ffff:')) ip = ip.slice(7);
+  if (isIP(ip) === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    return (
+      a === 0 || a === 10 || a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) || // CGNAT
+      (a === 169 && b === 254) || // link-local, cloud metadata
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168)
+    );
+  }
+  const low = ip.toLowerCase();
+  return (
+    low === '::' || low === '::1' ||
+    low.startsWith('fc') || low.startsWith('fd') || // unique local
+    low.startsWith('fe8') || low.startsWith('fe9') || low.startsWith('fea') || low.startsWith('feb') // link-local
+  );
+}
+
+/**
+ * SSRF gate for announced origins. Checks the hostname (or every address it
+ * resolves to) against private ranges. Note the residual DNS-rebinding window
+ * between this check and the fetch; run the catalog with no reachable internal
+ * services if that matters in your deployment.
+ */
+async function originIsPublic(origin: string): Promise<{ ok: boolean; reason?: string }> {
+  let host: string;
+  try {
+    host = new URL(origin).hostname.replace(/^\[|\]$/g, '');
+  } catch {
+    return { ok: false, reason: 'not a URL' };
+  }
+  if (isIP(host)) {
+    return isPrivateIp(host) ? { ok: false, reason: `${host} is not a public address` } : { ok: true };
+  }
+  if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
+    return { ok: false, reason: `${host} is not a public hostname` };
+  }
+  try {
+    const addrs = await lookup(host, { all: true });
+    const bad = addrs.find((a) => isPrivateIp(a.address));
+    if (bad) return { ok: false, reason: `${host} resolves to ${bad.address}, which is not public` };
+    return { ok: true };
+  } catch {
+    return { ok: false, reason: `cannot resolve ${host}` };
+  }
 }
 
 interface CatalogRoute {
@@ -106,11 +165,18 @@ export function createCatalog(opts: CatalogOptions): Server {
   async function fetchGateway(origin: string): Promise<GatewayRow> {
     const now = new Date().toISOString();
     try {
+      if (!opts.allowPrivateOrigins) {
+        const pub = await originIsPublic(origin);
+        if (!pub.ok) throw new Error(`refused: ${pub.reason}`);
+      }
       const res = await fetch(origin.replace(/\/$/, '') + '/.well-known/tab', {
         signal: AbortSignal.timeout(5_000),
+        redirect: 'error',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const doc = (await res.json()) as Record<string, unknown>;
+      const text = await res.text();
+      if (text.length > MAX_DISCOVERY_BYTES) throw new Error('discovery document too large');
+      const doc = JSON.parse(text) as Record<string, unknown>;
       if (typeof doc.realm !== 'string' || !Array.isArray(doc.services)) {
         throw new Error('not a tab discovery document');
       }
@@ -196,7 +262,16 @@ export function createCatalog(opts: CatalogOptions): Server {
           sendJson(res, 400, { error: 'origin must be an http(s) URL' });
           return;
         }
-        const row = await announce(body.origin.replace(/\/$/, ''));
+        const origin = body.origin.replace(/\/$/, '');
+        if (!opts.allowPrivateOrigins) {
+          const pub = await originIsPublic(origin);
+          if (!pub.ok) {
+            log(`announce ${origin}: refused (${pub.reason})`);
+            sendJson(res, 403, { error: `refused: ${pub.reason}` });
+            return;
+          }
+        }
+        const row = await announce(origin);
         sendJson(res, 200, { origin: row.origin, ok: row.ok, error: row.error });
         return;
       }
@@ -235,6 +310,11 @@ export function createCatalog(opts: CatalogOptions): Server {
         const wallet = u.searchParams.get('wallet');
         if (!origin || !wallet) {
           sendJson(res, 400, { error: 'origin and wallet are required' });
+          return;
+        }
+        // never a free-form fetch: only origins already in the catalog
+        if (!store.all().some((r) => r.origin === origin.replace(/\/$/, ''))) {
+          sendJson(res, 403, { error: 'origin is not a catalogued gateway' });
           return;
         }
         try {

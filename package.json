@@ -8,6 +8,7 @@
     "cli": "node --no-warnings=ExperimentalWarning --import tsx src/cli.ts",
     "build": "tsc",
     "test": "node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts",
+    "test:adversarial": "node --no-warnings=ExperimentalWarning --import tsx test/adversarial.ts",
     "test:solana": "node --no-warnings=ExperimentalWarning --import tsx test/solana.ts",
     "upstream": "node --no-warnings=ExperimentalWarning --import tsx examples/upstream.ts",
     "demo": "bash examples/demo.sh",

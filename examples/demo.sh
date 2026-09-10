@@ -27,7 +27,7 @@ $TAB mint --wallet keys/owner.json --amount "$MINT_AMOUNT" --db tab.db
 trap 'kill 0' EXIT INT TERM
 
 UPSTREAM_PORT=4101 node --no-warnings=ExperimentalWarning --import tsx examples/upstream.ts &
-$TAB catalog serve --db catalog.db --port 1403 \
+$TAB catalog serve --db catalog.db --port 1403 --allow-private-origins \
     --try-agent keys/agent-web.json --try-mandate keys/mandate-web.json --try-max-per-call "$MAX_PER_CALL" &
 sleep 1
 $TAB serve --spec examples/spec.json --db tab.db --port 1402 \

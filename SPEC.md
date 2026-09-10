@@ -1,6 +1,6 @@
-# The tab protocol, draft 0
+# The tab protocol, draft 0.1
 
-How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"`.
+How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 makes the request commitment of §3.2 mandatory — credentials without it are rejected).
 
 ## 1. Model and terms
 
@@ -84,19 +84,20 @@ Authorization: Tab <base64url(credential JSON)>
   "agent": "<wallet id>",
   "challenge": { …the challenge, echoed verbatim… },
   "mandate": { …the mandate… },
+  "request": { "query": "?x=1", "body_sha256": "<base64url sha256 of the body>" },
   "sig": "<agent signature>",
   "solana": { "tx": "<base64 partially-signed legacy transaction>" }
 }
 ```
 
-`sig` is the agent's signature over the canonical JSON of
+`request` is the **request commitment**: `query` is the URL search string exactly as sent (`""` if none) and `body_sha256` is the SHA-256 (base64url) of the request body — of zero bytes for bodyless requests. `sig` is the agent's signature over the canonical JSON of
 
 ```json
-{ "agent": …, "amount": …, "challenge": "<challenge id>", "mandate": "<mandate id>",
-  "realm": …, "recipient": …, "resource": … }
+{ "agent": …, "amount": …, "body": "<body_sha256>", "challenge": "<challenge id>",
+  "mandate": "<mandate id>", "query": …, "realm": …, "recipient": …, "resource": … }
 ```
 
-binding payer, price, mandate and resource to that one challenge id. The `solana` member is required on the solana rail and absent otherwise.
+so a credential authorizes **exactly this request** — method, path, query and body — for exactly this amount under that one challenge id, not merely "any call to the route". The `solana` member is required on the solana rail and absent otherwise.
 
 ### 3.3 Receipts and voids
 
@@ -111,15 +112,16 @@ The gateway verifies in exactly this order. Each failure is a fresh 402 (RFC 945
 3. **Challenge relevance**: `realm`, `rail`, `recipient`, `amount` and `resource` must equal what this gateway would charge for this request → else `invalid-challenge`. (An HMAC-valid challenge for a cheaper route must not pay for a dearer one.)
 4. **Challenge expiry** → `payment-expired`.
 5. **Mandate validity**: structure, id = hash of body, owner signature, not expired → `mandate-invalid`.
-6. **Agent binding**: `credential.agent` must equal `mandate.agent`, and `sig` must verify against the agent key → `verification-failed`.
-7. **Realm allow-list**: the gateway's realm must match a mandate glob → `mandate-denied`.
-8. Inside **one SQLite transaction**:
+6. **Agent binding**: `credential.agent` must equal `mandate.agent`, and `sig` must verify against the agent key over the full commitment including `request` → `verification-failed`. A credential with no `request` member is `malformed-credential`.
+7. **Request commitment**: the query string and the SHA-256 of the body **actually received** must equal what the agent signed → `verification-failed`. (Without this, a party able to see or alter the buyer's traffic could swap the body of an authorized POST within the challenge TTL.)
+8. **Realm allow-list**: the gateway's realm must match a mandate glob → `mandate-denied`.
+9. Inside **one SQLite transaction**:
    a. **Single redemption**: insert the challenge id into the redeemed set; a duplicate → `invalid-challenge`. Insert-before-reserve means two racing copies of one credential cannot both pay.
    b. **Per-call cap**, then **window budget** (spend counter keyed by mandate id and UTC day for `day` windows) → `mandate-exceeded`.
    c. **Rail reservation**: ledger — debit the owner's balance or `insufficient-funds`; solana — rebuild the expected transaction from the challenge and compare **byte-for-byte** with the one sent (→ `verification-failed`), verify the agent's transaction signature, co-sign as fee payer.
-9. Solana only, after the transaction commits: **simulate** with the gateway's signature added. Insufficient balance, exhausted or missing delegation → `insufficient-funds`; anything else → `verification-failed`. The spend counter is refunded and the hold voided; the redeemed challenge id stays burned.
-10. **Forward upstream.** Unreachable → **502** `upstream-failed`, hold released, nothing charged. Non-2xx → passed through with `Tab-Void`, hold released, budget refunded.
-11. **Capture** on 2xx: ledger — credit the recipient; solana — broadcast and confirm. Only now does money move. If broadcasting fails after a 2xx, the hold is voided and the buyer gets the response uncharged — the failure mode is always in the buyer's favor.
+10. Solana only, after the transaction commits: **simulate** with the gateway's signature added. Insufficient balance, exhausted or missing delegation → `insufficient-funds`; anything else → `verification-failed`. The spend counter is refunded and the hold voided; the redeemed challenge id stays burned.
+11. **Forward upstream.** Unreachable or timed out → **502** `upstream-failed`, hold released, nothing charged. Non-2xx → passed through with `Tab-Void`, hold released, budget refunded.
+12. **Capture** on 2xx: ledger — credit the recipient; solana — broadcast and confirm. Only now does money move. If broadcasting fails after a 2xx, the hold is voided and the buyer gets the response uncharged — the failure mode is always in the buyer's favor.
 
 Rationale for the order: the cheapest, stateless checks run first; nothing touches the database until the credential is proven genuine; money is reserved before the upstream does any work but only *moves* after the upstream succeeded.
 
@@ -177,10 +179,11 @@ The catalog's own API (`/v1/catalog.json`, `/v1/search`, `/v1/announce`, `/v1/re
 - **Replay** is stopped by single-redemption of the HMAC-bound challenge id, enforced with insert-before-reserve inside the same transaction as the budget and funds checks.
 - **The budget race** (two concurrent calls straddling the limit) is closed by doing the spend-counter update and the funds reservation in one SQLite transaction.
 - **Challenge forgery** is stopped by the per-database HMAC secret; losing the database rotates the secret implicitly (old challenges die harmlessly) but also resets spend counters — see `DEPLOY.md` section 12.
-- **Body binding does not exist in draft 0**: a credential authorizes `METHOD /path` for one challenge, not a specific request body. A gateway operator who can see the buyer's traffic could swap a POST body within the challenge TTL. Price accordingly, or wait for the body-digest extension.
+- **Request binding** (new in draft 0.1): the credential signature covers the query string and a SHA-256 body digest, and the gateway compares both against the request it actually received — an authorization describes exactly one request. Residual gap: request *headers* are not bound; do not let header values change what an upstream sells for a given priced route.
+- **Catalog SSRF**: `/v1/announce` refuses origins that are IP-literals in, or resolve to, private/loopback/link-local/CGNAT/metadata ranges (unless started with `--allow-private-origins` for local development), refuses redirects and caps discovery documents at 1 MB; the wallet proxy only fetches already-catalogued origins. Residual gap: DNS rebinding between the resolve-check and the fetch — run public catalogs on hosts with no reachable internal services.
 - **Public receipts** expose payer and owner wallet ids; leave `public_receipts` off if that linkage matters.
 - The web try-it agent is a deliberate hole: anyone who can reach the catalog can spend that mandate. Give it a budget you are happy to lose.
 
-## Not in draft 0
+## Not in draft 0.1
 
-x402 client compatibility · agents acting as sellers · per-token / metered pricing and payment channels · windowed budgets enforced on-chain · body digest binding · subscriptions · fee splits · Token-2022 · versioned transactions · dispute windows.
+x402 client compatibility · agents acting as sellers · per-token / metered pricing and payment channels · windowed budgets enforced on-chain · header binding · subscriptions · fee splits · Token-2022 · versioned transactions · dispute windows.
