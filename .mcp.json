@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "tab": {
+      "command": "node",
+      "args": ["--no-warnings=ExperimentalWarning", "--import", "tsx", "src/cli.ts", "mcp"],
+      "env": {
+        "TAB_AGENT": "keys/agent-claude.json",
+        "TAB_MANDATE": "keys/mandate-claude.json",
+        "TAB_MAX_PER_CALL": "0.05",
+        "TAB_CATALOG": "http://127.0.0.1:1403"
+      }
+    }
+  }
+}

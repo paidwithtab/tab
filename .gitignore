@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.db
+*.db-*
+keys/
+.env
+.claude/settings.local.json

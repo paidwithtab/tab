@@ -1,0 +1,606 @@
+# tab: build and deploy guide
+
+Everything needed to take this project from a clean VPS to a running gateway, catalog and front end. Written against the tree as of 2026-09-10 (`package.json` version 0.0.1). `README.md` is the short pitch and `SPEC.md` is the protocol; this file is the operator's manual.
+
+---
+
+## 1. What this is
+
+**tab** is a payment gateway for software agents. You put it in front of any HTTP API, price the routes in a JSON spec, and callers pay per request with HTTP 402.
+
+The one idea that makes it different from x402 and similar schemes: the spending limit is a **mandate**, a signed object the owner of the money issues once (budget, per-call cap, allowed realms, expiry). The agent holds its own key and carries the mandate with every payment. The **gateway** enforces the budget, so the owner is never online during a payment and the agent can never exceed what was signed, no matter what it is told.
+
+Three roles, one binary:
+
+| Role | Holds | Does |
+| --- | --- | --- |
+| Owner | funds + owner key | signs mandates offline, funds a wallet |
+| Agent | agent key + mandate | signs a credential per call, pays within the mandate |
+| Gateway (seller) | spec + SQLite + optional fee-payer key | issues 402 challenges, verifies, reserves, forwards upstream, captures on 2xx |
+
+Money moves over a **rail**. Two ship:
+
+- `ledger`: balances in the gateway's own SQLite file. Free, instant, sandbox money created with `tab mint`.
+- `solana`: USDC or any 6-decimal SPL stablecoin, no custom program. The owner approves the agent as SPL delegate once; the agent signs `TransferChecked`; the gateway co-signs as fee payer and broadcasts only after the upstream answered 2xx.
+
+There is also a **catalog** service (search + web front end) and an **MCP server** so Claude Code can spend under a mandate.
+
+---
+
+## 2. Requirements
+
+| Thing | Version | Why |
+| --- | --- | --- |
+| Node.js | **22.13 or newer** (dev box has 22.22.2) | uses the built-in `node:sqlite` module; older Node has no SQLite |
+| npm | 10.x | ships with Node 22 |
+| TypeScript, tsx, @types/node | devDependencies, installed by `npm install` | the only dependencies in the whole project |
+| Solana CLI (`solana-test-validator`) | optional | only for the **local** Solana demo and `npm run test:solana`. Devnet or mainnet needs no CLI. |
+| curl, bash | any | demo scripts |
+
+**Zero runtime dependencies.** Ed25519, SHA-256, HMAC, base58, SPL instruction encoding, JSON-RPC and the MCP server are all hand-written on top of Node built-ins. `node_modules` is roughly 40 MB of dev tooling and nothing else.
+
+Node prints `ExperimentalWarning: SQLite is an experimental feature` on every start. All npm scripts pass `--no-warnings=ExperimentalWarning` to silence it. Copy that flag into your systemd units.
+
+Install Node 22 on Ubuntu/Debian:
+
+```sh
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node --version   # must be >= v22.13
+```
+
+---
+
+## 3. Getting the code onto the VPS
+
+The working tree is **not a git repository**. Copy it with rsync, excluding everything `.gitignore` excludes (state, secrets, build output):
+
+```sh
+rsync -av --delete \
+  --exclude node_modules --exclude dist \
+  --exclude '*.db' --exclude '*.db-*' \
+  --exclude keys/ --exclude .env \
+  /home/deploy/tab/  user@vps:/opt/tab/
+```
+
+Do **not** copy `keys/` or the `.db` files unless you deliberately want to migrate the sandbox state. Fresh keys and a fresh database are the right starting point. If you do migrate a database, copy `x.db`, `x.db-wal` and `x.db-shm` together while the process is stopped (WAL mode).
+
+The files that matter:
+
+```
+package.json  tsconfig.json  .gitignore  .mcp.json
+README.md  SPEC.md  DEPLOY.md
+bin/tab.js                  # runs dist/src/cli.js after `npm run build`
+src/                        # the code, ~2,000 lines
+  cli.ts                    # the `tab` command
+  gateway.ts                # reverse proxy + 402 handshake
+  catalog.ts                # catalog service, search, try-it, serves web/
+  client.ts                 # payment-aware fetch (TabClient, tabFetch)
+  mcp.ts                    # MCP server on stdio
+  protocol.ts               # wire format, canonical JSON, HMAC binding
+  keys.ts  mandate.ts  store.ts
+  rails/{index,ledger,solana,budget}.ts
+  solana/{base58,pda,instructions,tx,rpc,pay}.ts
+web/index.html              # front end, single file, no build step, no CDN
+examples/
+  spec.json                 # ledger-rail spec (two services, five priced routes)
+  spec-solana.json          # same routes on the solana rail
+  upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
+  demo.sh  demo-solana.sh   # one-command sandboxes
+  make-mint.ts              # fabricate a 6-decimal SPL mint on a local validator
+test/e2e.ts                 # 51 in-process checks, temp DB, ~1-2 min
+test/solana.ts              # 26 on-chain checks, needs a validator at SOLANA_RPC
+```
+
+---
+
+## 4. Install, verify, build
+
+```sh
+cd /opt/tab
+npm ci                      # or npm install; installs tsx + typescript only
+npx tsc --noEmit            # type-check; clean on the dev box
+npm test                    # 51 passed, 0 failed on the dev box
+```
+
+`npm test` runs everything in one process on random ports with a temp SQLite file, so it is safe to run on a box that already has a gateway up.
+
+Two ways to run the code:
+
+**A. Directly from TypeScript with tsx** (what every npm script and demo does):
+
+```sh
+node --no-warnings=ExperimentalWarning --import tsx src/cli.ts <command>
+# same thing:
+npm run cli -- <command>
+```
+
+**B. Compiled** (what you want under systemd):
+
+```sh
+npm run build               # tsc -> dist/
+node bin/tab.js <command>   # bin/tab.js imports ../dist/src/cli.js
+# or
+node --no-warnings=ExperimentalWarning dist/src/cli.js <command>
+```
+
+Verified: `npm run build` produces `dist/src/cli.js` and `node bin/tab.js` prints the usage. The catalog finds `web/index.html` from `dist/src/` by walking up two directories, so keep `web/` next to `dist/`. Re-run `npm run build` after every code change; tsx picks changes up automatically.
+
+To make `tab` a global command: `npm link` after building, or symlink `bin/tab.js` into `/usr/local/bin/tab`.
+
+---
+
+## 5. Components, ports and bind address
+
+| Process | Default port | Command | State file |
+| --- | --- | --- | --- |
+| Example upstream (demo only) | 4101 | `npm run upstream` / `examples/upstream.ts` | none |
+| Gateway, ledger rail | 1402 | `tab serve --spec spec.json` | `tab.db` |
+| Gateway, solana rail | 1404 (demo) | `tab serve --spec spec-solana.json --port 1404` | `tab-solana.db` |
+| Catalog + front end | 1403 | `tab catalog serve` | `catalog.db` |
+| Solana test validator (local only) | 8899 | started by `demo-solana.sh` | `~/.cache/tab-validator/` |
+
+**All servers listen on every interface** (`server.listen(port)` with no host). On a VPS that means they are public the moment they start. Either firewall the ports and put nginx or Caddy in front (section 8), or bind them to loopback by editing the two `listen(` calls in `src/cli.ts` to `listen(port, '127.0.0.1', …)`.
+
+One gateway can front many upstreams; one catalog can list many gateways; you can run several gateways on one box with different `--db` files and ports.
+
+---
+
+## 6. Environment variables
+
+| Variable | Read by | Meaning |
+| --- | --- | --- |
+| `SELLER` | spec files via `${SELLER}` | wallet id (base64url public key) that gets paid |
+| `PREMIUM_KEY` | `examples/spec.json`, `examples/upstream.ts` | demo API key injected as `X-Api-Key`; default `demo-key` |
+| `SOLANA_RPC` | `tab solana *`, `spec-solana.json`, tests | JSON-RPC URL; default `http://127.0.0.1:8899` |
+| `MINT` | `demo-solana.sh`, `spec-solana.json` | **stablecoin mint address** on the solana rail |
+| `MINT` | `demo.sh` | **ledger amount** to mint to the owner, default `5.00`. Same name, different meaning. Do not export a Solana `MINT` in a shell where you run `demo.sh`. |
+| `UPSTREAM_PORT` | `examples/upstream.ts` | default 4101 |
+| `BUDGET`, `MAX_PER_CALL`, `WEB_BUDGET` | demo scripts | mandate terms for the Claude agent (1.00 / 0.05) and the web try-it agent (0.50) |
+| `DELEGATE` | `demo-solana.sh` | `web` (default) or `claude`: which agent gets the single SPL delegation |
+| `PORT` | `demo-solana.sh` | solana gateway port, default 1404 |
+| `TAB_AGENT`, `TAB_MANDATE` | `tab mcp` | paths to the agent key and mandate JSON (required) |
+| `TAB_MAX_PER_CALL` | `tab mcp` | client-side per-call ceiling in USD, independent of the mandate |
+| `TAB_CATALOG` | `tab mcp` | catalog origin for `tab_search`, `tab_discover`, `tab_balance` |
+| `SCRATCH` | tests | where temp DBs go; default OS tmpdir |
+
+Any `${UPPER_CASE_NAME}` inside a spec file is replaced from the environment when the spec is loaded (`loadSpec` in `src/gateway.ts`). Unset variables become empty strings, and an empty `recipient` makes `tab serve` refuse to start.
+
+---
+
+## 7. CLI reference
+
+```
+tab key new [--out file]
+tab mandate issue --owner key.json --agent <pub|file> --budget 1.00
+                  [--window total|day] [--max-per-call 0.05] [--allow realm]... [--days 7] [--out file]
+tab mint    --wallet <pub|file> --amount 5.00 [--db tab.db]        sandbox: create ledger money
+tab balance --wallet <pub|file> [--db tab.db]
+tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin http://host:1402]
+tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
+                  [--try-max-per-call 0.05] [--seed origin]...
+tab solana approve --owner key.json --agent <pub|file> --amount 1.00 --mint <addr> [--rpc url] [--fee-payer key.json]
+tab solana revoke  --owner key.json --mint <addr> [--rpc url]
+tab solana balance --wallet <pub|file> --mint <addr> [--rpc url]
+tab solana airdrop --wallet <pub|file> [--sol 1] [--rpc url]        local validator / devnet only
+tab solana address <pub|file>                                       wallet id -> base58 address
+tab fetch --agent key.json --mandate mandate.json [--max-per-call 0.05] [-X POST] [-d body] <url>
+tab mcp                                                             stdio; TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CATALOG]
+```
+
+Notes:
+
+- Anywhere a `<pub|file>` is accepted, a path ending in `.json` is read as a key file and its `publicKey` used; anything else is taken as the public key itself.
+- Key files are written with mode `0600` and look like `{"publicKey":"…","privateKey":"…"}`, both base64url raw 32 bytes. A wallet id **is** the public key. The same 32 bytes in base58 are the Solana address (`tab solana address`).
+- `--allow` may be repeated. Values are globs over realms: `*`, `*.example.com`, `quotes.local`. Omitted means `*`.
+- `--window day` resets the budget per UTC calendar day; `total` (default) is a lifetime budget.
+- `tab fetch` exit codes: 0 paid and 2xx, 1 non-2xx, 2 refused by the client's own cap before paying.
+- `tab serve --announce` retries the catalog for 10 seconds, then gives up with a log line; the gateway keeps running either way. `--origin` is what the catalog will store and what buyers will call, so it must be the **public** URL, not 127.0.0.1, in production.
+- `tab catalog serve --seed` pre-loads gateways at startup; `--announce` from the gateway side does the same at runtime.
+
+---
+
+## 8. Production deployment, step by step
+
+This deploys a ledger-rail gateway fronting **your** API, plus the catalog with the front end, behind nginx with TLS. Swap section 9 in for the Solana rail.
+
+### 8.1 System user and directory
+
+```sh
+sudo useradd --system --home /opt/tab --shell /usr/sbin/nologin tab
+sudo mkdir -p /opt/tab && sudo chown tab:tab /opt/tab
+# rsync the tree in (section 3), then:
+sudo -u tab bash -c 'cd /opt/tab && npm ci && npm run build'
+```
+
+### 8.2 Keys and a mandate
+
+```sh
+cd /opt/tab
+sudo -u tab mkdir -p keys
+sudo -u tab node bin/tab.js key new --out keys/seller.json      # gets paid
+sudo -u tab node bin/tab.js key new --out keys/owner.json       # funds buyers (sandbox)
+sudo -u tab node bin/tab.js key new --out keys/agent.json       # a buyer
+sudo -u tab node bin/tab.js mandate issue --owner keys/owner.json --agent keys/agent.json \
+    --budget 10.00 --window day --max-per-call 0.05 --allow apis.example.com --days 90 --out keys/mandate-agent.json
+sudo -u tab node bin/tab.js mint --wallet keys/owner.json --amount 50.00 --db /opt/tab/tab.db
+```
+
+The owner key is only needed to sign mandates and to mint sandbox money. Keep it **off** the server if you can: issue mandates on your laptop and copy just the mandate JSON up. The seller key never needs to be on the server either; only its public key goes in the spec. The one key a ledger gateway must hold is nothing at all. The Solana gateway must hold the fee-payer key.
+
+### 8.3 The spec
+
+`/opt/tab/spec.json`, fronting a real upstream and injecting its API key:
+
+```json
+{
+  "realm": "apis.example.com",
+  "recipient": "${SELLER}",
+  "public_receipts": true,
+  "services": [
+    {
+      "name": "translate",
+      "prefix": "/google/translate",
+      "upstream": "https://translation.googleapis.com",
+      "upstream_headers": { "Authorization": "Bearer ${GOOGLE_TOKEN}" },
+      "description": "Google Translate v2",
+      "routes": [
+        { "method": "POST", "path": "/language/translate/v2", "price": "0.002", "description": "Translate text" }
+      ]
+    },
+    {
+      "name": "myapi",
+      "prefix": "",
+      "upstream": "http://127.0.0.1:8080",
+      "routes": [
+        { "method": "GET",  "path": "/v1/things/:id", "price": "0.01", "description": "One thing" },
+        { "method": "GET",  "path": "/healthz",       "price": "0",    "description": "Free" }
+      ]
+    }
+  ]
+}
+```
+
+Rules:
+
+- `realm` is the string mandates allow-list against. Pick your public hostname.
+- `recipient` is the seller's wallet id (base64url public key). On the solana rail the same key's base58 form is where USDC lands.
+- `prefix` is matched longest-first. `""` is the root. A request to `<prefix><rest>` forwards to `<upstream><rest>` with the query string intact.
+- `path` supports `:param` segments; anything else is literal. Method is case-insensitive.
+- `price` is USD with up to six decimals. `"0"` routes are forwarded unpaid. Paths with no priced route return 404 and are **never proxied**.
+- `upstream_headers` are added on the way through and `Authorization` from the buyer is stripped, so the buyer never sees your upstream credential and the upstream never sees the buyer's.
+- The upstream also receives `Tab-Payer`, `Tab-Owner` and `Tab-Hold` headers so it can attribute the call.
+- `public_receipts: true` exposes the last 200 receipts at `/.well-known/tab/receipts`; the front end's live feed reads it.
+- Single-service shorthand: top-level `upstream`, `upstream_headers`, `routes` instead of `services`.
+
+Put the secrets in an environment file, not the spec:
+
+```sh
+sudo install -m 600 -o tab -g tab /dev/null /opt/tab/.env
+sudo -u tab tee /opt/tab/.env >/dev/null <<EOF
+SELLER=$(node -p "require('/opt/tab/keys/seller.json').publicKey")
+GOOGLE_TOKEN=ya29....
+EOF
+```
+
+### 8.4 systemd units
+
+`/etc/systemd/system/tab-gateway.service`:
+
+```ini
+[Unit]
+Description=tab payment gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tab
+Group=tab
+WorkingDirectory=/opt/tab
+EnvironmentFile=/opt/tab/.env
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning /opt/tab/dist/src/cli.js serve \
+    --spec /opt/tab/spec.json --db /opt/tab/tab.db --port 1402 \
+    --announce http://127.0.0.1:1403 --origin https://pay.example.com
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/tab
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/tab-catalog.service`:
+
+```ini
+[Unit]
+Description=tab catalog and front end
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tab
+Group=tab
+WorkingDirectory=/opt/tab
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning /opt/tab/dist/src/cli.js catalog serve \
+    --db /opt/tab/catalog.db --port 1403 \
+    --try-agent /opt/tab/keys/agent.json --try-mandate /opt/tab/keys/mandate-agent.json --try-max-per-call 0.05
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/tab
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Drop the `--try-agent`/`--try-mandate` flags if you do not want a public "Buy" button that spends real (sandbox or on-chain) money from your owner wallet. With them, anyone who can reach the catalog can spend up to that mandate's budget per day, capped per call, on catalogued routes only.
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now tab-catalog tab-gateway
+sudo journalctl -u tab-gateway -f          # logs go to stderr with ISO timestamps
+```
+
+Start the catalog first, or just start both: the gateway retries `--announce` for 10 seconds.
+
+### 8.5 nginx with TLS
+
+The protocol lives entirely in HTTP headers (`WWW-Authenticate`, `Authorization`, `Tab-Receipt`, `Tab-Void`), which nginx passes through by default. The `Authorization` header carries a base64 credential of about 1 KB on the ledger rail and about 2 KB on the solana rail (it embeds a signed transaction), so raise the header buffers a little.
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name pay.example.com;
+    ssl_certificate     /etc/letsencrypt/live/pay.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pay.example.com/privkey.pem;
+    large_client_header_buffers 4 16k;
+    client_max_body_size 10m;
+    location / {
+        proxy_pass http://127.0.0.1:1402;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 60s;
+    }
+}
+server {
+    listen 443 ssl http2;
+    server_name catalog.example.com;
+    ssl_certificate     /etc/letsencrypt/live/catalog.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/catalog.example.com/privkey.pem;
+    location / {
+        proxy_pass http://127.0.0.1:1403;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+}
+```
+
+Then firewall the raw ports:
+
+```sh
+sudo ufw allow 22,80,443/tcp
+sudo ufw deny 1402/tcp && sudo ufw deny 1403/tcp && sudo ufw deny 1404/tcp
+sudo ufw enable
+```
+
+CORS is already `Access-Control-Allow-Origin: *` on every JSON endpoint of both services, so the front end may be served from a different origin than the gateways it talks to.
+
+### 8.6 Smoke test from anywhere
+
+```sh
+curl -s https://pay.example.com/.well-known/tab | jq .routes
+curl -si https://pay.example.com/v1/things/42 | head -5        # expect 402 + WWW-Authenticate: Tab ...
+node bin/tab.js fetch --agent keys/agent.json --mandate keys/mandate-agent.json https://pay.example.com/v1/things/42
+node bin/tab.js balance --wallet keys/seller.json --db /opt/tab/tab.db   # on the server: seller got paid
+curl -s https://catalog.example.com/v1/search?q=thing | jq .
+```
+
+---
+
+## 9. The Solana rail in production
+
+Everything in section 8 applies. The differences:
+
+**Spec.** Add `rail` and a `solana` block. `fee_payer` is a path to a key file the gateway must hold; it sponsors transaction fees and recipient ATA rent, so it needs SOL.
+
+```json
+{
+  "realm": "pay.example.com",
+  "recipient": "${SELLER}",
+  "rail": "solana",
+  "solana": { "rpc": "${SOLANA_RPC}", "mint": "${MINT}", "decimals": 6, "fee_payer": "keys/feepayer.json" },
+  "public_receipts": true,
+  "services": [ ... same as before ... ]
+}
+```
+
+**Environment.**
+
+| Cluster | `SOLANA_RPC` | `MINT` (USDC) |
+| --- | --- | --- |
+| devnet | `https://api.devnet.solana.com` | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` |
+| mainnet | your own RPC provider URL (public mainnet RPC rate-limits hard) | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` |
+
+**Funding, once.**
+
+```sh
+export SOLANA_RPC=https://api.devnet.solana.com MINT=4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+node bin/tab.js key new --out keys/feepayer.json
+node bin/tab.js solana address keys/feepayer.json          # send SOL here (devnet: `solana airdrop`, or `tab solana airdrop`)
+node bin/tab.js solana address keys/owner.json             # owner needs USDC in its ATA plus a little SOL
+# the on-chain half of the mandate: owner approves the agent as SPL delegate
+node bin/tab.js solana approve --owner keys/owner.json --agent keys/agent.json --amount 10.00 --mint $MINT
+node bin/tab.js solana balance --wallet keys/owner.json --mint $MINT   # shows delegate and delegated amount
+```
+
+**How a paid call settles.** Challenge carries mint, fee payer, a recent blockhash and a 60-second expiry. The agent builds a legacy transaction (compute budget, optional create-recipient-ATA, `TransferChecked` from the owner's ATA with the agent as authority, memo = challenge id), signs it, and sends it in the credential. The gateway checks every instruction byte-for-byte against the challenge, checks the mandate budget locally, simulates with its own signature added, forwards to the upstream, and only on 2xx broadcasts and confirms. On any failure nothing is ever broadcast. Receipt `ref` is `solana:<signature>`.
+
+**Operational facts.**
+
+- Only **one SPL delegate per token account**. An owner with several agents needs one token account per agent, or a delegation program (roadmap).
+- `Revoke` ends the delegation instantly and independently of the mandate expiry.
+- The delegated amount decrements on-chain with every transfer. It is a hard cap under the mandate budget; the mandate's daily window and per-call cap are enforced by the gateway from `tab-solana.db`.
+- The gateway's RPC client times out at 20 s per call and confirmation polls for up to 30 s. A slow RPC shows up as 502 `upstream-failed` or a 500, never as a lost payment: capture happens after the upstream succeeded, so worst case the buyer got the response without being charged.
+- Keep `keys/feepayer.json` topped up. Every paid call costs the fee payer a base fee plus, the first time a recipient is paid in a given mint, ATA rent (about 0.002 SOL).
+- Only legacy transactions, only Token program (not Token-2022), only 6-decimal mints in draft 0.
+
+**Local validator for testing on the VPS** (optional): install the Solana CLI from `https://docs.solanalabs.com/cli/install`, then `npm run demo:solana` starts a validator under `~/.cache/tab-validator`, fabricates a stablecoin, funds everyone and starts a solana gateway on 1404. `npm run test:solana` runs 26 on-chain checks against it.
+
+---
+
+## 10. The catalog service
+
+`tab catalog serve` is discovery for buyers and hosts the front end.
+
+| Endpoint | What |
+| --- | --- |
+| `GET /` | the front end (`web/index.html`) |
+| `GET /v1/catalog.json` | every known gateway with services and routes |
+| `GET /v1/search?q=&max_price=` | route search, route-level text matches outrank service-level, cheapest first; results carry the full URL to call |
+| `POST /v1/announce {origin}` | fetch and verify `<origin>/.well-known/tab`, store it |
+| `POST /v1/refresh` | re-fetch every stored gateway now (also runs every 60 s) |
+| `POST /v1/mandate/verify {mandate, realm}` | check a mandate's signature, expiry and realm, return it decoded |
+| `GET /v1/wallet?origin=&wallet=` | proxy a balance lookup to a gateway |
+| `GET /v1/receipts?limit=` | receipts aggregated from every gateway with `public_receipts` |
+| `GET /v1/try` | is the try-it agent configured, and its limits |
+| `POST /v1/try {url, method, body}` | pay for a catalogued route with the try-it agent, return status, receipt and body |
+
+The front end is a single 212-line HTML file with no build step and no external scripts. It links Solana receipts to `explorer.solana.com`; that is the only outbound URL in it. Serve it from the catalog process or copy it anywhere static and point it at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
+
+---
+
+## 11. Gateway HTTP surface
+
+| Endpoint | What |
+| --- | --- |
+| `GET /.well-known/tab` | discovery: version, realm, rail, rail_info, recipient, services, routes |
+| `GET /.well-known/tab/wallet/<id>` | available balance of a wallet on this rail |
+| `GET /.well-known/tab/receipts?limit=` | last receipts, only if `public_receipts` |
+| `OPTIONS /.well-known/tab*` | CORS preflight |
+| any priced route | 402 with `WWW-Authenticate: Tab …` until paid; then proxied |
+| any unpriced path | 404 `not-found`, never proxied |
+
+Every 402 body is an RFC 9457 problem with `type: urn:tab:problem:<code>` and a fresh challenge in `WWW-Authenticate`. Codes: `payment-required`, `malformed-credential`, `invalid-challenge`, `payment-expired`, `verification-failed`, `mandate-invalid`, `mandate-denied`, `mandate-exceeded`, `insufficient-funds`. Upstream unreachable is 502 `upstream-failed`, nothing charged. Upstream non-2xx is passed through with a `Tab-Void` header and the hold released.
+
+The verification order and the reasons for it are in `SPEC.md` section 4. The short version: the challenge id is an HMAC over amount, recipient, resource and expiry with a per-database secret, so the gateway keeps no state per challenge and any edited challenge fails first; a challenge id can be redeemed once (insert-before-reserve, so two racing copies cannot both pay); the mandate budget check and the funds check are one SQLite transaction.
+
+---
+
+## 12. State, secrets and backups
+
+| File | Owner | Contains | Lose it and… |
+| --- | --- | --- | --- |
+| `tab.db` (+ `-wal`, `-shm`) | gateway | HMAC secret, ledger wallets and balances, holds, receipts, mandate spend counters, redeemed challenge ids | ledger balances are gone; spend counters reset (mandates start fresh); outstanding challenges die harmlessly |
+| `tab-solana.db` | solana gateway | same minus wallets; holds carry the signed transaction until capture | spend counters reset; on-chain state is unaffected |
+| `catalog.db` | catalog | announced gateways | re-announce or `--seed` |
+| `keys/*.json` | you | private keys, mode 0600 | seller: cannot spend earnings. owner: cannot issue mandates or move funds. feepayer: gateway cannot broadcast. agent: mandate is useless |
+| `keys/mandate-*.json` | you | signed mandates, not secret but grant spending | re-issue from the owner key |
+
+Backup: stop the service or use `sqlite3 tab.db ".backup tab.bak"` for a consistent copy while running. The database is in WAL mode, so copying only `tab.db` while a process is writing can miss recent commits. Back up `keys/` to somewhere encrypted and off the box.
+
+The gateway prunes redeemed challenge ids older than one hour every ten minutes. Holds and receipts are kept forever; the tables are small (one row per paid call).
+
+---
+
+## 13. Letting Claude Code spend
+
+`tab mcp` is a Model Context Protocol server on stdio, implemented without an SDK. It exposes five tools: `tab_limits`, `tab_search`, `tab_discover`, `tab_fetch`, `tab_balance`. It runs **where Claude Code runs**, not on the gateway, and needs only an agent key, a mandate, and network access to the gateway and catalog.
+
+Register it for one project by keeping `.mcp.json` next to the code:
+
+```json
+{ "mcpServers": { "tab": {
+  "command": "node", "args": ["--no-warnings=ExperimentalWarning", "--import", "tsx", "src/cli.ts", "mcp"],
+  "env": { "TAB_AGENT": "keys/agent-claude.json", "TAB_MANDATE": "keys/mandate-claude.json",
+           "TAB_MAX_PER_CALL": "0.05", "TAB_CATALOG": "https://catalog.example.com" } } } }
+```
+
+Or for every project (built version, absolute paths):
+
+```sh
+claude mcp add --scope user tab \
+  -e TAB_AGENT=/opt/tab/keys/agent-claude.json -e TAB_MANDATE=/opt/tab/keys/mandate-claude.json \
+  -e TAB_MAX_PER_CALL=0.05 -e TAB_CATALOG=https://catalog.example.com \
+  -- node --no-warnings=ExperimentalWarning /opt/tab/dist/src/cli.js mcp
+```
+
+Claude never sees the owner key. It can only spend within the mandate, the gateway enforces that, and `TAB_MAX_PER_CALL` adds a second, client-side cap. `.claude/settings.local.json` in this tree just enables the `tab` server from `.mcp.json`.
+
+---
+
+## 14. Using it from code
+
+```ts
+import { TabClient, tabFetch, receiptOf, PaymentRefused } from './src/client.js';
+
+const client = new TabClient({ agent, mandate, maxPerCallUsd: '0.05',
+  onChallenge: (challenge, request) => Number(request.amount) <= 20_000 });   // optional veto, amounts in micro-USD
+const res = await client.fetch('https://pay.example.com/v1/things/42');
+const receipt = receiptOf(res);           // null if the route was free or the call was voided
+```
+
+`tabFetch(url, init, options)` is the functional form. On 402 it parses the challenge, signs a credential (and on the solana rail builds and signs the transaction), and retries exactly once. It throws `PaymentRefused` when the price exceeds `maxPerCallUsd` or `onChallenge` says no; the gateway is never contacted with a credential in that case.
+
+Server side, `createGateway(spec, { store, rail?, log? })` and `createCatalog({ store, tryAgent?, log? })` return plain `http.Server`s, which is how `test/e2e.ts` runs everything in one process on port 0.
+
+---
+
+## 15. Quick sandbox on the VPS
+
+If you just want the whole thing up to poke at, the demo does everything in section 8.2 with sandbox money:
+
+```sh
+npm run demo          # keys/, owner minted 5.00, mandates, upstream :4101, gateway :1402, catalog + UI :1403
+```
+
+It is idempotent (re-uses existing keys and mandates) and runs all three processes in the foreground until Ctrl-C. Env overrides: `BUDGET`, `MAX_PER_CALL`, `WEB_BUDGET`, `MINT` (ledger amount), `PREMIUM_KEY`. Then open `http://<vps>:1403/` (or tunnel: `ssh -L 1403:127.0.0.1:1403 user@vps`).
+
+Remember these bind on all interfaces and the web try-it button spends the owner's sandbox balance for anyone who clicks it. Fine for play money; firewall it or do not run it on a public IP with real keys.
+
+---
+
+## 16. Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `SyntaxError: The requested module 'node:sqlite' does not provide…` or `Cannot find module 'node:sqlite'` | Node older than 22.13 | upgrade Node |
+| `ExperimentalWarning: SQLite is an experimental feature` | expected | add `--no-warnings=ExperimentalWarning` |
+| `error: spec.recipient is required` | `${SELLER}` unset when the spec loaded | export `SELLER` or put it in the `EnvironmentFile` |
+| `error: mandate is not for this agent key` | agent key file and mandate disagree | re-issue with `--agent` pointing at the right key |
+| `could not announce to http://…` | catalog not up within 10 s, or wrong URL | start the catalog, then `curl -X POST catalog/v1/announce -d '{"origin":"https://pay.example.com"}'` |
+| catalog stores the gateway with `ok: false` | catalog could not fetch `<origin>/.well-known/tab` | `--origin` must be reachable **from the catalog**; use the public URL |
+| 402 `mandate-denied: realm … not in mandate allow list` | mandate `--allow` does not match the spec's `realm` | issue a mandate with `--allow <realm>` or `*` |
+| 402 `mandate-exceeded` | per-call cap or window budget hit | wait for the next UTC day, or issue a bigger mandate |
+| 402 `insufficient-funds` on ledger | owner wallet empty in **this gateway's** `tab.db` | `tab mint --db <that db>`; ledger balances are per gateway database |
+| 402 `insufficient-funds` on solana | owner ATA empty, or delegated amount exhausted, or wrong delegate | `tab solana balance`, then `tab solana approve` again |
+| 402 `payment-expired` on solana every time | client clock or a slow RPC; challenge TTL is 60 s | use a faster RPC; check `date` |
+| 502 `upstream-failed` | upstream unreachable from the gateway | check the `upstream` origin; nothing was charged |
+| `EADDRINUSE` | another gateway or the demo still running | `ss -ltnp | grep 140` and stop it, or pick `--port` |
+| `ui not found` at `/` | `web/index.html` not next to `dist/` | keep the tree layout; catalog looks in `../web` and `../../web` relative to `catalog.js` |
+| `npm test` hangs or is slow | it is doing ~50 real HTTP round trips plus a catalog refresh; 1 to 2 minutes is normal | run with `SCRATCH=/some/fast/dir` |
+
+---
+
+## 17. Security checklist before real money
+
+- [ ] Ports 1402/1403/1404 firewalled; only nginx/Caddy exposed, TLS on.
+- [ ] Owner key not on the server, or at least not in the same directory as the gateway.
+- [ ] `keys/` mode 0700, key files 0600, owned by the service user.
+- [ ] No `--try-agent` on a public catalog, or a mandate with a budget you are happy to lose.
+- [ ] Fee payer holds only working-capital SOL.
+- [ ] Upstream API keys live in `EnvironmentFile`, mode 0600, not in the spec.
+- [ ] `public_receipts` off if payer and owner wallet ids should not be public.
+- [ ] Backups of `keys/` and `*.db` tested.
+- [ ] Read `SPEC.md` section 9 and "Not in draft 0": no body-digest binding (a POST credential does not bind the body), no Token-2022, no versioned transactions, no dispute window.
+
+---
+
+## 18. What is not built yet
+
+From the README roadmap, so you do not go looking for it: x402 client compatibility, agents acting as sellers, per-token or metered pricing and payment channels, windowed budgets on-chain, body digest binding, subscriptions, fee splits, Token-2022.

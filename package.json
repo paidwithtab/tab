@@ -1,0 +1,22 @@
+{
+  "name": "tab",
+  "version": "0.0.1",
+  "description": "A payment gateway for software agents: price any HTTP API, get paid per request over HTTP 402, spending capped by signed mandates.",
+  "type": "module",
+  "bin": { "tab": "bin/tab.js" },
+  "scripts": {
+    "cli": "node --no-warnings=ExperimentalWarning --import tsx src/cli.ts",
+    "build": "tsc",
+    "test": "node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts",
+    "test:solana": "node --no-warnings=ExperimentalWarning --import tsx test/solana.ts",
+    "upstream": "node --no-warnings=ExperimentalWarning --import tsx examples/upstream.ts",
+    "demo": "bash examples/demo.sh",
+    "demo:solana": "bash examples/demo-solana.sh"
+  },
+  "engines": { "node": ">=22.13" },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}

@@ -1,0 +1,212 @@
+<!doctype html>
+<!-- the whole front end: no build step, no external scripts; talks to the catalog's /v1 API on the same origin -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tab — pay-per-request APIs</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --dim:#8b949e; --accent:#3fb950; --link:#58a6ff; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--fg); font:15px/1.5 ui-sans-serif,system-ui,sans-serif; padding:2rem 1rem 4rem; }
+  main { max-width:56rem; margin:0 auto; display:grid; gap:1.5rem; }
+  h1 { font-size:1.6rem; } h1 small { color:var(--dim); font-weight:400; font-size:1rem; margin-left:.6rem; }
+  h2 { font-size:1rem; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; margin-bottom:.6rem; }
+  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:1.1rem 1.2rem; }
+  input, textarea, select { width:100%; padding:.55rem .8rem; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; }
+  textarea { font-family:ui-monospace,Menlo,monospace; font-size:.8rem; min-height:6rem; resize:vertical; }
+  table { width:100%; border-collapse:collapse; font-size:.92rem; }
+  th, td { text-align:left; padding:.45rem .5rem; border-top:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; border-top:none; }
+  code, .mono { font-family:ui-monospace,Menlo,monospace; font-size:.86em; }
+  .price { color:var(--accent); white-space:nowrap; }
+  .dim { color:var(--dim); } .ok { color:var(--accent); } .bad { color:#f85149; }
+  a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+  button { padding:.35rem .8rem; border-radius:7px; border:1px solid var(--line); background:#21262d; color:var(--fg); font:inherit; cursor:pointer; }
+  button:hover { border-color:var(--dim); } button:disabled { opacity:.5; cursor:default; }
+  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.7rem .9rem; overflow-x:auto; font-size:.82rem; margin-top:.6rem; white-space:pre-wrap; word-break:break-all; }
+  .row { display:grid; gap:.6rem; grid-template-columns:1fr auto; align-items:start; }
+  .row3 { display:grid; gap:.6rem; grid-template-columns:1fr 1fr auto; align-items:start; }
+  .wallet { overflow-wrap:anywhere; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>tab<small>pay-per-request APIs for software agents</small></h1>
+    <p class="dim">Every route below answers HTTP 402 until it is paid. Agents pay under a signed mandate; owners stay offline.</p>
+  </header>
+
+  <section>
+    <h2>Search routes</h2>
+    <input id="q" placeholder="try: quote, translate, echo … (empty lists everything)" autocomplete="off">
+    <table id="results"><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Gateways</h2>
+    <table id="gateways"><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Live receipts</h2>
+    <table id="receipts"><tbody></tbody></table>
+  </section>
+
+  <section>
+    <h2>Check a wallet</h2>
+    <div class="row3">
+      <select id="w-origin"></select>
+      <input id="w-id" placeholder="wallet id (base64url public key)" autocomplete="off">
+      <button id="w-go">Look&nbsp;up</button>
+    </div>
+    <pre id="w-out" hidden></pre>
+  </section>
+
+  <section>
+    <h2>Verify a mandate</h2>
+    <textarea id="m-json" placeholder='paste a mandate JSON (keys/mandate-*.json) — mandates are not secret, but they grant spending'></textarea>
+    <div class="row" style="margin-top:.6rem">
+      <input id="m-realm" placeholder="realm to check against, e.g. quotes.local (optional)" autocomplete="off">
+      <button id="m-go">Verify</button>
+    </div>
+    <pre id="m-out" hidden></pre>
+  </section>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const usd = (micro) => '$' + (Number(micro) / 1e6).toFixed(Number(micro) % 10000 ? 4 : 2);
+let tryInfo = { enabled: false };
+let knownGateways = [];
+
+async function getJSON(url, opts) {
+  const r = await fetch(url, opts);
+  return r.json();
+}
+
+function refLink(ref) {
+  if (ref && ref.startsWith('solana:')) {
+    const sig = ref.slice(7);
+    return `<a href="https://explorer.solana.com/tx/${esc(sig)}" target="_blank" rel="noopener">${esc(sig.slice(0, 16))}…</a>`;
+  }
+  return `<span class="mono dim">${esc(ref)}</span>`;
+}
+
+async function search() {
+  const q = $('#q').value.trim();
+  const data = await getJSON('/v1/search?q=' + encodeURIComponent(q));
+  const rows = (data.results ?? []).map((r, i) => `
+    <tr>
+      <td><span class="mono">${esc(r.method)}</span> <span class="mono">${esc(r.path)}</span><br>
+          <span class="dim">${esc(r.description || r.service)} · ${esc(r.realm)} · ${esc(r.rail)}</span></td>
+      <td class="price">${r.price === '0' ? 'free' : '$' + esc(r.price)}</td>
+      <td>${tryInfo.enabled || r.price === '0' ? `<button data-i="${i}">Buy</button>` : ''}</td>
+    </tr>`).join('');
+  $('#results tbody').innerHTML = `<tr><th>route</th><th>price</th><th></th></tr>` + rows;
+  $('#results').dataset.routes = JSON.stringify(data.results ?? []);
+}
+
+async function tryRoute(i) {
+  const route = JSON.parse($('#results').dataset.routes)[i];
+  const btn = document.querySelector(`#results button[data-i="${i}"]`);
+  btn.disabled = true; btn.textContent = '…';
+  const out = await getJSON('/v1/try', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ url: route.url.replace(/:\w+/g, '42'), method: route.method,
+      body: route.method === 'GET' ? undefined : { hello: 'from the tab front end' } }),
+  }).catch((e) => ({ error: String(e) }));
+  btn.disabled = false; btn.textContent = 'Buy';
+  let pre = btn.closest('tr').nextElementSibling;
+  if (!pre || !pre.classList.contains('out')) {
+    pre = document.createElement('tr'); pre.className = 'out';
+    pre.innerHTML = '<td colspan="3"><pre></pre></td>';
+    btn.closest('tr').after(pre);
+  }
+  const paid = out.receipt ? `paid ${usd(out.receipt.amount)} · ref ${out.receipt.ref}\n` : '';
+  pre.querySelector('pre').textContent =
+    (out.error ? out.error : `HTTP ${out.status}\n${paid}${out.body ?? ''}`);
+  loadReceipts();
+}
+
+async function loadGateways() {
+  const data = await getJSON('/v1/catalog.json');
+  knownGateways = data.gateways ?? [];
+  const rows = knownGateways.map((g) => `
+    <tr>
+      <td><a href="${esc(g.origin)}/.well-known/tab" target="_blank" rel="noopener" class="mono">${esc(g.origin)}</a><br>
+          <span class="dim">realm ${esc(g.realm ?? '?')} · ${esc(g.rail ?? '?')} rail</span></td>
+      <td class="${g.ok ? 'ok' : 'bad'}">${g.ok ? 'ok' : esc(g.error ?? 'unreachable')}</td>
+      <td class="dim wallet">${esc((g.recipient ?? '').slice(0, 12))}…</td>
+    </tr>`).join('');
+  $('#gateways tbody').innerHTML = `<tr><th>gateway</th><th>status</th><th>seller</th></tr>` + rows;
+  const sel = $('#w-origin');
+  const current = sel.value;
+  sel.innerHTML = knownGateways.filter((g) => g.ok)
+    .map((g) => `<option value="${esc(g.origin)}">${esc(g.origin)} (${esc(g.realm ?? '?')})</option>`).join('')
+    || '<option value="">no gateways announced yet</option>';
+  if (current) sel.value = current;
+}
+
+async function loadReceipts() {
+  const data = await getJSON('/v1/receipts?limit=25');
+  const rows = (data.receipts ?? []).map((r) => `
+    <tr>
+      <td class="dim">${esc((r.at ?? '').replace('T', ' ').slice(0, 19))}</td>
+      <td class="mono">${esc(r.resource)}</td>
+      <td class="price">${usd(r.amount)}</td>
+      <td>${refLink(r.ref)}</td>
+    </tr>`).join('');
+  $('#receipts tbody').innerHTML =
+    `<tr><th>when (UTC)</th><th>resource</th><th>amount</th><th>ref</th></tr>` +
+    (rows || '<tr><td colspan="4" class="dim">no receipts yet — buy something above</td></tr>');
+}
+
+async function lookupWallet() {
+  const origin = $('#w-origin').value, wallet = $('#w-id').value.trim();
+  const out = $('#w-out'); out.hidden = false;
+  if (!origin || !wallet) { out.textContent = 'pick a gateway and paste a wallet id'; return; }
+  out.textContent = '…';
+  const data = await getJSON(`/v1/wallet?origin=${encodeURIComponent(origin)}&wallet=${encodeURIComponent(wallet)}`)
+    .catch((e) => ({ error: String(e) }));
+  out.textContent = data.error ? data.error : `available on ${origin} (${data.rail} rail): $${data.available}`;
+}
+
+async function verifyMandate() {
+  const out = $('#m-out'); out.hidden = false; out.textContent = '…';
+  let mandate;
+  try { mandate = JSON.parse($('#m-json').value); }
+  catch { out.textContent = 'that is not JSON'; return; }
+  const realm = $('#m-realm').value.trim() || undefined;
+  const v = await getJSON('/v1/mandate/verify', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ mandate, realm }),
+  }).catch((e) => ({ ok: false, error: String(e) }));
+  if (!v.ok) { out.textContent = `INVALID: ${v.error}`; return; }
+  const m = v.mandate;
+  out.textContent = [
+    `VALID — owner signature checks out${realm ? ` and realm ${realm} is allowed` : ''}`,
+    `owner   ${m.owner}`, `agent   ${m.agent}`,
+    `budget  $${m.budget_usd} per ${m.window === 'day' ? 'UTC day' : 'lifetime'}` +
+      (m.max_per_call_usd ? `, at most $${m.max_per_call_usd} per call` : ''),
+    `realms  ${m.allow.join(', ')}`, `expires ${m.expires_at}`,
+  ].join('\n');
+}
+
+$('#q').addEventListener('input', () => { clearTimeout(window.__t); window.__t = setTimeout(search, 250); });
+$('#results').addEventListener('click', (e) => {
+  if (e.target.matches('button[data-i]')) tryRoute(Number(e.target.dataset.i));
+});
+$('#w-go').addEventListener('click', lookupWallet);
+$('#m-go').addEventListener('click', verifyMandate);
+
+(async () => {
+  tryInfo = await getJSON('/v1/try').catch(() => ({ enabled: false }));
+  await Promise.all([search(), loadGateways(), loadReceipts()]);
+  setInterval(loadReceipts, 5000);
+  setInterval(loadGateways, 30000);
+})();
+</script>
+</body>
+</html>
