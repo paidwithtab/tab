@@ -1,10 +1,9 @@
 // A rail moves the money. Two ship: ledger (SQLite sandbox balances) and
-// solana (SPL stablecoin via delegated TransferChecked).
+// evm (ERC-20 stablecoin on Robinhood Chain via a delegated transferFrom).
 
 import type { Challenge, Credential, RailName } from '../protocol.js';
 import type { HoldRow, Store } from '../store.js';
 import { LedgerRail } from './ledger.js';
-import { SolanaRail, type SolanaRailConfig } from './solana.js';
 import { EvmRail, type EvmRailConfig } from './evm.js';
 
 export interface ReserveContext {
@@ -19,12 +18,12 @@ export interface Rail {
   readonly name: RailName;
   /** rail_info for the discovery document. */
   info(): Record<string, unknown>;
-  /** Extra challenge fields (solana: blockhash etc.; evm: token, gas params). */
+  /** Extra challenge fields (evm: token, payout address, gas params). */
   challengeExtras(): Promise<Partial<Challenge>>;
   /**
    * Synchronous reservation, called inside the gateway's SQLite transaction
-   * after budget + redemption checks. Ledger debits the owner; solana and evm
-   * verify the embedded transaction against the challenge. Throws PayError.
+   * after budget + redemption checks. Ledger debits the owner; evm verifies
+   * the embedded transaction against the challenge. Throws PayError.
    * txHash, when set, is stored UNIQUE so one signed payment can never back
    * two holds.
    */
@@ -42,14 +41,10 @@ export interface Rail {
 }
 
 export function createRail(
-  spec: { rail?: string; solana?: SolanaRailConfig; evm?: EvmRailConfig },
+  spec: { rail?: string; evm?: EvmRailConfig },
   store: Store,
 ): Rail {
   if (!spec.rail || spec.rail === 'ledger') return new LedgerRail(store);
-  if (spec.rail === 'solana') {
-    if (!spec.solana) throw new Error('spec.rail is "solana" but spec.solana is missing');
-    return new SolanaRail(spec.solana);
-  }
   if (spec.rail === 'evm') {
     if (!spec.evm) throw new Error('spec.rail is "evm" but spec.evm is missing');
     return new EvmRail(spec.evm);
@@ -57,4 +52,4 @@ export function createRail(
   throw new Error(`unknown rail: ${spec.rail}`);
 }
 
-export { LedgerRail, SolanaRail, EvmRail };
+export { LedgerRail, EvmRail };

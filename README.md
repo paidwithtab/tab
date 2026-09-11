@@ -11,8 +11,8 @@ owner ──signs once──▶ mandate ──carried by──▶ agent ──pa
                                                               settles on a rail
 ```
 
-- **Zero runtime dependencies.** Ed25519, SHA-256, HMAC, base58, SPL instruction encoding, JSON-RPC and the MCP server are hand-written on Node ≥ 22.13 built-ins (including `node:sqlite`).
-- **Three rails.** `ledger` (sandbox balances in SQLite, instant, free), `solana` (USDC via SPL delegation, the gateway co-signs as fee payer), and `evm` — USDC on **Robinhood Chain** (or any EVM chain): the owner `approve`s the agent once, the agent signs each `transferFrom`, the gateway verifies it field-for-field and broadcasts only after your API answered 2xx. No custom program or contract on either chain.
+- **Zero runtime dependencies.** Ed25519, keccak-256, secp256k1 ECDSA, SHA-256, HMAC, RLP, EIP-1559 transactions, ERC-20 encoding, JSON-RPC and the MCP server are hand-written on Node ≥ 22.13 built-ins (including `node:sqlite`).
+- **Two rails.** `ledger` (sandbox balances in SQLite, instant, free) and `evm` — USDC on **Robinhood Chain** (or any EVM chain): the owner `approve`s the agent once, the agent signs each `transferFrom`, the gateway verifies it field-for-field and broadcasts only after your API answered 2xx. No custom contract.
 - **A catalog** with search and a web front end, so buyers can find priced routes.
 - **An MCP server**, so Claude Code can spend under a mandate it can never exceed.
 
@@ -29,7 +29,7 @@ Then open http://127.0.0.1:1403/ (landing page) or http://127.0.0.1:1403/catalog
 npm run cli -- fetch --agent keys/agent-claude.json --mandate keys/mandate-claude.json http://127.0.0.1:1402/quote
 ```
 
-`npm test` runs 51 end-to-end checks in-process; `npm run test:adversarial` runs 24 hostile checks (replay, concurrency exactness, request mutation, mandate forgery, catalog SSRF); `npm run test:solana` runs 26 on-chain checks against a local validator (`npm run demo:solana` starts one); `npm run test:evm` runs 31 checks for the Robinhood Chain rail (crypto vectors, a mock EVM node, live testnet reads).
+`npm test` runs 51 end-to-end checks in-process; `npm run test:adversarial` runs 24 hostile checks (replay, concurrency exactness, request mutation, mandate forgery, catalog SSRF); `npm run test:evm` runs 31 checks for the Robinhood Chain rail (crypto vectors, a mock EVM node, live testnet reads).
 
 ## Documents
 
@@ -38,4 +38,4 @@ npm run cli -- fetch --agent keys/agent-claude.json --mandate keys/mandate-claud
 
 ## Roadmap
 
-x402 client compatibility · agents as sellers · per-token and metered pricing, payment channels · windowed budgets on-chain · header binding · subscriptions · fee splits · Token-2022.
+x402 client compatibility · agents as sellers · per-token and metered pricing, payment channels · windowed budgets on-chain · header binding · subscriptions · fee splits · EIP-4337 gas sponsorship.

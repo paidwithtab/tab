@@ -55,14 +55,7 @@ export function microToUsd(micro: number): string {
 // ---------------------------------------------------------------------------
 // challenges
 
-export type RailName = 'ledger' | 'solana' | 'evm';
-
-export interface SolanaChallengeInfo {
-  mint: string; // base58
-  decimals: number;
-  fee_payer: string; // base58
-  recent_blockhash: string; // base58
-}
+export type RailName = 'ledger' | 'evm';
 
 export interface EvmChallengeInfo {
   chain_id: number; // Robinhood Chain: 46630 testnet, 4663 mainnet
@@ -84,7 +77,6 @@ export interface Challenge {
   recipient: string; // wallet id (base64url public key)
   resource: string; // "METHOD /path"
   expires_at: string; // ISO 8601
-  solana?: SolanaChallengeInfo;
   evm?: EvmChallengeInfo;
 }
 
@@ -152,7 +144,6 @@ export interface Credential {
   mandate: Mandate;
   request: RequestCommitment;
   sig: string; // agent signature, see credentialMessage
-  solana?: { tx: string }; // base64 partially-signed legacy transaction
   evm?: { tx: string }; // 0x hex fully-signed type-2 transaction
 }
 
@@ -181,7 +172,6 @@ export function credentialMessage(
 export interface SignCredentialOptions {
   query?: string;
   body?: string | Uint8Array | null;
-  solana?: { tx: string };
   evm?: { tx: string };
 }
 
@@ -195,7 +185,7 @@ export function signCredential(
   const sig = signBytes(agent, credentialMessage(agent.publicKey, chal, mandate.id, request));
   return {
     ver: VERSION, agent: agent.publicKey, challenge: chal, mandate, request, sig,
-    solana: opts.solana, evm: opts.evm,
+    evm: opts.evm,
   };
 }
 
@@ -243,7 +233,7 @@ export interface Receipt {
   payer: string; // agent wallet id
   owner: string; // owner wallet id (whose funds moved)
   recipient: string;
-  ref: string; // "ledger:<hold>", "solana:<signature>" or "evm:<tx hash>"
+  ref: string; // "ledger:<hold>" or "evm:<tx hash>"
   at: string; // ISO 8601
 }
 

@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { newKeyPair, saveKey } from '../src/keys.js';
+import { newKeyPair } from '../src/keys.js';
 import {
   usdToMicro, signCredential, encodeCredentialHeader, parseChallengeHeader,
 } from '../src/protocol.js';
@@ -351,11 +351,10 @@ async function main(): Promise<void> {
   // ==========================================================================
 
   {
-    const feePath = join(scratch, 'feepayer.json');
-    saveKey(feePath, newKeyPair());
     const deadSpec: Spec = {
-      ...spec, rail: 'solana',
-      solana: { rpc: 'http://127.0.0.1:1', mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6, fee_payer: feePath },
+      ...spec, rail: 'evm',
+      evm: { rpc: 'http://127.0.0.1:1', chain_id: 46630, token: '0x' + '11'.repeat(20),
+        decimals: 6, recipient: '0x' + '22'.repeat(20) },
       services: [{ name: 'x', prefix: '', upstream: `http://127.0.0.1:${upPort}`,
         routes: [{ method: 'GET', path: '/quote', price: '0.01' }, { method: 'GET', path: '/free', price: '0' }] }],
     };
@@ -364,7 +363,7 @@ async function main(): Promise<void> {
     const port = await listen(deadGw);
     const priced = await fetch(`http://127.0.0.1:${port}/quote`);
     const free = await fetch(`http://127.0.0.1:${port}/free`);
-    check('dead solana RPC: priced routes 502 cleanly, free routes still work',
+    check('dead chain RPC: priced routes 502 cleanly, free routes still work',
       priced.status === 502 && ((await priced.json()) as any).type === 'urn:tab:problem:upstream-failed'
       && free.status === 200);
     deadGw.close();

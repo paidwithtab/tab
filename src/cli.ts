@@ -2,7 +2,7 @@
 // (pays), gateway/catalog (sells). See DEPLOY.md section 7 for the reference.
 
 import { parseArgs } from 'node:util';
-import { newKeyPair, saveKey, loadKey, resolvePublicKey, pubBytes, signBytes, type KeyPair } from './keys.js';
+import { newKeyPair, saveKey, loadKey, resolvePublicKey, type KeyPair } from './keys.js';
 import { issueMandate, loadMandate, saveMandate, verifyMandate } from './mandate.js';
 import { usdToMicro, microToUsd } from './protocol.js';
 import { Store, CatalogStore } from './store.js';
@@ -10,11 +10,6 @@ import { loadSpec, createGateway, announce } from './gateway.js';
 import { createCatalog } from './catalog.js';
 import { TabClient, PaymentRefused, receiptOf } from './client.js';
 import { runMcpServer } from './mcp.js';
-import { b58encode, b58decode32 } from './solana/base58.js';
-import { ata } from './solana/pda.js';
-import { SolanaRpc } from './solana/rpc.js';
-import { approveChecked, revoke, createAtaIdempotent, type Instruction } from './solana/instructions.js';
-import { compileMessage, serializeTransaction } from './solana/tx.js';
 import { scalarFromSeed, addressFromSeed, checksumAddress } from './evm/secp256k1.js';
 import { EvmRpc } from './evm/rpc.js';
 import { signTx, erc20 } from './evm/tx.js';
@@ -29,11 +24,6 @@ const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed man
   tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin url]
   tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
                     [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
-  tab solana approve --owner key.json --agent <pub|file> --amount 1.00 --mint <addr> [--rpc url] [--fee-payer key.json]
-  tab solana revoke  --owner key.json --mint <addr> [--rpc url]
-  tab solana balance --wallet <pub|file> --mint <addr> [--rpc url]
-  tab solana airdrop --wallet <pub|file> [--sol 1] [--rpc url]
-  tab solana address <pub|file>
   tab evm address <key.json>                                          key file -> 0x address
   tab evm approve --owner key.json --agent <key.json|0x> --amount 1.00 --token <0x> [--rpc url]
   tab evm revoke  --owner key.json --token <0x> [--rpc url]
@@ -59,8 +49,6 @@ function opts(args: string[], options: Record<string, any>, positionals = false)
     die((err as Error).message);
   }
 }
-
-const RPC_DEFAULT = process.env.SOLANA_RPC || 'http://127.0.0.1:8899';
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -208,10 +196,6 @@ async function main(): Promise<void> {
       return;
     }
 
-    case 'solana':
-      await solanaCommand(rest);
-      return;
-
     case 'evm':
       await evmCommand(rest);
       return;
@@ -278,126 +262,6 @@ async function main(): Promise<void> {
     default:
       process.stderr.write(USAGE);
       process.exit(cmd ? 1 : 0);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// solana subcommands
-
-async function sendInstructions(
-  rpc: SolanaRpc,
-  feePayer: KeyPair,
-  signers: KeyPair[],
-  instructions: Instruction[],
-): Promise<string> {
-  const blockhash = await rpc.getLatestBlockhash();
-  const compiled = compileMessage(pubBytes(feePayer.publicKey), blockhash, instructions);
-  const byPub = new Map<string, KeyPair>();
-  for (const s of [feePayer, ...signers]) byPub.set(b58encode(pubBytes(s.publicKey)), s);
-  const signatures = compiled.accounts.slice(0, compiled.numRequiredSignatures).map((acc) => {
-    const pair = byPub.get(acc);
-    if (!pair) throw new Error(`no key for required signer ${acc}`);
-    return new Uint8Array(Buffer.from(signBytes(pair, compiled.bytes), 'base64url'));
-  });
-  const tx = Buffer.from(serializeTransaction({ signatures, message: compiled.bytes })).toString('base64');
-  const sig = await rpc.sendTransaction(tx);
-  await rpc.confirm(sig);
-  return sig;
-}
-
-async function solanaCommand(rest: string[]): Promise<void> {
-  const sub = rest[0];
-  const args = rest.slice(1);
-  switch (sub) {
-    case 'address': {
-      if (!args[0]) die('usage: tab solana address <pub|file>');
-      console.log(b58encode(pubBytes(resolvePublicKey(args[0]))));
-      return;
-    }
-    case 'airdrop': {
-      const { values } = opts(args, {
-        wallet: { type: 'string' },
-        sol: { type: 'string', default: '1' },
-        rpc: { type: 'string', default: RPC_DEFAULT },
-      });
-      if (!values.wallet) die('--wallet is required');
-      const rpc = new SolanaRpc(values.rpc as string);
-      const addr = b58encode(pubBytes(resolvePublicKey(values.wallet as string)));
-      const sig = await rpc.requestAirdrop(addr, BigInt(Math.round(Number(values.sol) * 1e9)));
-      await rpc.confirm(sig);
-      console.log(`airdropped ${values.sol} SOL to ${addr}`);
-      return;
-    }
-    case 'balance': {
-      const { values } = opts(args, {
-        wallet: { type: 'string' },
-        mint: { type: 'string' },
-        rpc: { type: 'string', default: RPC_DEFAULT },
-      });
-      if (!values.wallet || !values.mint) die('--wallet and --mint are required');
-      const rpc = new SolanaRpc(values.rpc as string);
-      const owner = pubBytes(resolvePublicKey(values.wallet as string));
-      const ataAddr = b58encode(ata(owner, b58decode32(values.mint as string)));
-      const acc = await rpc.getTokenAccount(ataAddr);
-      console.log(
-        JSON.stringify(
-          {
-            wallet: b58encode(owner),
-            token_account: ataAddr,
-            amount: acc ? microToUsd(Number(acc.amount)) : '0.00',
-            delegate: acc?.delegate ?? null,
-            delegated_amount: acc ? microToUsd(Number(acc.delegatedAmount)) : '0.00',
-          },
-          null,
-          2,
-        ),
-      );
-      return;
-    }
-    case 'approve': {
-      const { values } = opts(args, {
-        owner: { type: 'string' },
-        agent: { type: 'string' },
-        amount: { type: 'string' },
-        mint: { type: 'string' },
-        rpc: { type: 'string', default: RPC_DEFAULT },
-        'fee-payer': { type: 'string' },
-      });
-      if (!values.owner || !values.agent || !values.amount || !values.mint) {
-        die('--owner, --agent, --amount and --mint are required');
-      }
-      const rpc = new SolanaRpc(values.rpc as string);
-      const owner = loadKey(values.owner as string);
-      const feePayer = values['fee-payer'] ? loadKey(values['fee-payer'] as string) : owner;
-      const mint = b58decode32(values.mint as string);
-      const ownerPub = pubBytes(owner.publicKey);
-      const agentPub = pubBytes(resolvePublicKey(values.agent as string));
-      const ownerAta = ata(ownerPub, mint);
-      const amount = BigInt(usdToMicro(values.amount as string));
-      const sig = await sendInstructions(rpc, feePayer, [owner], [
-        createAtaIdempotent(pubBytes(feePayer.publicKey), ownerAta, ownerPub, mint),
-        approveChecked(ownerAta, mint, agentPub, ownerPub, amount, 6),
-      ]);
-      console.log(`approved ${b58encode(agentPub)} as delegate for ${values.amount} (${sig})`);
-      return;
-    }
-    case 'revoke': {
-      const { values } = opts(args, {
-        owner: { type: 'string' },
-        mint: { type: 'string' },
-        rpc: { type: 'string', default: RPC_DEFAULT },
-      });
-      if (!values.owner || !values.mint) die('--owner and --mint are required');
-      const rpc = new SolanaRpc(values.rpc as string);
-      const owner = loadKey(values.owner as string);
-      const mint = b58decode32(values.mint as string);
-      const ownerPub = pubBytes(owner.publicKey);
-      const sig = await sendInstructions(rpc, owner, [owner], [revoke(ata(ownerPub, mint), ownerPub)]);
-      console.log(`revoked delegation (${sig})`);
-      return;
-    }
-    default:
-      die('usage: tab solana approve|revoke|balance|airdrop|address ...');
   }
 }
 

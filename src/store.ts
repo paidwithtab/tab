@@ -20,7 +20,7 @@ export interface HoldRow {
   window_key: string; // '' for total, 'YYYY-MM-DD' for day windows
   state: 'reserved' | 'captured' | 'voided';
   ref: string | null;
-  tx: string | null; // solana: signed tx base64; evm: signed tx 0x hex
+  tx: string | null; // evm: the fully signed transaction, 0x hex
   // evm: keccak of the raw tx. UNIQUE over non-voided holds, so one signed
   // payment can never back two served calls; a voided hold frees its hash
   // (after a void the same nonce legitimately produces the same bytes).
@@ -194,7 +194,7 @@ export class Store {
     return rows.map((r) => ({
       id: String(r.id), realm: String(r.realm), resource: String(r.resource),
       amount: String(r.amount), currency: 'USD' as const,
-      rail: r.rail as 'ledger' | 'solana', payer: String(r.payer), owner: String(r.owner),
+      rail: r.rail as Receipt['rail'], payer: String(r.payer), owner: String(r.owner),
       recipient: String(r.recipient), ref: String(r.ref), at: String(r.at),
     }));
   }

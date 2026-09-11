@@ -33,7 +33,7 @@
 <body>
 <main>
   <header>
-    <h1><a href="/" style="color:inherit">tab</a><small>pay-per-request APIs for software agents</small></h1>
+    <h1><a href="/"><img src="/logo.png" alt="tab" style="height:28px;vertical-align:middle"></a><small>pay-per-request APIs for software agents</small></h1>
     <p class="dim">Every route below answers HTTP 402 until it is paid. Agents pay under a signed mandate; owners stay offline.</p>
   </header>
 
@@ -85,10 +85,14 @@ async function getJSON(url, opts) {
   return r.json();
 }
 
-function refLink(ref) {
-  if (ref && ref.startsWith('solana:')) {
-    const sig = ref.slice(7);
-    return `<a href="https://explorer.solana.com/tx/${esc(sig)}" target="_blank" rel="noopener">${esc(sig.slice(0, 16))}…</a>`;
+const DEFAULT_EXPLORER = 'https://explorer.testnet.chain.robinhood.com';
+let explorers = {}; // gateway origin -> explorer base URL, from catalog.json when a gateway announces one
+
+function refLink(ref, origin) {
+  if (ref && ref.startsWith('evm:')) {
+    const hash = ref.slice(4);
+    const base = (origin && explorers[origin]) || DEFAULT_EXPLORER;
+    return `<a href="${esc(base)}/tx/${esc(hash)}" target="_blank" rel="noopener">${esc(hash.slice(0, 16))}…</a>`;
   }
   return `<span class="mono dim">${esc(ref)}</span>`;
 }
@@ -133,6 +137,7 @@ async function tryRoute(i) {
 async function loadGateways() {
   const data = await getJSON('/v1/catalog.json');
   knownGateways = data.gateways ?? [];
+  for (const g of knownGateways) { const e = g.explorer ?? g.rail_info?.explorer; if (e) explorers[g.origin] = e; }
   const rows = knownGateways.map((g) => `
     <tr>
       <td><a href="${esc(g.origin)}/.well-known/tab" target="_blank" rel="noopener" class="mono">${esc(g.origin)}</a><br>
@@ -156,7 +161,7 @@ async function loadReceipts() {
       <td class="dim">${esc((r.at ?? '').replace('T', ' ').slice(0, 19))}</td>
       <td class="mono">${esc(r.resource)}</td>
       <td class="price">${usd(r.amount)}</td>
-      <td>${refLink(r.ref)}</td>
+      <td>${refLink(r.ref, r.origin ?? r.gateway)}</td>
     </tr>`).join('');
   $('#receipts tbody').innerHTML =
     `<tr><th>when (UTC)</th><th>resource</th><th>amount</th><th>ref</th></tr>` +

@@ -50,8 +50,7 @@ export interface ServiceSpec {
 export interface Spec {
   realm: string;
   recipient: string;
-  rail?: 'ledger' | 'solana' | 'evm';
-  solana?: { rpc: string; mint: string; decimals: number; fee_payer: string };
+  rail?: 'ledger' | 'evm';
   evm?: { rpc: string; chain_id: number; token: string; decimals: number; recipient: string; explorer?: string };
   public_receipts?: boolean;
   services: ServiceSpec[];
@@ -129,7 +128,7 @@ export interface GatewayOptions {
   store: Store;
   rail?: Rail;
   log?: (msg: string) => void;
-  challengeTtlMs?: number; // default: 120 s ledger, 60 s solana
+  challengeTtlMs?: number; // default 120 s
   upstreamTimeoutMs?: number; // default 60 s
 }
 
@@ -163,7 +162,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   const store = opts.store;
   const rail = opts.rail ?? createRail(spec, store);
   const log = opts.log ?? (() => {});
-  const ttlMs = opts.challengeTtlMs ?? (rail.name === 'solana' ? 60_000 : 120_000);
+  const ttlMs = opts.challengeTtlMs ?? 120_000;
   const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? 60_000;
 
   const discovery = () => ({

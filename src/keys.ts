@@ -1,7 +1,7 @@
 // Ed25519 keys on top of node:crypto, nothing else.
 // A key file is {"publicKey": "...", "privateKey": "..."} with both values the
-// raw 32 bytes, base64url. A wallet id IS the public key. The same 32 bytes in
-// base58 are the Solana address.
+// raw 32 bytes, base64url. A wallet id IS the public key. The same private
+// seed doubles as the secp256k1 scalar for the evm rail (src/evm/secp256k1.ts).
 
 import {
   generateKeyPairSync,

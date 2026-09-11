@@ -1,6 +1,6 @@
 // The buyer side: a payment-aware fetch. On 402 it parses the challenge, signs
-// a credential (and on the solana rail builds and signs the transaction), and
-// retries exactly once.
+// a credential (and on the evm rail builds and signs the payment transaction),
+// and retries exactly once.
 
 import {
   encodeCredentialHeader,
@@ -14,7 +14,6 @@ import {
 } from './protocol.js';
 import type { Mandate } from './mandate.js';
 import type { KeyPair } from './keys.js';
-import { buildSignedPaymentTx } from './solana/pay.js';
 import { buildSignedPaymentTxEvm } from './evm/pay.js';
 import { addressFromSeed } from './evm/secp256k1.js';
 
@@ -81,11 +80,8 @@ export class TabClient {
       throw new PaymentRefused('refused by onChallenge', chal);
     }
 
-    let solana: { tx: string } | undefined;
     let evm: { tx: string } | undefined;
-    if (chal.rail === 'solana') {
-      solana = { tx: buildSignedPaymentTx(chal, this.opts.mandate.owner, this.opts.agent) };
-    } else if (chal.rail === 'evm') {
+    if (chal.rail === 'evm') {
       const evmOwner = this.opts.mandate.evm_owner;
       if (!evmOwner) throw new PaymentRefused('mandate has no evm_owner; re-issue it for the evm rail', chal);
       const agentAddr = addressFromSeed(new Uint8Array(Buffer.from(this.opts.agent.privateKey, 'base64url')));
@@ -100,7 +96,6 @@ export class TabClient {
       throw new Error('tab client supports only string or byte request bodies (they are signed)');
     }
     const cred = signCredential(this.opts.agent, chal, this.opts.mandate, {
-      solana,
       evm,
       query: new URL(url).search,
       body,

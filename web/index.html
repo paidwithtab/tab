@@ -10,7 +10,7 @@
   :root {
     --bg:#06080d; --bg2:#0a0d14; --panel:#0e121b; --line:#1c2230; --line2:#2a3242;
     --fg:#eef1f6; --fg2:#b6bdc9; --dim:#6f7788; --dim2:#4d5567;
-    --accent:#4c8dff; --accent2:#7fb0ff; --green:#3ddc84; --sol1:#9945ff; --sol2:#14f195;
+    --accent:#4c8dff; --accent2:#7fb0ff; --green:#3ddc84;
     --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -33,7 +33,8 @@
   /* nav */
   nav { position:sticky; top:0; z-index:10; background:rgba(6,8,13,.7); backdrop-filter:blur(12px); border-bottom:1px solid transparent; }
   nav .wrap { display:flex; align-items:center; justify-content:space-between; height:64px; }
-  .logo { font-weight:600; font-size:22px; letter-spacing:-.04em; }
+  .logo { display:inline-flex; align-items:center; }
+  .logo img { height:26px; width:auto; display:block; }
   nav ul { display:flex; gap:32px; list-style:none; font-size:13px; color:var(--fg2); }
   nav ul a:hover { color:var(--fg); }
   @media (max-width:760px) { nav ul { display:none; } }
@@ -48,18 +49,12 @@
   .side.l { left:24px; border-left:1px solid var(--line2); padding-left:10px; }
   .side.r { right:24px; border-left:1px solid var(--line2); padding-left:10px; }
   @media (max-width:980px) { .side { display:none; } }
-  .planet { position:relative; height:280px; margin-top:40px; }
-  .planet::before { /* atmosphere */
-    content:""; position:absolute; left:50%; top:60px; width:260vw; height:260vw; max-width:3400px; max-height:3400px; border-radius:50%; transform:translateX(-50%);
-    background:radial-gradient(ellipse at 50% 0%, rgba(130,170,255,.55), rgba(90,130,230,.18) 8%, transparent 14%);
-    filter:blur(18px); opacity:.9; }
-  .planet::after { /* limb */
-    content:""; position:absolute; left:50%; top:96px; width:260vw; height:260vw; max-width:3400px; max-height:3400px; border-radius:50%; transform:translateX(-50%);
-    background:radial-gradient(ellipse at 50% 0%, #1c2740, #0b0f1a 12%, #06080d 30%);
-    box-shadow:0 -1px 0 rgba(200,220,255,.7), 0 -10px 40px rgba(120,160,255,.45), 0 -30px 120px rgba(80,120,220,.25);
-    background-image:radial-gradient(ellipse at 50% 0%, #1c2740, #0b0f1a 12%, #06080d 30%),
-      radial-gradient(circle at 30% 3%, rgba(255,255,255,.04) 0 2px, transparent 3px),
-      radial-gradient(circle at 62% 2%, rgba(255,255,255,.05) 0 1px, transparent 2px); }
+  /* portrait sky image on the whole hero; its horizon sits 0.5685 image-widths above the image bottom, pinned 260px above the hero bottom */
+  .hero { background:url(/hero.jpg) center bottom calc(260px - max(100vw, 1100px) * 0.5685) / max(100%, 1100px) auto no-repeat #010205; }
+  .hero::after { content:""; position:absolute; left:0; right:0; bottom:0; height:120px; background:linear-gradient(transparent, var(--bg)); pointer-events:none; }
+  .hero .wrap { z-index:1; }
+  /* image top pinned under the buttons, so the horizon always sits below the words */
+  .planet { position:relative; height:370px; }
 
   /* feature strip */
   .strip { padding:40px 0; }
@@ -88,7 +83,7 @@
   .c { color:var(--dim); } .k { color:var(--fg); } .ok { color:var(--green); } .s { color:#f28ba8; } .sub { color:var(--fg2); }
   .copy { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.6; cursor:pointer; }
   .copy:hover { color:var(--fg); }
-  .tabs { display:flex; gap:26px; border-bottom:1px solid var(--line); margin:28px 0 22px; font-size:13.5px; color:var(--dim); }
+  .tabs { display:flex; flex-wrap:wrap; gap:6px 26px; border-bottom:1px solid var(--line); margin:28px 0 22px; font-size:13.5px; color:var(--dim); }
   .tabs button { background:none; border:0; color:inherit; font:inherit; padding:0 0 12px; cursor:pointer; border-bottom:1px solid transparent; margin-bottom:-1px; }
   .tabs button[aria-selected="true"] { color:var(--fg); border-bottom-color:var(--fg); }
   .panes > div[hidden] { display:none; }
@@ -111,7 +106,6 @@
   .rails > .box::before { content:""; position:absolute; top:-20px; width:1px; height:20px; background:var(--dim2); left:50%; }
   .rails > .box:first-child::after, .rails > .box:last-child::after { content:""; position:absolute; top:-20px; height:1px; background:var(--dim2); width:calc(50% + 10px); left:50%; }
   .rails > .box:last-child::after { left:auto; right:50%; }
-  .sol { background:linear-gradient(135deg,var(--sol1),var(--sol2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
   @media (max-width:860px) {
     .row4 { grid-template-columns:1fr; } .arrow svg { transform:rotate(90deg); height:40px; width:12px; } .arrow { display:flex; gap:8px; align-items:center; justify-content:center; }
     .rails::before, .rails > .box::before, .rails > .box::after { display:none; } .rails { grid-template-columns:1fr; }
@@ -134,7 +128,7 @@
 
 <nav>
   <div class="wrap">
-    <a class="logo" href="/">tab</a>
+    <a class="logo" href="/"><img src="/logo.png" alt="tab" width="58" height="26"></a>
     <ul>
       <li><a href="#product">Product</a></li>
       <li><a href="#developers">Developers</a></li>
@@ -165,7 +159,7 @@
   <div class="wrap">
     <div class="f"><svg class="i" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg><b>HTTP 402</b><span>Pay per request</span></div>
     <div class="f"><svg class="i" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.5 9.5 8 11 4.5-1.5 8-6 8-11V5z"/></svg><b>Owner-signed mandates</b><span>Set limits, stay in control</span></div>
-    <div class="f"><svg class="i" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg><b>Multiple rails</b><span>SQLite or Solana</span></div>
+    <div class="f"><svg class="i" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg><b>Multiple rails</b><span>SQLite or Robinhood Chain</span></div>
     <div class="f"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><b>Open source</b><span>Built on Node.js</span></div>
   </div>
 </section>
@@ -261,7 +255,7 @@
       </div>
       <div class="rails">
         <div class="box"><svg class="i" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg><div><b>SQLite <span style="color:var(--fg2)">(ledger rail)</span></b><span>Free, instant<br>for development</span></div></div>
-        <div class="box"><svg class="i" viewBox="0 0 24 24" style="stroke:url(#solg)"><defs><linearGradient id="solg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9945ff"/><stop offset="1" stop-color="#14f195"/></linearGradient></defs><path d="M6 6h14l-3 3H3zM6 15h14l-3 3H3zM3 10.5h14l3 3H6z"/></svg><div><b>Solana <span style="color:var(--fg2)">(USDC rail)</span></b><span>Real value<br>onchain</span></div></div>
+        <div class="box"><svg class="i" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></svg><div><b>Robinhood Chain <span style="color:var(--fg2)">(USDC rail)</span></b><span>Real value<br>onchain</span></div></div>
       </div>
     </div>
   </div>
@@ -305,7 +299,7 @@
 
 <footer>
   <div class="wrap">
-    <div><span class="logo">tab</span><span class="tag">Give your agents spending power.</span></div>
+    <div style="display:flex;align-items:center"><a class="logo" href="/"><img src="/logo.png" alt="tab" width="58" height="26"></a><span class="tag">Give your agents spending power.</span></div>
     <ul>
       <li><a href="#docs">Docs</a></li>
       <li><a href="#developers">GitHub</a></li>

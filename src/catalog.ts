@@ -124,6 +124,7 @@ const PAGES: Record<string, [file: string, type: string]> = {
   '/': ['index.html', 'text/html; charset=utf-8'], '/index.html': ['index.html', 'text/html; charset=utf-8'],
   '/catalog': ['catalog.html', 'text/html; charset=utf-8'], '/catalog.html': ['catalog.html', 'text/html; charset=utf-8'],
   '/logo.png': ['logo.png', 'image/png'],
+  '/hero.jpg': ['hero.jpg', 'image/jpeg'],
 };
 
 function routesOf(row: GatewayRow): CatalogRoute[] {
