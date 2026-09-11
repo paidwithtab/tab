@@ -23,7 +23,7 @@ npm install
 npm run demo        # keys, sandbox money, demo API :4101, gateway :1402, catalog + UI :1403
 ```
 
-Then open http://127.0.0.1:1403/ or pay from the command line:
+Then open http://127.0.0.1:1403/ (landing page) or http://127.0.0.1:1403/catalog (search, buy, receipts), or pay from the command line:
 
 ```sh
 npm run cli -- fetch --agent keys/agent-claude.json --mandate keys/mandate-claude.json http://127.0.0.1:1402/quote

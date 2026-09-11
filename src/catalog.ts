@@ -112,12 +112,18 @@ async function readJson(req: IncomingMessage): Promise<any> {
 
 function findUi(): string | null {
   const here = dirname(fileURLToPath(import.meta.url));
-  for (const rel of ['../web/index.html', '../../web/index.html']) {
+  for (const rel of ['../web', '../../web']) {
     const p = join(here, rel);
-    if (existsSync(p)) return p;
+    if (existsSync(join(p, 'index.html'))) return p;
   }
   return null;
 }
+
+// the two pages the catalog serves: the landing page and the catalog app (web/)
+const PAGES: Record<string, string> = {
+  '/': 'index.html', '/index.html': 'index.html',
+  '/catalog': 'catalog.html', '/catalog.html': 'catalog.html',
+};
 
 function routesOf(row: GatewayRow): CatalogRoute[] {
   if (!row.ok || !row.payload) return [];
@@ -210,13 +216,13 @@ export function createCatalog(opts: CatalogOptions): Server {
         return;
       }
 
-      if (method === 'GET' && (path === '/' || path === '/index.html')) {
+      if (method === 'GET' && PAGES[path]) {
         if (!uiPath) {
           sendJson(res, 500, { error: 'ui not found: keep web/ next to dist/' });
           return;
         }
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-        res.end(readFileSync(uiPath));
+        res.end(readFileSync(join(uiPath, PAGES[path])));
         return;
       }
 

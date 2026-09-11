@@ -74,14 +74,15 @@ bin/tab.js                  # runs dist/src/cli.js after `npm run build`
 src/                        # the code, ~2,000 lines
   cli.ts                    # the `tab` command
   gateway.ts                # reverse proxy + 402 handshake
-  catalog.ts                # catalog service, search, try-it, serves web/
+  catalog.ts                # catalog service, search, try-it, serves web/ (/ and /catalog)
   client.ts                 # payment-aware fetch (TabClient, tabFetch)
   mcp.ts                    # MCP server on stdio
   protocol.ts               # wire format, canonical JSON, HMAC binding
   keys.ts  mandate.ts  store.ts
   rails/{index,ledger,solana,budget}.ts
   solana/{base58,pda,instructions,tx,rpc,pay}.ts
-web/index.html              # front end, single file, no build step, no CDN
+web/index.html              # landing page, single file, no build step, no CDN
+web/catalog.html            # catalog app (search, try-it, receipts, wallet, mandate check)
 examples/
   spec.json                 # ledger-rail spec (two services, five priced routes)
   spec-solana.json          # same routes on the solana rail
@@ -126,7 +127,7 @@ node bin/tab.js <command>   # bin/tab.js imports ../dist/src/cli.js
 node --no-warnings=ExperimentalWarning dist/src/cli.js <command>
 ```
 
-Verified: `npm run build` produces `dist/src/cli.js` and `node bin/tab.js` prints the usage. The catalog finds `web/index.html` from `dist/src/` by walking up two directories, so keep `web/` next to `dist/`. Re-run `npm run build` after every code change; tsx picks changes up automatically.
+Verified: `npm run build` produces `dist/src/cli.js` and `node bin/tab.js` prints the usage. The catalog finds `web/` from `dist/src/` by walking up two directories, so keep `web/` next to `dist/`. Re-run `npm run build` after every code change; tsx picks changes up automatically.
 
 To make `tab` a global command: `npm link` after building, or symlink `bin/tab.js` into `/usr/local/bin/tab`.
 
@@ -463,7 +464,8 @@ node bin/tab.js solana balance --wallet keys/owner.json --mint $MINT   # shows d
 
 | Endpoint | What |
 | --- | --- |
-| `GET /` | the front end (`web/index.html`) |
+| `GET /` | the landing page (`web/index.html`) |
+| `GET /catalog` | the catalog app (`web/catalog.html`) |
 | `GET /v1/catalog.json` | every known gateway with services and routes |
 | `GET /v1/search?q=&max_price=` | route search, route-level text matches outrank service-level, cheapest first; results carry the full URL to call |
 | `POST /v1/announce {origin}` | fetch and verify `<origin>/.well-known/tab`, store it |
@@ -474,7 +476,7 @@ node bin/tab.js solana balance --wallet keys/owner.json --mint $MINT   # shows d
 | `GET /v1/try` | is the try-it agent configured, and its limits |
 | `POST /v1/try {url, method, body}` | pay for a catalogued route with the try-it agent, return status, receipt and body |
 
-The front end is a single 212-line HTML file with no build step and no external scripts. It links Solana receipts to `explorer.solana.com`; that is the only outbound URL in it. Serve it from the catalog process or copy it anywhere static and point it at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
+The front end is two HTML files with no build step and no external scripts or fonts: a 331-line landing page at `/` and the 212-line catalog app at `/catalog`. The catalog app links Solana receipts to `explorer.solana.com`; that is the only outbound URL in either file. Serve them from the catalog process or copy them anywhere static and point the app at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
 
 ---
 
@@ -587,7 +589,7 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 | 402 `payment-expired` on solana every time | client clock or a slow RPC; challenge TTL is 60 s | use a faster RPC; check `date` |
 | 502 `upstream-failed` | upstream unreachable from the gateway | check the `upstream` origin; nothing was charged |
 | `EADDRINUSE` | another gateway or the demo still running | `ss -ltnp | grep 140` and stop it, or pick `--port` |
-| `ui not found` at `/` | `web/index.html` not next to `dist/` | keep the tree layout; catalog looks in `../web` and `../../web` relative to `catalog.js` |
+| `ui not found` at `/` or `/catalog` | `web/` not next to `dist/` | keep the tree layout; catalog looks in `../web` and `../../web` relative to `catalog.js` |
 | `npm test` hangs or is slow | it is doing ~50 real HTTP round trips plus a catalog refresh; 1 to 2 minutes is normal | run with `SCRATCH=/some/fast/dir` |
 
 ---

@@ -1,212 +1,331 @@
 <!doctype html>
-<!-- the whole front end: no build step, no external scripts; talks to the catalog's /v1 API on the same origin -->
+<!-- landing page: single file, no build step, no external scripts or fonts. The catalog app lives at /catalog. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tab — pay-per-request APIs</title>
+<title>tab — give your agents spending power</title>
+<meta name="description" content="Agents need things. Give them a tab. Set the limit; tab handles authorization, payment, and receipts.">
 <style>
-  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --dim:#8b949e; --accent:#3fb950; --link:#58a6ff; }
-  * { box-sizing:border-box; margin:0; }
-  body { background:var(--bg); color:var(--fg); font:15px/1.5 ui-sans-serif,system-ui,sans-serif; padding:2rem 1rem 4rem; }
-  main { max-width:56rem; margin:0 auto; display:grid; gap:1.5rem; }
-  h1 { font-size:1.6rem; } h1 small { color:var(--dim); font-weight:400; font-size:1rem; margin-left:.6rem; }
-  h2 { font-size:1rem; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; margin-bottom:.6rem; }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:1.1rem 1.2rem; }
-  input, textarea, select { width:100%; padding:.55rem .8rem; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; }
-  textarea { font-family:ui-monospace,Menlo,monospace; font-size:.8rem; min-height:6rem; resize:vertical; }
-  table { width:100%; border-collapse:collapse; font-size:.92rem; }
-  th, td { text-align:left; padding:.45rem .5rem; border-top:1px solid var(--line); vertical-align:top; }
-  th { color:var(--dim); font-weight:500; border-top:none; }
-  code, .mono { font-family:ui-monospace,Menlo,monospace; font-size:.86em; }
-  .price { color:var(--accent); white-space:nowrap; }
-  .dim { color:var(--dim); } .ok { color:var(--accent); } .bad { color:#f85149; }
-  a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
-  button { padding:.35rem .8rem; border-radius:7px; border:1px solid var(--line); background:#21262d; color:var(--fg); font:inherit; cursor:pointer; }
-  button:hover { border-color:var(--dim); } button:disabled { opacity:.5; cursor:default; }
-  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.7rem .9rem; overflow-x:auto; font-size:.82rem; margin-top:.6rem; white-space:pre-wrap; word-break:break-all; }
-  .row { display:grid; gap:.6rem; grid-template-columns:1fr auto; align-items:start; }
-  .row3 { display:grid; gap:.6rem; grid-template-columns:1fr 1fr auto; align-items:start; }
-  .wallet { overflow-wrap:anywhere; }
+  :root {
+    --bg:#06080d; --bg2:#0a0d14; --panel:#0e121b; --line:#1c2230; --line2:#2a3242;
+    --fg:#eef1f6; --fg2:#b6bdc9; --dim:#6f7788; --dim2:#4d5567;
+    --accent:#4c8dff; --accent2:#7fb0ff; --green:#3ddc84; --sol1:#9945ff; --sol2:#14f195;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html { scroll-behavior:smooth; }
+  body { background:var(--bg); color:var(--fg); font:15px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; -webkit-font-smoothing:antialiased; overflow-x:hidden; }
+  a { color:inherit; text-decoration:none; }
+  .wrap { max-width:1120px; margin:0 auto; padding:0 24px; }
+  .eyebrow { font-family:var(--mono); font-size:11px; letter-spacing:.22em; text-transform:uppercase; color:var(--dim); }
+  h1, h2 { font-weight:500; letter-spacing:-.03em; line-height:1.08; }
+  h2 { font-size:clamp(30px,4.2vw,42px); margin:14px 0 18px; }
+  .lead { color:var(--fg2); font-size:17px; max-width:36rem; }
+  .btn { display:inline-flex; align-items:center; gap:8px; padding:10px 18px; border-radius:8px; border:1px solid var(--line2); background:var(--panel); color:var(--fg); font-size:14px; font-weight:500; cursor:pointer; transition:border-color .15s, background .15s; }
+  .btn:hover { border-color:var(--dim); background:#131826; }
+  .btn.primary { background:#f3f5f9; color:#0a0d14; border-color:#f3f5f9; }
+  .btn.primary:hover { background:#fff; }
+  .btn svg { width:15px; height:15px; }
+  svg.i { width:22px; height:22px; stroke:currentColor; fill:none; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+  section { position:relative; padding:96px 0; border-top:1px solid var(--line); }
+
+  /* nav */
+  nav { position:sticky; top:0; z-index:10; background:rgba(6,8,13,.7); backdrop-filter:blur(12px); border-bottom:1px solid transparent; }
+  nav .wrap { display:flex; align-items:center; justify-content:space-between; height:64px; }
+  .logo { font-weight:600; font-size:22px; letter-spacing:-.04em; }
+  nav ul { display:flex; gap:32px; list-style:none; font-size:13px; color:var(--fg2); }
+  nav ul a:hover { color:var(--fg); }
+  @media (max-width:760px) { nav ul { display:none; } }
+
+  /* hero */
+  .hero { padding:110px 0 0; text-align:center; overflow:hidden; border-top:none; }
+  .hero .wrap { position:relative; }
+  .hero h1 { font-size:clamp(40px,6.4vw,66px); margin:22px auto 24px; max-width:17ch; text-shadow:0 0 40px rgba(120,160,255,.15); }
+  .hero .lead { margin:0 auto 34px; }
+  .hero .cta { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; }
+  .side { position:absolute; top:112px; font-family:var(--mono); font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--dim); line-height:1.9; text-align:left; }
+  .side.l { left:24px; border-left:1px solid var(--line2); padding-left:10px; }
+  .side.r { right:24px; border-left:1px solid var(--line2); padding-left:10px; }
+  @media (max-width:980px) { .side { display:none; } }
+  .planet { position:relative; height:280px; margin-top:40px; }
+  .planet::before { /* atmosphere */
+    content:""; position:absolute; left:50%; top:60px; width:260vw; height:260vw; max-width:3400px; max-height:3400px; border-radius:50%; transform:translateX(-50%);
+    background:radial-gradient(ellipse at 50% 0%, rgba(130,170,255,.55), rgba(90,130,230,.18) 8%, transparent 14%);
+    filter:blur(18px); opacity:.9; }
+  .planet::after { /* limb */
+    content:""; position:absolute; left:50%; top:96px; width:260vw; height:260vw; max-width:3400px; max-height:3400px; border-radius:50%; transform:translateX(-50%);
+    background:radial-gradient(ellipse at 50% 0%, #1c2740, #0b0f1a 12%, #06080d 30%);
+    box-shadow:0 -1px 0 rgba(200,220,255,.7), 0 -10px 40px rgba(120,160,255,.45), 0 -30px 120px rgba(80,120,220,.25);
+    background-image:radial-gradient(ellipse at 50% 0%, #1c2740, #0b0f1a 12%, #06080d 30%),
+      radial-gradient(circle at 30% 3%, rgba(255,255,255,.04) 0 2px, transparent 3px),
+      radial-gradient(circle at 62% 2%, rgba(255,255,255,.05) 0 1px, transparent 2px); }
+
+  /* feature strip */
+  .strip { padding:40px 0; }
+  .strip .wrap { display:grid; grid-template-columns:repeat(4,1fr); }
+  .strip .f { padding:12px 28px; border-left:1px solid var(--line); }
+  .strip .f:first-child { border-left:none; padding-left:0; }
+  .strip .f svg { color:var(--accent); margin-bottom:14px; }
+  .strip b { display:block; font-weight:500; font-size:15px; }
+  .strip span { color:var(--dim); font-size:13px; }
+  @media (max-width:760px) { .strip .wrap { grid-template-columns:1fr 1fr; row-gap:24px; } .strip .f:nth-child(3) { border-left:none; padding-left:0; } }
+
+  /* how it works */
+  .two { display:grid; grid-template-columns:1fr 1.15fr; gap:56px; align-items:start; }
+  @media (max-width:860px) { .two { grid-template-columns:1fr; gap:40px; } }
+  .steps { display:grid; grid-template-columns:repeat(4,1fr); gap:24px; border-left:1px solid var(--line); padding-left:32px; }
+  @media (max-width:860px) { .steps { grid-template-columns:1fr 1fr; border-left:none; padding-left:0; } }
+  .steps .n { font-family:var(--mono); font-size:13px; color:var(--dim); margin-bottom:12px; }
+  .steps b { display:block; font-size:16px; font-weight:500; margin-bottom:6px; }
+  .steps p { color:var(--dim); font-size:12.5px; line-height:1.5; }
+
+  /* code */
+  .code { background:var(--panel); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .code header { display:flex; justify-content:space-between; align-items:center; padding:8px 14px; font-family:var(--mono); font-size:11px; color:var(--dim); }
+  .code header .t { display:flex; gap:12px; } .code header .t em { font-style:normal; color:var(--fg); }
+  .code pre { padding:10px 18px 18px; font:12.5px/1.75 var(--mono); color:var(--fg2); overflow-x:auto; }
+  .c { color:var(--dim); } .k { color:var(--fg); } .ok { color:var(--green); } .s { color:#f28ba8; } .sub { color:var(--fg2); }
+  .copy { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.6; cursor:pointer; }
+  .copy:hover { color:var(--fg); }
+  .tabs { display:flex; gap:26px; border-bottom:1px solid var(--line); margin:28px 0 22px; font-size:13.5px; color:var(--dim); }
+  .tabs button { background:none; border:0; color:inherit; font:inherit; padding:0 0 12px; cursor:pointer; border-bottom:1px solid transparent; margin-bottom:-1px; }
+  .tabs button[aria-selected="true"] { color:var(--fg); border-bottom-color:var(--fg); }
+  .panes > div[hidden] { display:none; }
+  .more { display:inline-flex; align-items:center; gap:8px; color:var(--accent2); font-size:14px; margin-top:22px; }
+  .more svg { width:15px; height:15px; }
+
+  /* architecture */
+  .arch { margin-top:40px; display:grid; gap:20px; }
+  .row4 { display:grid; grid-template-columns:1fr auto 1fr auto 1fr auto 1fr; gap:14px; align-items:center; }
+  .box { display:flex; gap:14px; align-items:flex-start; padding:16px; background:var(--panel); border:1px solid var(--line); border-radius:10px; min-height:84px; }
+  .box.hi { border-color:var(--line2); box-shadow:0 0 0 1px rgba(255,255,255,.03), 0 0 30px rgba(76,141,255,.08); }
+  .box svg { color:var(--accent); flex:none; margin-top:2px; }
+  .box b { display:block; font-weight:500; font-size:14px; }
+  .box span { color:var(--dim); font-size:12px; line-height:1.45; }
+  .arrow { text-align:center; color:var(--dim2); font-size:11px; font-family:var(--mono); }
+  .arrow svg { display:block; width:56px; height:12px; stroke:var(--dim2); fill:none; stroke-width:1.2; margin:0 auto; }
+  .rails { display:grid; grid-template-columns:1fr 1fr; gap:20px; width:min(100%,460px); margin:0 auto; position:relative; }
+  .rails::before { content:""; position:absolute; left:50%; top:-20px; width:1px; height:20px; background:var(--dim2); }
+  .rails > .box { position:relative; }
+  .rails > .box::before { content:""; position:absolute; top:-20px; width:1px; height:20px; background:var(--dim2); left:50%; }
+  .rails > .box:first-child::after, .rails > .box:last-child::after { content:""; position:absolute; top:-20px; height:1px; background:var(--dim2); width:calc(50% + 10px); left:50%; }
+  .rails > .box:last-child::after { left:auto; right:50%; }
+  .sol { background:linear-gradient(135deg,var(--sol1),var(--sol2)); -webkit-background-clip:text; background-clip:text; color:transparent; }
+  @media (max-width:860px) {
+    .row4 { grid-template-columns:1fr; } .arrow svg { transform:rotate(90deg); height:40px; width:12px; } .arrow { display:flex; gap:8px; align-items:center; justify-content:center; }
+    .rails::before, .rails > .box::before, .rails > .box::after { display:none; } .rails { grid-template-columns:1fr; }
+  }
+
+  /* developers */
+  .links { list-style:none; margin-top:26px; display:grid; gap:14px; font-size:14.5px; }
+  .links a { display:inline-flex; align-items:center; gap:14px; }
+  .links a:hover { color:var(--accent2); }
+  .links svg { width:16px; height:16px; stroke:var(--dim); fill:none; stroke-width:1.6; }
+
+  /* footer */
+  footer { border-top:1px solid var(--line); padding:40px 0 48px; }
+  footer .wrap { display:flex; justify-content:space-between; align-items:center; gap:24px; flex-wrap:wrap; }
+  footer .tag { color:var(--dim); font-size:13px; margin-left:16px; }
+  footer ul { display:flex; gap:28px; list-style:none; font-size:13px; color:var(--fg2); }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1>tab<small>pay-per-request APIs for software agents</small></h1>
-    <p class="dim">Every route below answers HTTP 402 until it is paid. Agents pay under a signed mandate; owners stay offline.</p>
-  </header>
 
-  <section>
-    <h2>Search routes</h2>
-    <input id="q" placeholder="try: quote, translate, echo … (empty lists everything)" autocomplete="off">
-    <table id="results"><tbody></tbody></table>
-  </section>
+<nav>
+  <div class="wrap">
+    <a class="logo" href="/">tab</a>
+    <ul>
+      <li><a href="#product">Product</a></li>
+      <li><a href="#developers">Developers</a></li>
+      <li><a href="#providers">Providers</a></li>
+      <li><a href="/catalog">Catalog</a></li>
+      <li><a href="#docs">Docs</a></li>
+    </ul>
+    <a class="btn" href="#developers">Get started</a>
+  </div>
+</nav>
 
-  <section>
-    <h2>Gateways</h2>
-    <table id="gateways"><tbody></tbody></table>
-  </section>
-
-  <section>
-    <h2>Live receipts</h2>
-    <table id="receipts"><tbody></tbody></table>
-  </section>
-
-  <section>
-    <h2>Check a wallet</h2>
-    <div class="row3">
-      <select id="w-origin"></select>
-      <input id="w-id" placeholder="wallet id (base64url public key)" autocomplete="off">
-      <button id="w-go">Look&nbsp;up</button>
+<section class="hero" id="product">
+  <div class="wrap">
+    <div class="side l">Open a tab<br>for your agent.<br>Set the limit.<br>Walk away.</div>
+    <div class="side r">Discover<br>Authorize<br>Pay<br>Receive<br>Repeat</div>
+    <div class="eyebrow">Give your agents spending power</div>
+    <h1>Agents need things. Give them a tab.</h1>
+    <p class="lead">Set the limit. tab handles authorization, payment, and receipts.<br>Agents discover services, pay per request, and get work done —<br>with cryptographic limits and no human in the loop.</p>
+    <div class="cta">
+      <a class="btn primary" href="#developers">Get started <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      <a class="btn" href="#example">Watch demo <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l5.5-3.5z"/></svg></a>
     </div>
-    <pre id="w-out" hidden></pre>
-  </section>
+  </div>
+  <div class="planet" aria-hidden="true"></div>
+</section>
 
-  <section>
-    <h2>Verify a mandate</h2>
-    <textarea id="m-json" placeholder='paste a mandate JSON (keys/mandate-*.json) — mandates are not secret, but they grant spending'></textarea>
-    <div class="row" style="margin-top:.6rem">
-      <input id="m-realm" placeholder="realm to check against, e.g. quotes.local (optional)" autocomplete="off">
-      <button id="m-go">Verify</button>
+<section class="strip">
+  <div class="wrap">
+    <div class="f"><svg class="i" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg><b>HTTP 402</b><span>Pay per request</span></div>
+    <div class="f"><svg class="i" viewBox="0 0 24 24"><path d="M12 2 4 5v6c0 5 3.5 9.5 8 11 4.5-1.5 8-6 8-11V5z"/></svg><b>Owner-signed mandates</b><span>Set limits, stay in control</span></div>
+    <div class="f"><svg class="i" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg><b>Multiple rails</b><span>SQLite or Solana</span></div>
+    <div class="f"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg><b>Open source</b><span>Built on Node.js</span></div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap two">
+    <div>
+      <div class="eyebrow">How it works</div>
+      <h2>From intent<br>to completion.</h2>
+      <p class="lead">Agents discover a service, pay within a signed mandate, and get a verifiable result — all automatically.</p>
+      <a class="btn" href="#example" style="margin-top:30px">Learn more <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
     </div>
-    <pre id="m-out" hidden></pre>
-  </section>
-</main>
+    <div class="steps">
+      <div><div class="n">01</div><b>Discover</b><p>Agents search a catalog of agent-ready services.</p></div>
+      <div><div class="n">02</div><b>Authorize</b><p>The agent pays per request within a signed mandate.</p></div>
+      <div><div class="n">03</div><b>Call</b><p>tab verifies, enforces budget, and forwards the request.</p></div>
+      <div><div class="n">04</div><b>Receive</b><p>The agent gets the response and a verifiable receipt.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="example">
+  <div class="wrap">
+    <div class="eyebrow">See it work</div>
+    <h2>A complete example.</h2>
+    <p class="lead">Create an agent, give it a budget, and make a payment-aware request in minutes.</p>
+    <div class="two" style="margin-top:8px">
+      <div>
+        <div class="tabs" role="tablist">
+          <button role="tab" aria-selected="true" data-t="0">Create agent</button>
+          <button role="tab" aria-selected="false" data-t="1">Give a budget</button>
+          <button role="tab" aria-selected="false" data-t="2">Make a request</button>
+          <button role="tab" aria-selected="false" data-t="3">Get a receipt</button>
+        </div>
+        <div class="panes">
+          <div class="code"><header><span></span><span class="t">bash <svg class="copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></span></header>
+<pre><span class="c"># 1. Create a key for your agent</span>
+<span class="k">$ tab key new --out keys/agent.json</span>
+
+<span class="ok">✓ wrote keys/agent.json  (agent_8f3c…)</span></pre></div>
+          <div class="code" hidden><header><span></span><span class="t">bash <svg class="copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></span></header>
+<pre><span class="c"># 2. The owner signs a mandate, once, offline</span>
+<span class="k">$ tab mandate issue --owner keys/owner.json \
+    --agent keys/agent.json --budget 1.00 --max-per-call 0.05</span>
+
+<span class="ok">✓ wrote keys/mandate.json  ($1.00 budget, $0.05 per call)</span></pre></div>
+          <div class="code" hidden><header><span></span><span class="t">bash <svg class="copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></span></header>
+<pre><span class="c"># 3. The agent pays per request under that mandate</span>
+<span class="k">$ tab fetch --agent keys/agent.json --mandate keys/mandate.json \
+    http://127.0.0.1:1402/quote</span>
+
+<span class="ok">✓ Paid $0.01
+✓ Response: 200 OK</span></pre></div>
+          <div class="code" hidden><header><span></span><span class="t">json <svg class="copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></span></header>
+<pre><span class="c">// 4. Every paid call returns a signed receipt</span>
+{
+  <span class="s">"resource"</span>: <span class="k">"GET /quote"</span>,
+  <span class="s">"amount"</span>:   <span class="k">"0.01"</span>,
+  <span class="s">"rail"</span>:     <span class="k">"ledger"</span>,
+  <span class="s">"ref"</span>:      <span class="k">"ledger:a91f…"</span>
+}</pre></div>
+        </div>
+      </div>
+      <div>
+        <p class="lead" style="font-size:14.5px;margin:34px 0 14px">Then the agent can pay for real services.</p>
+        <div class="code"><header><span></span><span class="t">bash <svg class="copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></span></header>
+<pre><span class="k">$ tab fetch https://api.example.com/translate \
+    -X POST \
+    -d '{"text":"Hello"}'</span>
+
+<span class="ok">✓ Paid $0.002
+✓ Response: 200 OK</span></pre></div>
+        <a class="more" href="/catalog">View all examples <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="providers">
+  <div class="wrap">
+    <div class="eyebrow">A simple architecture</div>
+    <h2>Built for the real world.</h2>
+    <p class="lead">Three roles. Clear responsibilities. No human in the loop.</p>
+    <div class="arch">
+      <div class="row4">
+        <div class="box"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg><div><b>Owner</b><span>Funds wallet<br>Signs mandate<br>(offline)</span></div></div>
+        <div class="arrow">mandate<svg viewBox="0 0 56 12"><path d="M0 6h50M46 2l4 4-4 4"/></svg></div>
+        <div class="box"><svg class="i" viewBox="0 0 24 24"><rect x="4" y="8" width="16" height="12" rx="2"/><path d="M12 8V4M8 4h8M9 14h.01M15 14h.01M2 13v3M22 13v3"/></svg><div><b>Agent</b><span>Uses mandate<br>to pay per request</span></div></div>
+        <div class="arrow"><svg viewBox="0 0 56 12"><path d="M0 6h50M46 2l4 4-4 4"/></svg></div>
+        <div class="box hi" id="gw"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="6" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><path d="M7 7h.01M7 17h.01"/></svg><div><b>tab Gateway</b><span>Verifies, enforces<br>budget, forwards,<br>settles payment</span></div></div>
+        <div class="arrow"><svg viewBox="0 0 56 12"><path d="M0 6h50M46 2l4 4-4 4"/></svg></div>
+        <div class="box"><svg class="i" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg><div><b>API</b><span>Your service</span></div></div>
+      </div>
+      <div class="rails">
+        <div class="box"><svg class="i" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg><div><b>SQLite <span style="color:var(--fg2)">(ledger rail)</span></b><span>Free, instant<br>for development</span></div></div>
+        <div class="box"><svg class="i" viewBox="0 0 24 24" style="stroke:url(#solg)"><defs><linearGradient id="solg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9945ff"/><stop offset="1" stop-color="#14f195"/></linearGradient></defs><path d="M6 6h14l-3 3H3zM6 15h14l-3 3H3zM3 10.5h14l3 3H6z"/></svg><div><b>Solana <span style="color:var(--fg2)">(USDC rail)</span></b><span>Real value<br>onchain</span></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="developers">
+  <div class="wrap two" style="align-items:center">
+    <div>
+      <div class="eyebrow">For developers</div>
+      <h2>Open a tab in minutes.</h2>
+      <p class="lead">Use the CLI, SDK, or MCP server to give agents spending power. No custom billing, no accounts, no API keys.</p>
+      <ul class="links" id="docs">
+        <li><a href="/catalog"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>Quick start</a></li>
+        <li><a href="#example"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>SDK reference</a></li>
+        <li><a href="#example"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>MCP server</a></li>
+        <li><a href="/catalog"><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>Example apps</a></li>
+      </ul>
+    </div>
+    <div class="code"><header><span class="t"><em>spec.json</em> <span>Your API</span></span><svg class="copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg></header>
+<pre>{
+  <span class="s">"realm"</span>: <span class="k">"translate.example"</span>,
+  <span class="s">"recipient"</span>: <span class="k">"&lt;your wallet&gt;"</span>,
+  <span class="s">"services"</span>: [
+    {
+      <span class="s">"name"</span>: <span class="k">"Translation API"</span>,
+      <span class="s">"upstream"</span>: <span class="k">"http://127.0.0.1:8080"</span>,
+      <span class="s">"description"</span>: <span class="k">"High quality translation"</span>,
+      <span class="s">"routes"</span>: [
+        {
+          <span class="s">"path"</span>: <span class="k">"/v1/translate"</span>,
+          <span class="s">"method"</span>: <span class="k">"POST"</span>,
+          <span class="s">"price"</span>: <span class="k">"0.002"</span>,
+          <span class="s">"description"</span>: <span class="k">"Translate text"</span>
+        }
+      ]
+    }
+  ]
+}</pre></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div><span class="logo">tab</span><span class="tag">Give your agents spending power.</span></div>
+    <ul>
+      <li><a href="#docs">Docs</a></li>
+      <li><a href="#developers">GitHub</a></li>
+      <li><a href="/v1/catalog.json">Status</a></li>
+      <li><a href="#developers">Contact</a></li>
+    </ul>
+  </div>
+</footer>
+
 <script>
-const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const usd = (micro) => '$' + (Number(micro) / 1e6).toFixed(Number(micro) % 10000 ? 4 : 2);
-let tryInfo = { enabled: false };
-let knownGateways = [];
-
-async function getJSON(url, opts) {
-  const r = await fetch(url, opts);
-  return r.json();
-}
-
-function refLink(ref) {
-  if (ref && ref.startsWith('solana:')) {
-    const sig = ref.slice(7);
-    return `<a href="https://explorer.solana.com/tx/${esc(sig)}" target="_blank" rel="noopener">${esc(sig.slice(0, 16))}…</a>`;
-  }
-  return `<span class="mono dim">${esc(ref)}</span>`;
-}
-
-async function search() {
-  const q = $('#q').value.trim();
-  const data = await getJSON('/v1/search?q=' + encodeURIComponent(q));
-  const rows = (data.results ?? []).map((r, i) => `
-    <tr>
-      <td><span class="mono">${esc(r.method)}</span> <span class="mono">${esc(r.path)}</span><br>
-          <span class="dim">${esc(r.description || r.service)} · ${esc(r.realm)} · ${esc(r.rail)}</span></td>
-      <td class="price">${r.price === '0' ? 'free' : '$' + esc(r.price)}</td>
-      <td>${tryInfo.enabled || r.price === '0' ? `<button data-i="${i}">Buy</button>` : ''}</td>
-    </tr>`).join('');
-  $('#results tbody').innerHTML = `<tr><th>route</th><th>price</th><th></th></tr>` + rows;
-  $('#results').dataset.routes = JSON.stringify(data.results ?? []);
-}
-
-async function tryRoute(i) {
-  const route = JSON.parse($('#results').dataset.routes)[i];
-  const btn = document.querySelector(`#results button[data-i="${i}"]`);
-  btn.disabled = true; btn.textContent = '…';
-  const out = await getJSON('/v1/try', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ url: route.url.replace(/:\w+/g, '42'), method: route.method,
-      body: route.method === 'GET' ? undefined : { hello: 'from the tab front end' } }),
-  }).catch((e) => ({ error: String(e) }));
-  btn.disabled = false; btn.textContent = 'Buy';
-  let pre = btn.closest('tr').nextElementSibling;
-  if (!pre || !pre.classList.contains('out')) {
-    pre = document.createElement('tr'); pre.className = 'out';
-    pre.innerHTML = '<td colspan="3"><pre></pre></td>';
-    btn.closest('tr').after(pre);
-  }
-  const paid = out.receipt ? `paid ${usd(out.receipt.amount)} · ref ${out.receipt.ref}\n` : '';
-  pre.querySelector('pre').textContent =
-    (out.error ? out.error : `HTTP ${out.status}\n${paid}${out.body ?? ''}`);
-  loadReceipts();
-}
-
-async function loadGateways() {
-  const data = await getJSON('/v1/catalog.json');
-  knownGateways = data.gateways ?? [];
-  const rows = knownGateways.map((g) => `
-    <tr>
-      <td><a href="${esc(g.origin)}/.well-known/tab" target="_blank" rel="noopener" class="mono">${esc(g.origin)}</a><br>
-          <span class="dim">realm ${esc(g.realm ?? '?')} · ${esc(g.rail ?? '?')} rail</span></td>
-      <td class="${g.ok ? 'ok' : 'bad'}">${g.ok ? 'ok' : esc(g.error ?? 'unreachable')}</td>
-      <td class="dim wallet">${esc((g.recipient ?? '').slice(0, 12))}…</td>
-    </tr>`).join('');
-  $('#gateways tbody').innerHTML = `<tr><th>gateway</th><th>status</th><th>seller</th></tr>` + rows;
-  const sel = $('#w-origin');
-  const current = sel.value;
-  sel.innerHTML = knownGateways.filter((g) => g.ok)
-    .map((g) => `<option value="${esc(g.origin)}">${esc(g.origin)} (${esc(g.realm ?? '?')})</option>`).join('')
-    || '<option value="">no gateways announced yet</option>';
-  if (current) sel.value = current;
-}
-
-async function loadReceipts() {
-  const data = await getJSON('/v1/receipts?limit=25');
-  const rows = (data.receipts ?? []).map((r) => `
-    <tr>
-      <td class="dim">${esc((r.at ?? '').replace('T', ' ').slice(0, 19))}</td>
-      <td class="mono">${esc(r.resource)}</td>
-      <td class="price">${usd(r.amount)}</td>
-      <td>${refLink(r.ref)}</td>
-    </tr>`).join('');
-  $('#receipts tbody').innerHTML =
-    `<tr><th>when (UTC)</th><th>resource</th><th>amount</th><th>ref</th></tr>` +
-    (rows || '<tr><td colspan="4" class="dim">no receipts yet — buy something above</td></tr>');
-}
-
-async function lookupWallet() {
-  const origin = $('#w-origin').value, wallet = $('#w-id').value.trim();
-  const out = $('#w-out'); out.hidden = false;
-  if (!origin || !wallet) { out.textContent = 'pick a gateway and paste a wallet id'; return; }
-  out.textContent = '…';
-  const data = await getJSON(`/v1/wallet?origin=${encodeURIComponent(origin)}&wallet=${encodeURIComponent(wallet)}`)
-    .catch((e) => ({ error: String(e) }));
-  out.textContent = data.error ? data.error : `available on ${origin} (${data.rail} rail): $${data.available}`;
-}
-
-async function verifyMandate() {
-  const out = $('#m-out'); out.hidden = false; out.textContent = '…';
-  let mandate;
-  try { mandate = JSON.parse($('#m-json').value); }
-  catch { out.textContent = 'that is not JSON'; return; }
-  const realm = $('#m-realm').value.trim() || undefined;
-  const v = await getJSON('/v1/mandate/verify', {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ mandate, realm }),
-  }).catch((e) => ({ ok: false, error: String(e) }));
-  if (!v.ok) { out.textContent = `INVALID: ${v.error}`; return; }
-  const m = v.mandate;
-  out.textContent = [
-    `VALID — owner signature checks out${realm ? ` and realm ${realm} is allowed` : ''}`,
-    `owner   ${m.owner}`, `agent   ${m.agent}`,
-    `budget  $${m.budget_usd} per ${m.window === 'day' ? 'UTC day' : 'lifetime'}` +
-      (m.max_per_call_usd ? `, at most $${m.max_per_call_usd} per call` : ''),
-    `realms  ${m.allow.join(', ')}`, `expires ${m.expires_at}`,
-  ].join('\n');
-}
-
-$('#q').addEventListener('input', () => { clearTimeout(window.__t); window.__t = setTimeout(search, 250); });
-$('#results').addEventListener('click', (e) => {
-  if (e.target.matches('button[data-i]')) tryRoute(Number(e.target.dataset.i));
-});
-$('#w-go').addEventListener('click', lookupWallet);
-$('#m-go').addEventListener('click', verifyMandate);
-
-(async () => {
-  tryInfo = await getJSON('/v1/try').catch(() => ({ enabled: false }));
-  await Promise.all([search(), loadGateways(), loadReceipts()]);
-  setInterval(loadReceipts, 5000);
-  setInterval(loadGateways, 30000);
-})();
+  const tabs = document.querySelectorAll('.tabs [role=tab]');
+  const panes = document.querySelectorAll('.panes > .code');
+  tabs.forEach((t) => t.addEventListener('click', () => {
+    tabs.forEach((x) => x.setAttribute('aria-selected', x === t));
+    panes.forEach((p, i) => { p.hidden = i !== Number(t.dataset.t); });
+  }));
+  document.querySelectorAll('.copy').forEach((c) => c.addEventListener('click', () => {
+    const pre = c.closest('.code').querySelector('pre');
+    navigator.clipboard?.writeText(pre.textContent.trim());
+  }));
 </script>
 </body>
 </html>
