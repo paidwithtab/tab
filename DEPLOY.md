@@ -18,10 +18,11 @@ Three roles, one binary:
 | Agent | agent key + mandate | signs a credential per call, pays within the mandate |
 | Gateway (seller) | spec + SQLite + optional fee-payer key | issues 402 challenges, verifies, reserves, forwards upstream, captures on 2xx |
 
-Money moves over a **rail**. Two ship:
+Money moves over a **rail**. Three ship:
 
 - `ledger`: balances in the gateway's own SQLite file. Free, instant, sandbox money created with `tab mint`.
 - `solana`: USDC or any 6-decimal SPL stablecoin, no custom program. The owner approves the agent as SPL delegate once; the agent signs `TransferChecked`; the gateway co-signs as fee payer and broadcasts only after the upstream answered 2xx.
+- `evm`: USDC or any 6-decimal ERC-20 on an EVM chain — built for **Robinhood Chain** (Arbitrum-stack L2; chain id 46630 testnet, 4663 mainnet), no custom contract. The owner `approve`s the agent as ERC-20 spender once; the agent signs a type-2 `transferFrom` transaction (its account pays gas); the gateway verifies it field-for-field and broadcasts only after the upstream answered 2xx. Section 9E.
 
 There is also a **catalog** service (search + web front end) and an **MCP server** so Claude Code can spend under a mandate.
 
@@ -79,19 +80,23 @@ src/                        # the code, ~2,000 lines
   mcp.ts                    # MCP server on stdio
   protocol.ts               # wire format, canonical JSON, HMAC binding
   keys.ts  mandate.ts  store.ts
-  rails/{index,ledger,solana,budget}.ts
+  rails/{index,ledger,solana,evm,budget}.ts
   solana/{base58,pda,instructions,tx,rpc,pay}.ts
+  evm/{keccak,secp256k1,rlp,tx,rpc,pay}.ts   # hand-written keccak-256 + ECDSA, EIP-1559, ERC-20
 web/index.html              # landing page, single file, no build step, no CDN
 web/catalog.html            # catalog app (search, try-it, receipts, wallet, mandate check)
+web/logo.png                # wordmark, served at /logo.png
 examples/
   spec.json                 # ledger-rail spec (two services, five priced routes)
   spec-solana.json          # same routes on the solana rail
+  spec-evm.json             # same routes on the evm rail (Robinhood Chain testnet)
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh  demo-solana.sh   # one-command sandboxes
   make-mint.ts              # fabricate a 6-decimal SPL mint on a local validator
 test/e2e.ts                 # 51 in-process checks, temp DB, ~1-2 min
 test/adversarial.ts         # 24 hostile checks: concurrency, replay, mutation, SSRF, forgery
 test/solana.ts              # 26 on-chain checks, needs a validator at SOLANA_RPC
+test/evm.ts                 # 31 checks: crypto vectors, a mock EVM node, live Robinhood testnet reads
 ```
 
 ---
@@ -104,9 +109,10 @@ npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 51 passed, 0 failed on the dev box
 npm run test:adversarial    # 24 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery
+npm run test:evm            # 31 passed, 0 failed: keccak/secp256k1 vectors, mock chain, live testnet reads
 ```
 
-Both suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up. The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
+These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes two read-only calls to the public Robinhood testnet RPC and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
 
 Two ways to run the code:
 
@@ -156,6 +162,9 @@ One gateway can front many upstreams; one catalog can list many gateways; you ca
 | `SELLER` | spec files via `${SELLER}` | wallet id (base64url public key) that gets paid |
 | `PREMIUM_KEY` | `examples/spec.json`, `examples/upstream.ts` | demo API key injected as `X-Api-Key`; default `demo-key` |
 | `SOLANA_RPC` | `tab solana *`, `spec-solana.json`, tests | JSON-RPC URL; default `http://127.0.0.1:8899` |
+| `EVM_RPC` | `tab evm *`, `spec-evm.json`, `test/evm.ts` | EVM JSON-RPC URL; default `https://rpc.testnet.chain.robinhood.com` |
+| `TOKEN` | `spec-evm.json` | ERC-20 stablecoin contract on the evm rail (testnet USDC: `0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5`) |
+| `SELLER_EVM` | `spec-evm.json` | the seller's 0x payout address (`tab evm address keys/seller.json`) |
 | `MINT` | `demo-solana.sh`, `spec-solana.json` | **stablecoin mint address** on the solana rail |
 | `MINT` | `demo.sh` | **ledger amount** to mint to the owner, default `5.00`. Same name, different meaning. Do not export a Solana `MINT` in a shell where you run `demo.sh`. |
 | `UPSTREAM_PORT` | `examples/upstream.ts` | default 4101 |
@@ -187,6 +196,11 @@ tab solana revoke  --owner key.json --mint <addr> [--rpc url]
 tab solana balance --wallet <pub|file> --mint <addr> [--rpc url]
 tab solana airdrop --wallet <pub|file> [--sol 1] [--rpc url]        local validator / devnet only
 tab solana address <pub|file>                                       wallet id -> base58 address
+tab evm address <key.json>                                          key file -> 0x address (EIP-55)
+tab evm approve --owner key.json --agent <key.json|0x> --amount 1.00 --token <0x> [--rpc url]
+tab evm revoke  --owner key.json --agent <key.json|0x> --token <0x> [--rpc url]
+tab evm balance --wallet <key.json|0x> --token <0x> [--agent <key.json|0x>] [--rpc url]
+tab evm fund    --from key.json --to <key.json|0x> --eth 0.005 [--rpc url]
 tab fetch --agent key.json --mandate mandate.json [--max-per-call 0.05] [-X POST] [-d body] <url>
 tab mcp                                                             stdio; TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CATALOG]
 ```
@@ -458,6 +472,63 @@ node bin/tab.js solana balance --wallet keys/owner.json --mint $MINT   # shows d
 
 ---
 
+## 9E. The EVM rail: Robinhood Chain
+
+Everything in section 8 applies; this section is the EVM analog of section 9. Robinhood Chain is an Arbitrum-stack L2; the rail is plain EVM, so any chain with USDC works, but the defaults point at Robinhood.
+
+**Chain facts.**
+
+| Cluster | chain id | public RPC (rate-limited) | explorer | USDC |
+| --- | --- | --- | --- | --- |
+| testnet | 46630 | `https://rpc.testnet.chain.robinhood.com` | `https://explorer.testnet.chain.robinhood.com` | `0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5` |
+| mainnet | 4663 | `https://rpc.mainnet.chain.robinhood.com` | `https://robinhoodchain.blockscout.com` | check the explorer |
+
+For production use a provider endpoint (Alchemy/QuickNode/dRPC support Robinhood Chain) instead of the public RPC. Beware lookalike explorer domains (rh-scan and similar); the two above are the official ones. Testnet ETH comes from `https://faucet.testnet.chain.robinhood.com/`.
+
+**Keys.** A tab key file already contains everything: its 32-byte seed doubles as a secp256k1 scalar, so `tab evm address keys/owner.json` prints the owner's 0x address. Mandates issued by `tab mandate issue` automatically embed that address as `evm_owner` (the owner's signed attestation of which EVM account its mandates spend).
+
+**Spec.** `examples/spec-evm.json` is the template:
+
+```json
+{
+  "realm": "pay.example.com",
+  "recipient": "${SELLER}",
+  "rail": "evm",
+  "evm": { "rpc": "${EVM_RPC}", "chain_id": 46630, "token": "${TOKEN}", "decimals": 6,
+           "recipient": "${SELLER_EVM}", "explorer": "https://explorer.testnet.chain.robinhood.com" },
+  "public_receipts": true,
+  "services": [ ... ]
+}
+```
+
+`evm.recipient` is the seller's payout address — USDC lands there. Unlike the solana rail, the gateway holds **no key at all** on this rail: the agent's account is the transaction sender and pays gas.
+
+**Funding, once.**
+
+```sh
+export EVM_RPC=https://rpc.testnet.chain.robinhood.com TOKEN=0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5
+node bin/tab.js evm address keys/owner.json     # send testnet ETH here (faucet) and USDC
+node bin/tab.js evm fund --from keys/owner.json --to keys/agent.json --eth 0.005   # gas for the agent
+# the on-chain half of the mandate: owner approves the agent as ERC-20 spender
+node bin/tab.js evm approve --owner keys/owner.json --agent keys/agent.json --amount 10.00 --token $TOKEN
+node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys/agent.json
+```
+
+**How a paid call settles.** The challenge carries chain id, token, payout address, fee caps and a gas limit; the agent asks the gateway for its account nonce (`GET /.well-known/tab/evm/nonce/<0x...>`), builds the one legal EIP-1559 `transferFrom` transaction, signs it, and sends it in the credential. The gateway parses it, recovers the sender, requires every field except the nonce to match the challenge (and the `transferFrom` owner to match the mandate's signed `evm_owner`), stores the raw-tx hash UNIQUE so one signed payment can never back two calls, checks the nonce and gas balance, dry-runs the transfer with `eth_call`, forwards upstream, and broadcasts only on 2xx. Receipt `ref` is `evm:<tx hash>`.
+
+**Operational facts.**
+
+- One allowance per (owner, agent) pair — ERC-20 allowances don't have the single-delegate limit of SPL, so one owner can run many agents against one account.
+- `tab evm revoke` (allowance to 0) ends an agent's spending instantly, independent of mandate expiry.
+- The agent pays gas, bounded per call by `gas_limit × max_fee_per_gas` from the challenge it signed. Keep ~0.005 ETH on an active agent; `tab evm balance` shows the ETH balance too.
+- A signed-but-voided payment stays broadcastable until the agent's nonce moves (there is no blockhash-style expiry on EVM). The seller could broadcast it without serving — the same one-call trust bound as every rail, just with a longer window; see SPEC.md §9.
+- The wallet endpoint (`/.well-known/tab/wallet/<id>`) takes a 0x address on this rail.
+- Only type-2 transactions, empty access lists, 6-decimal tokens in draft 0.2.
+
+`npm run test:evm` runs 31 checks: keccak-256 and RFC 6979 vectors, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
+
+---
+
 ## 10. The catalog service
 
 `tab catalog serve` is discovery for buyers and hosts the front end.
@@ -466,6 +537,7 @@ node bin/tab.js solana balance --wallet keys/owner.json --mint $MINT   # shows d
 | --- | --- |
 | `GET /` | the landing page (`web/index.html`) |
 | `GET /catalog` | the catalog app (`web/catalog.html`) |
+| `GET /logo.png` | the wordmark used by both pages |
 | `GET /v1/catalog.json` | every known gateway with services and routes |
 | `GET /v1/search?q=&max_price=` | route search, route-level text matches outrank service-level, cheapest first; results carry the full URL to call |
 | `POST /v1/announce {origin}` | fetch and verify `<origin>/.well-known/tab`, store it |
@@ -476,7 +548,7 @@ node bin/tab.js solana balance --wallet keys/owner.json --mint $MINT   # shows d
 | `GET /v1/try` | is the try-it agent configured, and its limits |
 | `POST /v1/try {url, method, body}` | pay for a catalogued route with the try-it agent, return status, receipt and body |
 
-The front end is two HTML files with no build step and no external scripts or fonts: a 331-line landing page at `/` and the 212-line catalog app at `/catalog`. The catalog app links Solana receipts to `explorer.solana.com`; that is the only outbound URL in either file. Serve them from the catalog process or copy them anywhere static and point the app at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
+The front end is two HTML files with no build step and no external scripts or fonts: a 332-line landing page at `/` and the 212-line catalog app at `/catalog`. The catalog app links Solana receipts to `explorer.solana.com`; that is the only outbound URL in either file. Serve them from the catalog process or copy them anywhere static and point the app at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
 
 ---
 
@@ -582,6 +654,9 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 | catalog stores the gateway with `ok: false` | catalog could not fetch `<origin>/.well-known/tab` | `--origin` must be reachable **from the catalog**; use the public URL |
 | `POST /v1/announce` returns 403 `refused: … is not a public address` | SSRF guard: the origin is on a private/loopback address | use the public origin, or `--allow-private-origins` on a local dev catalog |
 | 402 `verification-failed: request does not match the signed commitment` | body or query string changed between signing and sending | send exactly the bytes the credential signed (the built-in client does) |
+| 402 `mandate-invalid: mandate has no evm_owner` on the evm rail | mandate issued before the evm rail existed | re-issue with `tab mandate issue` (it embeds the owner's 0x address automatically) |
+| 402 `insufficient-funds: agent account cannot cover gas` | the agent's EVM account has no ETH | `tab evm fund --from keys/owner.json --to keys/agent.json --eth 0.005` |
+| 402 `payment-expired: stale nonce` on the evm rail | another payment from this agent landed in between | just retry; the client fetches a fresh nonce per attempt |
 | 402 `mandate-denied: realm … not in mandate allow list` | mandate `--allow` does not match the spec's `realm` | issue a mandate with `--allow <realm>` or `*` |
 | 402 `mandate-exceeded` | per-call cap or window budget hit | wait for the next UTC day, or issue a bigger mandate |
 | 402 `insufficient-funds` on ledger | owner wallet empty in **this gateway's** `tab.db` | `tab mint --db <that db>`; ledger balances are per gateway database |
@@ -600,7 +675,7 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 - [ ] Owner key not on the server, or at least not in the same directory as the gateway.
 - [ ] `keys/` mode 0700, key files 0600, owned by the service user.
 - [ ] No `--try-agent` on a public catalog, or a mandate with a budget you are happy to lose.
-- [ ] Fee payer holds only working-capital SOL.
+- [ ] Fee payer holds only working-capital SOL; evm agents hold only working-capital ETH.
 - [ ] Upstream API keys live in `EnvironmentFile`, mode 0600, not in the spec.
 - [ ] `public_receipts` off if payer and owner wallet ids should not be public.
 - [ ] Backups of `keys/` and `*.db` tested.

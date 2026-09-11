@@ -17,15 +17,21 @@ export interface Mandate {
   allow: string[]; // realm globs; ["*"] means any
   issued_at: string; // ISO 8601
   expires_at: string; // ISO 8601
+  /**
+   * The owner's EVM account (0x hex, lowercase), attested by the owner's
+   * signature. Required by the evm rail: payments may only transferFrom this
+   * address, so an agent cannot point a mandate at someone else's allowance.
+   */
+  evm_owner?: string;
   sig: string; // owner signature over the canonical body
 }
 
 type MandateBody = Omit<Mandate, 'id' | 'sig'>;
 
 function bodyOf(m: Mandate | MandateBody): MandateBody {
-  const { ver, owner, agent, budget, window, max_per_call, allow, issued_at, expires_at } =
+  const { ver, owner, agent, budget, window, max_per_call, allow, issued_at, expires_at, evm_owner } =
     m as Mandate;
-  return { ver, owner, agent, budget, window, max_per_call, allow, issued_at, expires_at };
+  return { ver, owner, agent, budget, window, max_per_call, allow, issued_at, expires_at, evm_owner };
 }
 
 export interface IssueOptions {
@@ -35,6 +41,7 @@ export interface IssueOptions {
   maxPerCallUsd?: string;
   allow?: string[];
   days?: number;
+  evmOwner?: string; // the owner's 0x address, for the evm rail
   now?: Date;
 }
 
@@ -51,6 +58,7 @@ export function issueMandate(owner: KeyPair, opts: IssueOptions): Mandate {
     allow: opts.allow && opts.allow.length ? opts.allow : ['*'],
     issued_at: now.toISOString(),
     expires_at: new Date(now.getTime() + days * 86_400_000).toISOString(),
+    evm_owner: opts.evmOwner ? opts.evmOwner.toLowerCase() : undefined,
   };
   const canonical = canonicalJson(body);
   return { ...body, id: sha256b64url(canonical), sig: signBytes(owner, Buffer.from(canonical)) };
@@ -70,6 +78,9 @@ export function verifyMandate(m: Mandate): { ok: boolean; error?: string } {
   if (!/^\d+$/.test(m.budget)) return { ok: false, error: 'bad budget' };
   if (m.max_per_call !== null && !/^\d+$/.test(String(m.max_per_call))) {
     return { ok: false, error: 'bad max_per_call' };
+  }
+  if (m.evm_owner !== undefined && !/^0x[0-9a-f]{40}$/.test(m.evm_owner)) {
+    return { ok: false, error: 'bad evm_owner' };
   }
   const canonical = canonicalJson(bodyOf(m));
   if (m.id !== sha256b64url(canonical)) return { ok: false, error: 'id does not match body' };

@@ -50,8 +50,9 @@ export interface ServiceSpec {
 export interface Spec {
   realm: string;
   recipient: string;
-  rail?: 'ledger' | 'solana';
+  rail?: 'ledger' | 'solana' | 'evm';
   solana?: { rpc: string; mint: string; decimals: number; fee_payer: string };
+  evm?: { rpc: string; chain_id: number; token: string; decimals: number; recipient: string; explorer?: string };
   public_receipts?: boolean;
   services: ServiceSpec[];
 }
@@ -278,7 +279,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         throw new PayError('invalid-challenge', 'challenge already redeemed');
       }
       const key = checkAndSpend(store, cred.mandate, priceMicro, now);
-      const { tx } = rail.reserveLocal({ cred, chal, priceMicro, holdId, now });
+      const { tx, txHash } = rail.reserveLocal({ cred, chal, priceMicro, holdId, now });
       const hold: HoldRow = {
         id: holdId,
         challenge_id: chal.id,
@@ -294,9 +295,17 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         state: 'reserved',
         ref: null,
         tx,
+        tx_hash: txHash ?? null,
         created_at: now.toISOString(),
       };
-      store.createHold(hold);
+      try {
+        store.createHold(hold);
+      } catch (err) {
+        if (String((err as Error).message).includes('UNIQUE')) {
+          throw new PayError('invalid-challenge', 'payment transaction already used for another call');
+        }
+        throw err;
+      }
       return hold;
     });
   }
@@ -381,6 +390,15 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           sendJson(res, 200, { wallet, rail: rail.name, available: microToUsd(micro), micro });
         } catch (err) {
           sendJson(res, 502, { error: `balance lookup failed: ${(err as Error).message}` });
+        }
+        return;
+      }
+      if (pathname.startsWith('/.well-known/tab/evm/nonce/') && method === 'GET' && rail.accountNonce) {
+        const address = pathname.slice('/.well-known/tab/evm/nonce/'.length);
+        try {
+          sendJson(res, 200, { address: address.toLowerCase(), nonce: await rail.accountNonce(address) });
+        } catch (err) {
+          sendJson(res, 502, { error: `nonce lookup failed: ${(err as Error).message}` });
         }
         return;
       }

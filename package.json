@@ -9,6 +9,7 @@
     "build": "tsc",
     "test": "node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts",
     "test:adversarial": "node --no-warnings=ExperimentalWarning --import tsx test/adversarial.ts",
+    "test:evm": "node --no-warnings=ExperimentalWarning --import tsx test/evm.ts",
     "test:solana": "node --no-warnings=ExperimentalWarning --import tsx test/solana.ts",
     "upstream": "node --no-warnings=ExperimentalWarning --import tsx examples/upstream.ts",
     "demo": "bash examples/demo.sh",

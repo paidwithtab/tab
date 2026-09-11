@@ -20,7 +20,11 @@ export interface HoldRow {
   window_key: string; // '' for total, 'YYYY-MM-DD' for day windows
   state: 'reserved' | 'captured' | 'voided';
   ref: string | null;
-  tx: string | null; // solana: the fully signed transaction, base64
+  tx: string | null; // solana: signed tx base64; evm: signed tx 0x hex
+  // evm: keccak of the raw tx. UNIQUE over non-voided holds, so one signed
+  // payment can never back two served calls; a voided hold frees its hash
+  // (after a void the same nonce legitimately produces the same bytes).
+  tx_hash: string | null;
   created_at: string;
 }
 
@@ -39,8 +43,9 @@ export class Store {
         payer TEXT NOT NULL, owner TEXT NOT NULL, recipient TEXT NOT NULL,
         resource TEXT NOT NULL, realm TEXT NOT NULL, rail TEXT NOT NULL,
         mandate_id TEXT NOT NULL, window_key TEXT NOT NULL,
-        state TEXT NOT NULL, ref TEXT, tx TEXT, created_at TEXT NOT NULL
+        state TEXT NOT NULL, ref TEXT, tx TEXT, tx_hash TEXT, created_at TEXT NOT NULL
       );
+      CREATE UNIQUE INDEX IF NOT EXISTS holds_tx_hash ON holds (tx_hash) WHERE tx_hash IS NOT NULL AND state != 'voided';
       CREATE TABLE IF NOT EXISTS receipts (
         id TEXT PRIMARY KEY, realm TEXT NOT NULL, resource TEXT NOT NULL,
         amount INTEGER NOT NULL, rail TEXT NOT NULL, payer TEXT NOT NULL,
@@ -52,6 +57,13 @@ export class Store {
       );
       CREATE TABLE IF NOT EXISTS redeemed (challenge_id TEXT PRIMARY KEY, at TEXT NOT NULL);
     `);
+    // databases created before the evm rail lack the tx_hash column
+    try {
+      this.db.exec('ALTER TABLE holds ADD COLUMN tx_hash TEXT');
+      this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS holds_tx_hash ON holds (tx_hash) WHERE tx_hash IS NOT NULL AND state != 'voided'");
+    } catch {
+      /* column already exists */
+    }
     const row = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('secret') as
       | { value: string }
       | undefined;
@@ -145,15 +157,17 @@ export class Store {
 
   // -- holds and receipts ---------------------------------------------------
 
+  /** Throws with UNIQUE in the message if row.tx_hash was already used. */
   createHold(row: HoldRow): void {
     this.db
       .prepare(
         `INSERT INTO holds (id, challenge_id, amount, payer, owner, recipient, resource, realm, rail,
-         mandate_id, window_key, state, ref, tx, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         mandate_id, window_key, state, ref, tx, tx_hash, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         row.id, row.challenge_id, row.amount, row.payer, row.owner, row.recipient, row.resource,
-        row.realm, row.rail, row.mandate_id, row.window_key, row.state, row.ref, row.tx, row.created_at,
+        row.realm, row.rail, row.mandate_id, row.window_key, row.state, row.ref, row.tx, row.tx_hash,
+        row.created_at,
       );
   }
 

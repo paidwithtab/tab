@@ -55,6 +55,8 @@ export function microToUsd(micro: number): string {
 // ---------------------------------------------------------------------------
 // challenges
 
+export type RailName = 'ledger' | 'solana' | 'evm';
+
 export interface SolanaChallengeInfo {
   mint: string; // base58
   decimals: number;
@@ -62,17 +64,28 @@ export interface SolanaChallengeInfo {
   recent_blockhash: string; // base58
 }
 
+export interface EvmChallengeInfo {
+  chain_id: number; // Robinhood Chain: 46630 testnet, 4663 mainnet
+  token: string; // ERC-20 (USDC) contract, 0x hex
+  decimals: number;
+  recipient: string; // seller payout address, 0x hex
+  max_fee_per_gas: string; // 0x hex wei
+  max_priority_fee_per_gas: string; // 0x hex wei
+  gas_limit: number;
+}
+
 export interface Challenge {
   ver: string;
   id: string; // HMAC-SHA256 over the canonical challenge minus id, base64url
   realm: string;
-  rail: 'ledger' | 'solana';
+  rail: RailName;
   amount: string; // micro-USD, decimal string
   currency: 'USD';
   recipient: string; // wallet id (base64url public key)
   resource: string; // "METHOD /path"
   expires_at: string; // ISO 8601
   solana?: SolanaChallengeInfo;
+  evm?: EvmChallengeInfo;
 }
 
 export function challengeId(secret: Uint8Array, chal: Omit<Challenge, 'id'>): string {
@@ -140,6 +153,7 @@ export interface Credential {
   request: RequestCommitment;
   sig: string; // agent signature, see credentialMessage
   solana?: { tx: string }; // base64 partially-signed legacy transaction
+  evm?: { tx: string }; // 0x hex fully-signed type-2 transaction
 }
 
 /** What the agent signs: a canonical binding of challenge, mandate, payer and request. */
@@ -168,6 +182,7 @@ export interface SignCredentialOptions {
   query?: string;
   body?: string | Uint8Array | null;
   solana?: { tx: string };
+  evm?: { tx: string };
 }
 
 export function signCredential(
@@ -178,7 +193,10 @@ export function signCredential(
 ): Credential {
   const request: RequestCommitment = { query: opts.query ?? '', body_sha256: bodyDigest(opts.body) };
   const sig = signBytes(agent, credentialMessage(agent.publicKey, chal, mandate.id, request));
-  return { ver: VERSION, agent: agent.publicKey, challenge: chal, mandate, request, sig, solana: opts.solana };
+  return {
+    ver: VERSION, agent: agent.publicKey, challenge: chal, mandate, request, sig,
+    solana: opts.solana, evm: opts.evm,
+  };
 }
 
 export function verifyCredentialSig(cred: Credential): boolean {
@@ -221,11 +239,11 @@ export interface Receipt {
   resource: string;
   amount: string; // micro-USD
   currency: 'USD';
-  rail: 'ledger' | 'solana';
+  rail: RailName;
   payer: string; // agent wallet id
   owner: string; // owner wallet id (whose funds moved)
   recipient: string;
-  ref: string; // "ledger:<hold>" or "solana:<signature>"
+  ref: string; // "ledger:<hold>", "solana:<signature>" or "evm:<tx hash>"
   at: string; // ISO 8601
 }
 
