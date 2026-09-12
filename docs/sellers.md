@@ -16,8 +16,8 @@ The gateway is a reverse proxy you run next to your API. It answers 402 with a s
 ## 1. Keys and addresses
 
 ```sh
-npx tabprotocol key new --out seller.json     # your wallet id (keep the file safe)
-npx tabprotocol evm address seller.json       # your 0x payout address on Robinhood Chain
+npx paidwithtab key new --out seller.json     # your wallet id (keep the file safe)
+npx paidwithtab evm address seller.json       # your 0x payout address on Robinhood Chain
 ```
 
 The gateway itself holds neither file. Only the public wallet id and the payout address go in the spec.
@@ -68,7 +68,7 @@ The rules that matter:
 ## 3. Serve
 
 ```sh
-npx tabprotocol serve --spec spec.json \
+npx paidwithtab serve --spec spec.json \
   --announce https://catalog.example.com \
   --origin https://api.example.com
 ```
@@ -80,7 +80,7 @@ npx tabprotocol serve --spec spec.json \
 ```sh
 curl -s https://api.example.com/.well-known/tab | jq .routes   # your price list, machine readable
 curl -si https://api.example.com/v1/things/42 | head -3        # 402 + challenge
-npx tabprotocol evm balance --wallet seller.json \
+npx paidwithtab evm balance --wallet seller.json \
   --token 0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5           # USDC arriving per call
 ```
 

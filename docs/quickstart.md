@@ -5,7 +5,7 @@ Everything below runs on your machine with sandbox money. No chain, no faucet, n
 ## 1. Run the sandbox
 
 ```sh
-git clone https://github.com/tabprotocol/tab && cd tab
+git clone https://github.com/paidwithtab/tab && cd tab
 npm install
 npm run demo
 ```

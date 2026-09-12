@@ -1,6 +1,6 @@
 # tab: build and deploy guide
 
-Everything needed to take this project from a clean VPS to a running gateway, catalog and front end. Written against the tree as of 2026-09-12 (`tabprotocol` version 0.3.0). `README.md` is the short pitch and `SPEC.md` is the protocol; this file is the operator's manual.
+Everything needed to take this project from a clean VPS to a running gateway, catalog and front end. Written against the tree as of 2026-09-12 (`paidwithtab` version 0.3.0). `README.md` is the short pitch and `SPEC.md` is the protocol; this file is the operator's manual.
 
 ---
 

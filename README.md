@@ -18,7 +18,8 @@
   <a href="docs/sellers.md">Sell your API</a> ·
   <a href="docs/buyers.md">Give an agent a tab</a> ·
   <a href="SPEC.md">Protocol spec</a> ·
-  <a href="DEPLOY.md">Operator's manual</a>
+  <a href="DEPLOY.md">Operator's manual</a> ·
+  <a href="https://x.com/paidwithtab">@paidwithtab</a>
 </p>
 
 ---
@@ -52,7 +53,7 @@ A seller is **only paid when they deliver**: the gateway reserves the payment, f
 ## Try it in 60 seconds
 
 ```sh
-git clone https://github.com/tabprotocol/tab && cd tab
+git clone https://github.com/paidwithtab/tab && cd tab
 npm install
 npm run demo
 ```
@@ -108,7 +109,7 @@ Then let **Claude Code** spend under it. Five MCP tools (`tab_search`, `tab_disc
 claude mcp add tab \
   -e TAB_AGENT=agent.json -e TAB_MANDATE=mandate.json -e TAB_MAX_PER_CALL=0.05 \
   -e TAB_CATALOG=https://catalog.example.com \
-  -- npx -y tabprotocol mcp
+  -- npx -y paidwithtab mcp
 ```
 
 Or from code:

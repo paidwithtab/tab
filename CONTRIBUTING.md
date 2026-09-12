@@ -20,7 +20,7 @@ easiest to land.
 ## Dev setup
 
 ```sh
-git clone https://github.com/tabprotocol/tab && cd tab
+git clone https://github.com/paidwithtab/tab && cd tab
 npm install            # typescript, tsx, @types/node: dev tooling only
 npx tsc --noEmit       # must stay clean
 npm test               # 51 end-to-end checks, in-process, temp DB

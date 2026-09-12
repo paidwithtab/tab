@@ -15,11 +15,11 @@ The agent never touches the owner key. If an agent key leaks, the damage ceiling
 ## 1. Keys
 
 ```sh
-npx tabprotocol key new --out owner.json
-npx tabprotocol key new --out agent.json
+npx paidwithtab key new --out owner.json
+npx paidwithtab key new --out agent.json
 ```
 
-One key file carries two identities: the wallet id used by the protocol, and an address on Robinhood Chain (`npx tabprotocol evm address owner.json`).
+One key file carries two identities: the wallet id used by the protocol, and an address on Robinhood Chain (`npx paidwithtab evm address owner.json`).
 
 ## 2. Fund the owner (Robinhood Chain testnet)
 
@@ -28,7 +28,7 @@ One key file carries two identities: the wallet id used by the protocol, and an 
 3. Give the agent a little gas. The agent's account sends the payment transactions, so it needs a sliver of ETH:
 
 ```sh
-npx tabprotocol evm fund --from owner.json --to agent.json --eth 0.005
+npx paidwithtab evm fund --from owner.json --to agent.json --eth 0.005
 ```
 
 No testnet funds yet? Everything below also works on the free `ledger` rail; run the [quickstart](quickstart.md) sandbox instead and come back.
@@ -36,7 +36,7 @@ No testnet funds yet? Everything below also works on the free `ledger` rail; run
 ## 3. The mandate: sign the rules once
 
 ```sh
-npx tabprotocol mandate issue --owner owner.json --agent agent.json \
+npx paidwithtab mandate issue --owner owner.json --agent agent.json \
   --budget 5.00 --window day --max-per-call 0.05 \
   --allow 'api.example.com' --allow '*.trusted.dev' \
   --days 90 --out mandate.json
@@ -47,14 +47,14 @@ Read that back as a sentence: *this agent may spend up to $5.00 per UTC day, at 
 Then the on-chain half, an ERC-20 allowance matching what you are comfortable with:
 
 ```sh
-npx tabprotocol evm approve --owner owner.json --agent agent.json \
+npx paidwithtab evm approve --owner owner.json --agent agent.json \
   --amount 5.00 --token 0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5
 ```
 
 Two ceilings now protect you: the gateway enforces the mandate, the chain enforces the allowance. Ending it all takes one command:
 
 ```sh
-npx tabprotocol evm revoke --owner owner.json --agent agent.json --token 0x5B6C...26f5
+npx paidwithtab evm revoke --owner owner.json --agent agent.json --token 0x5B6C...26f5
 ```
 
 ## 4. Spend
@@ -62,7 +62,7 @@ npx tabprotocol evm revoke --owner owner.json --agent agent.json --token 0x5B6C.
 **From the command line:**
 
 ```sh
-npx tabprotocol fetch --agent agent.json --mandate mandate.json \
+npx paidwithtab fetch --agent agent.json --mandate mandate.json \
   https://api.example.com/v1/things/42
 ```
 
@@ -74,7 +74,7 @@ Exit codes: 0 paid and served, 1 the API answered non-2xx (you were not charged)
 claude mcp add tab \
   -e TAB_AGENT=$PWD/agent.json -e TAB_MANDATE=$PWD/mandate.json \
   -e TAB_MAX_PER_CALL=0.05 -e TAB_CATALOG=https://catalog.example.com \
-  -- npx -y tabprotocol mcp
+  -- npx -y paidwithtab mcp
 ```
 
 Claude gets `tab_search` (find routes by keyword and max price), `tab_discover`, `tab_fetch`, `tab_balance`, and `tab_limits`. `TAB_MAX_PER_CALL` is a second, client-side cap on top of the mandate; the model cannot raise either one.
@@ -100,7 +100,7 @@ On a 402 the client checks the price, signs a credential binding that exact requ
 Every paid response carries a receipt: amount, resource, payer, and a ref like `evm:0x...` that is the settlement transaction on the [Robinhood Chain explorer](https://explorer.testnet.chain.robinhood.com). Check balances any time:
 
 ```sh
-npx tabprotocol evm balance --wallet owner.json \
+npx paidwithtab evm balance --wallet owner.json \
   --token 0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5 --agent agent.json
 ```
 

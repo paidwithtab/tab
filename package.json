@@ -1,7 +1,7 @@
 {
-  "name": "tabprotocol",
+  "name": "paidwithtab",
   "version": "0.3.0",
-  "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402 — spending capped by signed mandates, settled in USDC on Robinhood Chain. Zero runtime dependencies.",
+  "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402, spending capped by signed mandates, settled in USDC on Robinhood Chain. Zero runtime dependencies.",
   "type": "module",
   "bin": { "tab": "bin/tab.js" },
   "files": [
@@ -22,9 +22,9 @@
     "demo": "bash examples/demo.sh",
     "prepublishOnly": "tsc && node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts"
   },
-  "repository": { "type": "git", "url": "git+https://github.com/tabprotocol/tab.git" },
-  "homepage": "https://github.com/tabprotocol/tab#readme",
-  "bugs": { "url": "https://github.com/tabprotocol/tab/issues" },
+  "repository": { "type": "git", "url": "git+https://github.com/paidwithtab/tab.git" },
+  "homepage": "https://github.com/paidwithtab/tab#readme",
+  "bugs": { "url": "https://github.com/paidwithtab/tab/issues" },
   "keywords": [
     "agents",
     "payments",
