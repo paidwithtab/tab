@@ -12,6 +12,7 @@ import { verifyMandate, mandateExpired, realmAllowed, type Mandate } from './man
 import type { KeyPair } from './keys.js';
 import { TabClient, PaymentRefused, receiptOf } from './client.js';
 import type { CatalogStore, GatewayRow } from './store.js';
+import { renderDocsPage, DOC_GROUPS } from './markdown.js';
 
 export interface CatalogOptions {
   store: CatalogStore;
@@ -229,6 +230,31 @@ export function createCatalog(opts: CatalogOptions): Server {
     try {
       if (method === 'OPTIONS') {
         res.writeHead(204, CORS);
+        res.end();
+        return;
+      }
+
+      // the three project docs, all rendered through the same shell so none opens as raw markdown
+      const RENDERED: Record<string, { file: string; opts: Parameters<typeof renderDocsPage>[1] }> = {
+        '/docs': { file: 'README.md', opts: { active: 'docs', groups: DOC_GROUPS } },
+        '/docs.html': { file: 'README.md', opts: { active: 'docs', groups: DOC_GROUPS } },
+        '/protocol': { file: 'SPEC.md', opts: { active: 'protocol', title: 'Specification' } },
+        '/deployment': { file: 'DEPLOY.md', opts: { active: 'deployment', title: 'Deployment' } },
+      };
+      if (method === 'GET' && uiPath && RENDERED[path]) {
+        const { file, opts } = RENDERED[path];
+        const md = join(uiPath, '..', file);
+        if (existsSync(md)) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=300' });
+          res.end(renderDocsPage(readFileSync(md, 'utf8'), opts));
+          return;
+        }
+      }
+
+      // a person clicking /SPEC.md etc should see the rendered doc, never raw markdown; ?raw=1 keeps the source
+      const MD_REDIRECT: Record<string, string> = { '/README.md': '/docs', '/SPEC.md': '/protocol', '/DEPLOY.md': '/deployment' };
+      if (method === 'GET' && MD_REDIRECT[path] && u.searchParams.get('raw') !== '1') {
+        res.writeHead(301, { location: MD_REDIRECT[path] });
         res.end();
         return;
       }

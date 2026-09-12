@@ -102,3 +102,122 @@ ul.plain li::before { content:""; display:inline-block; width:12px; height:1px; 
 .docs article p { color:var(--fg2); font-size:15px; margin-bottom:14px; }
 .docs article p code, .docs article li code, td code { color:var(--fg); }
 @media (max-width:900px) { .docs { grid-template-columns:minmax(0,1fr); } .docs .toc { position:static; display:flex; flex-wrap:wrap; gap:8px 20px; } .docs .toc .h { display:none; } }
+
+/* /docs: GitBook-style layout (left sections, centre content, right on-this-page) */
+.gitbook { display:grid; grid-template-columns:260px minmax(0,1fr); gap:0; max-width:100%; align-items:start; }
+.gitbook.has-onpage { grid-template-columns:260px minmax(0,1fr) 220px; }
+
+.doc-side { position:sticky; top:68px; align-self:start; height:calc(100vh - 68px); overflow-y:auto; border-right:1px solid var(--line); padding:28px 20px 40px; }
+.doc-side-links { display:flex; flex-direction:column; gap:2px; }
+.doc-side-links a { color:var(--fg2); font-size:13.5px; line-height:1.3; padding:6px 12px; border-radius:7px; border-left:2px solid transparent; }
+.doc-side-links a:hover { color:var(--fg); background:rgba(255,255,255,.03); }
+.doc-side-links a.active { color:var(--fg); background:rgba(156,195,255,.10); border-left-color:var(--accent); font-weight:500; }
+.doc-menu { display:none; }
+
+.doc-onpage { position:sticky; top:68px; align-self:start; max-height:calc(100vh - 68px); overflow-y:auto; padding:28px 20px 40px; display:flex; flex-direction:column; gap:2px; }
+.doc-onpage .h { font-family:var(--mono); font-size:11px; letter-spacing:.18em; text-transform:uppercase; color:var(--dim); margin-bottom:10px; }
+.doc-onpage a { color:var(--fg2); font-size:13px; padding:4px 0; }
+.doc-onpage a:hover, .doc-onpage a.active { color:var(--accent); }
+
+.doc-main { min-width:0; padding:0 clamp(24px,4vw,64px); }
+.doc-main footer { margin-top:64px; }
+
+/* the rendered README, centred and airy */
+.readme { max-width:760px; margin:0 auto; padding:16px 0 80px; font-size:16px; line-height:1.72; color:#cdd6e3; }
+.readme hr { border:0; border-top:1px solid var(--line); margin:44px 0; }
+.readme hr:first-child { display:none; }
+.readme h1, .readme h2, .readme h3 { scroll-margin-top:84px; }
+.readme h2 { font-size:clamp(23px,2.6vw,30px); margin:52px 0 16px; padding-top:26px; border-top:1px solid var(--line); }
+.readme h2:first-of-type { border-top:0; padding-top:0; margin-top:4px; }
+.readme h3 { font-size:18px; margin:32px 0 12px; }
+.readme p { color:#cdd6e3; margin:16px 0; }
+.readme a { color:var(--accent); }
+.readme a:hover { text-decoration:underline; }
+.readme strong { color:var(--fg); font-weight:600; }
+.readme ul, .readme ol { color:#cdd6e3; margin:16px 0; padding-left:22px; }
+.readme li { margin:7px 0; }
+.readme li::marker { color:var(--dim); }
+.readme code { background:rgba(255,255,255,.07); padding:1px 6px; border-radius:5px; font-size:.88em; color:#e6ebf3; }
+.readme pre { background:var(--bg2); border:1px solid var(--line); border-radius:10px; color:#cdd6e3; }
+.readme pre code { background:none; padding:0; }
+.readme blockquote { border-left:3px solid var(--accent); margin:18px 0; padding:10px 0 10px 18px; color:#cdd6e3; background:rgba(156,195,255,.05); border-radius:0 8px 8px 0; }
+.readme blockquote p { margin:4px 0; }
+.readme blockquote p:first-child { margin-top:0; } .readme blockquote p:last-child { margin-bottom:0; }
+.readme hr { border:0; border-top:1px solid var(--line); margin:40px 0; }
+.readme table { font-size:14px; border:1px solid var(--line); border-radius:8px; border-collapse:separate; border-spacing:0; overflow:hidden; }
+.readme th, .readme td { border-top:1px solid var(--line); padding:10px 14px; vertical-align:top; text-align:left; }
+.readme thead th { border-top:0; background:rgba(255,255,255,.03); color:var(--fg2); font-family:inherit; font-size:12px; letter-spacing:.04em; text-transform:none; }
+.readme tr > *:first-child { border-left:0; }
+.readme td pre { margin:8px 0; }
+.readme details { border:1px solid var(--line); border-radius:10px; padding:14px 18px; margin:18px 0; background:var(--bg2); }
+.readme summary { cursor:pointer; color:var(--fg); font-weight:500; }
+.readme details[open] summary { margin-bottom:12px; }
+.readme img { max-width:100%; }
+
+@media (max-width:1100px) {
+  .gitbook, .gitbook.has-onpage { grid-template-columns:260px minmax(0,1fr); }
+  .doc-onpage { display:none; }
+}
+@media (max-width:800px) {
+  .gitbook, .gitbook.has-onpage { grid-template-columns:1fr; }
+  .doc-side { position:static; height:auto; overflow:visible; border-right:0; border-bottom:1px solid var(--line); padding:12px clamp(20px,4vw,56px); }
+  .doc-side-wide { display:none; }
+  .doc-menu { display:block; }
+  .doc-menu summary { color:var(--fg); font-size:14px; font-weight:500; cursor:pointer; padding:6px 0; }
+  .doc-menu[open] .doc-side-links { margin-top:10px; }
+  .doc-main { padding:0 clamp(20px,4vw,56px); }
+}
+
+/* /docs: per-section pages, sidebar filter, prev/next (GitBook behaviour) */
+.doc-page[hidden] { display:none; }
+.doc-page h2 { border-top:0; padding-top:0; margin-top:6px; }
+.doc-search { margin-bottom:16px; }
+.doc-search input { width:100%; padding:9px 12px; border-radius:8px; border:1px solid var(--line); background:var(--bg2); color:var(--fg); font:inherit; font-size:13px; }
+.doc-search input:focus { outline:0; border-color:rgba(255,255,255,.3); }
+.doc-search input::placeholder { color:var(--dim); }
+.doc-side-links a[hidden] { display:none; }
+.doc-updown { display:grid; grid-template-columns:1fr 1fr; gap:16px; max-width:760px; margin:8px auto 0; }
+.doc-updown .ud { display:flex; flex-direction:column; gap:4px; border:1px solid var(--line); border-radius:12px; padding:16px 18px; transition:border-color .2s, background .2s; }
+.doc-updown .ud:hover { border-color:rgba(255,255,255,.28); background:var(--bg2); }
+.doc-updown .ud span { font-size:12px; color:var(--dim); }
+.doc-updown .ud b { font-weight:500; color:var(--fg); font-size:15px; }
+.doc-updown .ud.next { text-align:right; }
+@media (max-width:560px) { .doc-updown { grid-template-columns:1fr; } }
+
+/* /docs: Coinbase-style docs toolbar + grouped sidebar */
+.doc-bar { position:sticky; top:68px; z-index:9; background:var(--bg); border-bottom:1px solid var(--line); }
+.doc-bar-inner { max-width:var(--max); margin:0 auto; display:flex; align-items:center; gap:20px; height:56px; padding:0 clamp(20px,4vw,56px); }
+.doc-tabs { display:flex; gap:22px; font-size:14px; }
+.doc-tabs a { color:var(--fg2); padding:18px 0; border-bottom:2px solid transparent; }
+.doc-tabs a:hover { color:var(--fg); }
+.doc-tabs a.active { color:var(--fg); border-bottom-color:var(--accent); }
+.doc-search { flex:1; max-width:420px; margin:0 auto; display:flex; align-items:center; gap:8px; background:var(--bg2); border:1px solid var(--line); border-radius:9px; padding:0 10px; }
+.doc-search:focus-within { border-color:rgba(255,255,255,.3); }
+.doc-search svg { width:15px; height:15px; stroke:var(--dim); fill:none; stroke-width:1.8; stroke-linecap:round; flex:none; }
+.doc-search input { flex:1; border:0; background:none; color:var(--fg); font:inherit; font-size:13px; padding:8px 0; }
+.doc-search input:focus { outline:0; }
+.doc-search input::placeholder { color:var(--dim); }
+.doc-search kbd { font-family:var(--mono); font-size:11px; color:var(--dim); border:1px solid var(--line); border-radius:5px; padding:1px 6px; }
+.doc-gh { font-size:14px; color:var(--fg2); }
+.doc-gh:hover { color:var(--fg); }
+@media (max-width:800px) { .doc-tabs { display:none; } .doc-gh { display:none; } .doc-search { margin:0; max-width:none; } }
+
+.doc-main .readme { padding-top:44px; }
+.doc-main { padding-bottom:8px; }
+
+/* the sidebar sits below the toolbar */
+.gitbook .doc-side { top:125px; height:calc(100vh - 125px); }
+.doc-group { display:flex; flex-direction:column; gap:1px; margin-bottom:28px; }
+.doc-group-h { display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:10.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--dim); padding:0 12px; margin-bottom:9px; }
+.doc-group-h svg { width:13px; height:13px; stroke:currentColor; fill:none; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; flex:none; }
+.doc-group[hidden] { display:none; }
+
+/* catalog: capability showcase (illustrative categories, not live rows) */
+.uc-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+.uc { border:1px solid var(--line); border-radius:12px; padding:18px 18px 16px; background:var(--bg2); display:flex; flex-direction:column; gap:8px; }
+.uc b { font-weight:600; font-size:15px; }
+.uc p { color:var(--fg2); font-size:13.5px; line-height:1.45; margin:0; flex:1; }
+.uc-eg { color:var(--dim); font-size:12.5px; }
+.uc-price { font-family:var(--mono); font-size:12.5px; color:var(--accent); }
+@media (max-width:900px) { .uc-grid { grid-template-columns:1fr 1fr; } }
+@media (max-width:560px) { .uc-grid { grid-template-columns:1fr; } }

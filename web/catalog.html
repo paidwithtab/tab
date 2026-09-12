@@ -58,15 +58,33 @@
 <header class="head">
   <div class="wrap">
     <div class="eyebrow">Catalog</div>
-    <h1>What agents can buy right now.</h1>
-    <p class="sub">Every route below answers with a price until it is paid. Agents pay under a signed limit; owners stay offline. Prices are per request.</p>
+    <h1>What agents can do with tab.</h1>
+    <p class="sub">tab is built for pay-per-request services: search, scraping, transcription, images, data, and more. Below are the kinds of services agents can pay for. Live listings appear further down as providers announce gateways.</p>
   </div>
 </header>
 
 <main class="wrap app">
+  <section id="usecases">
+    <h2>Capabilities</h2>
+    <p class="sub">These are the kinds of paid services tab is built for, with example providers in each category. They are illustrative, not live listings yet. Representative prices; a gateway sets its own.</p>
+    <div class="uc-grid">
+      <div class="uc"><b>Search</b><p>Find live results across the web</p><div class="uc-eg">Tavily · Exa · Serper · SerpApi</div><div class="uc-price">from $0.005 / search</div></div>
+      <div class="uc"><b>Web scraping</b><p>Turn a URL into clean text or markdown</p><div class="uc-eg">Firecrawl · Jina Reader · ScrapingBee</div><div class="uc-price">from $0.003 / page</div></div>
+      <div class="uc"><b>Answers</b><p>Ask a question, get an answer with sources</p><div class="uc-eg">Perplexity · OpenRouter</div><div class="uc-price">from $0.02 / query</div></div>
+      <div class="uc"><b>Speech to text</b><p>Transcribe audio and calls</p><div class="uc-eg">Deepgram · AssemblyAI</div><div class="uc-price">from $0.01 / min</div></div>
+      <div class="uc"><b>Text to speech</b><p>Turn text into natural speech</p><div class="uc-eg">ElevenLabs · Cartesia</div><div class="uc-price">from $0.15 / 1k chars</div></div>
+      <div class="uc"><b>Images</b><p>Generate and edit images</p><div class="uc-eg">fal.ai · Stability · Replicate</div><div class="uc-price">from $0.05 / image</div></div>
+      <div class="uc"><b>OCR</b><p>Read text, math and tables from images and PDFs</p><div class="uc-eg">Mathpix</div><div class="uc-price">from $0.005 / image</div></div>
+      <div class="uc"><b>Translation</b><p>Translate between languages</p><div class="uc-eg">DeepL</div><div class="uc-price">from $0.03 / 1k chars</div></div>
+      <div class="uc"><b>Market &amp; crypto data</b><p>Fetch quotes and prices</p><div class="uc-eg">Polygon · CoinGecko</div><div class="uc-price">from $0.002 / call</div></div>
+      <div class="uc"><b>Weather</b><p>Current conditions and forecasts</p><div class="uc-eg">OpenWeather</div><div class="uc-price">from $0.003 / call</div></div>
+      <div class="uc"><b>News</b><p>Search recent headlines and articles</p><div class="uc-eg">NewsAPI</div><div class="uc-price">from $0.005 / call</div></div>
+    </div>
+  </section>
+
   <section id="search">
-    <h2>Routes</h2>
-    <p class="sub">Search by name, path or description. An empty search lists everything.</p>
+    <h2>Live listings</h2>
+    <p class="sub">Routes announced by real gateways, payable now. Search by name, path or description; an empty search lists everything.</p>
     <input id="q" placeholder="try: translate, quote, echo …" autocomplete="off">
     <div class="tablewrap"><table id="results"><tbody></tbody></table></div>
   </section>
@@ -119,7 +137,7 @@
       <li><a href="/v1/catalog.json">Status</a></li>
       <li><a href="https://github.com/paidwithtab/tab" rel="noopener">GitHub</a></li>
       <li><a href="https://x.com/paidwithtab" rel="noopener">X</a></li>
-      <li><a href="/docs#contact">Contact</a></li>
+      <li><a href="https://github.com/paidwithtab/tab/issues">Contact</a></li>
     </ul>
   </div>
 </footer>
