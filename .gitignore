@@ -1,10 +1,26 @@
+# build and runtime
 node_modules/
 dist/
 *.db
 *.db-*
+*.tgz
+
+# secrets: never commit keys, tokens or environment files
 keys/
 .env
+.env.*
+*.pem
+*.key
+*token*.json
+*secret*
 .claude/settings.local.json
-*.tgz
+
+# X (twitter) integration stays local: the client, its tests, docs, tokens and post queue
+scripts/x.ts
+test/x.ts
+docs/x-posting.md
+social/
+
+# local scratch images
 /image*.png
 /22e9dddd-6cbb-41f8-bfde-e544025eac88.png
