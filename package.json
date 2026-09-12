@@ -1,9 +1,17 @@
 {
-  "name": "tab",
-  "version": "0.0.1",
-  "description": "A payment gateway for software agents: price any HTTP API, get paid per request over HTTP 402, spending capped by signed mandates.",
+  "name": "tabprotocol",
+  "version": "0.3.0",
+  "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402 — spending capped by signed mandates, settled in USDC on Robinhood Chain. Zero runtime dependencies.",
   "type": "module",
   "bin": { "tab": "bin/tab.js" },
+  "files": [
+    "bin",
+    "dist/src",
+    "web",
+    "docs",
+    "SPEC.md",
+    "DEPLOY.md"
+  ],
   "scripts": {
     "cli": "node --no-warnings=ExperimentalWarning --import tsx src/cli.ts",
     "build": "tsc",
@@ -11,8 +19,24 @@
     "test:adversarial": "node --no-warnings=ExperimentalWarning --import tsx test/adversarial.ts",
     "test:evm": "node --no-warnings=ExperimentalWarning --import tsx test/evm.ts",
     "upstream": "node --no-warnings=ExperimentalWarning --import tsx examples/upstream.ts",
-    "demo": "bash examples/demo.sh"
+    "demo": "bash examples/demo.sh",
+    "prepublishOnly": "tsc && node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts"
   },
+  "repository": { "type": "git", "url": "git+https://github.com/tabprotocol/tab.git" },
+  "homepage": "https://github.com/tabprotocol/tab#readme",
+  "bugs": { "url": "https://github.com/tabprotocol/tab/issues" },
+  "keywords": [
+    "agents",
+    "payments",
+    "http-402",
+    "mandates",
+    "usdc",
+    "robinhood-chain",
+    "api-monetization",
+    "mcp",
+    "claude"
+  ],
+  "license": "MIT",
   "engines": { "node": ">=22.13" },
   "devDependencies": {
     "@types/node": "^22.10.0",

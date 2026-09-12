@@ -1,6 +1,6 @@
 # tab: build and deploy guide
 
-Everything needed to take this project from a clean VPS to a running gateway, catalog and front end. Written against the tree as of 2026-09-10 (`package.json` version 0.0.1). `README.md` is the short pitch and `SPEC.md` is the protocol; this file is the operator's manual.
+Everything needed to take this project from a clean VPS to a running gateway, catalog and front end. Written against the tree as of 2026-09-12 (`tabprotocol` version 0.3.0). `README.md` is the short pitch and `SPEC.md` is the protocol; this file is the operator's manual.
 
 ---
 
@@ -21,7 +21,7 @@ Three roles, one binary:
 Money moves over a **rail**. Two ship:
 
 - `ledger`: balances in the gateway's own SQLite file. Free, instant, sandbox money created with `tab mint`.
-- `evm`: USDC or any 6-decimal ERC-20 — built for **Robinhood Chain** (Arbitrum-stack L2; chain id 46630 testnet, 4663 mainnet), no custom contract. The owner `approve`s the agent as ERC-20 spender once; the agent signs a type-2 `transferFrom` transaction (its account pays gas); the gateway verifies it field-for-field and broadcasts only after the upstream answered 2xx. Section 9.
+- `evm`: USDC or any 6-decimal ERC-20, built for **Robinhood Chain** (Arbitrum-stack L2; chain id 46630 testnet, 4663 mainnet), no custom contract. The owner `approve`s the agent as ERC-20 spender once; the agent signs a type-2 `transferFrom` transaction (its account pays gas); the gateway verifies it field-for-field and broadcasts only after the upstream answered 2xx. Section 9.
 
 There is also a **catalog** service (search + web front end) and an **MCP server** so Claude Code can spend under a mandate.
 
@@ -31,7 +31,7 @@ There is also a **catalog** service (search + web front end) and an **MCP server
 
 | Thing | Version | Why |
 | --- | --- | --- |
-| Node.js | **22.13 or newer** (dev box has 22.22.2) | uses the built-in `node:sqlite` module; older Node has no SQLite |
+| Node.js | **22.13 or newer** (dev box runs 24.18) | uses the built-in `node:sqlite` module; older Node has no SQLite |
 | npm | 10.x | ships with Node 22 |
 | TypeScript, tsx, @types/node | devDependencies, installed by `npm install` | the only dependencies in the whole project |
 | curl, bash | any | demo scripts |
@@ -68,7 +68,8 @@ The files that matter:
 
 ```
 package.json  tsconfig.json  .gitignore  .mcp.json
-README.md  SPEC.md  DEPLOY.md
+README.md  SPEC.md  DEPLOY.md  LICENSE  SECURITY.md  CONTRIBUTING.md
+docs/                       # quickstart.md, sellers.md, buyers.md, assets/
 bin/tab.js                  # runs dist/src/cli.js after `npm run build`
 src/                        # the code, ~2,000 lines
   cli.ts                    # the `tab` command
@@ -203,7 +204,7 @@ Notes:
 - `tab fetch` exit codes: 0 paid and 2xx, 1 non-2xx, 2 refused by the client's own cap before paying.
 - `tab serve --announce` retries the catalog for 10 seconds, then gives up with a log line; the gateway keeps running either way. `--origin` is what the catalog will store and what buyers will call, so it must be the **public** URL, not 127.0.0.1, in production.
 - `tab catalog serve --seed` pre-loads gateways at startup; `--announce` from the gateway side does the same at runtime.
-- The catalog refuses to announce (or fetch) origins on private, loopback, link-local, CGNAT or cloud-metadata addresses, refuses redirects, and caps discovery documents at 1 MB — SSRF protection for a public catalog. `--allow-private-origins` disables the address check for local development (the demo passes it); never use it on a catalog reachable from the internet. `/v1/wallet` only proxies to origins already in the catalog.
+- The catalog refuses to announce (or fetch) origins on private, loopback, link-local, CGNAT or cloud-metadata addresses, refuses redirects, and caps discovery documents at 1 MB: SSRF protection for a public catalog. `--allow-private-origins` disables the address check for local development (the demo passes it); never use it on a catalog reachable from the internet. `/v1/wallet` only proxies to origins already in the catalog.
 
 ---
 
@@ -271,7 +272,7 @@ The owner key is only needed to sign mandates and to mint sandbox money. Keep it
 Rules:
 
 - `realm` is the string mandates allow-list against. Pick your public hostname.
-- `recipient` is the seller's wallet id (base64url public key). On the evm rail, `evm.recipient` — the seller's 0x address — is where USDC lands.
+- `recipient` is the seller's wallet id (base64url public key). On the evm rail, `evm.recipient` (the seller's 0x address) is where USDC lands.
 - `prefix` is matched longest-first. `""` is the root. A request to `<prefix><rest>` forwards to `<upstream><rest>` with the query string intact.
 - `path` supports `:param` segments; anything else is literal. Method is case-insensitive.
 - `price` is USD with up to six decimals. `"0"` routes are forwarded unpaid. Paths with no priced route return 404 and are **never proxied**.
@@ -439,7 +440,7 @@ For production use a provider endpoint (Alchemy/QuickNode/dRPC support Robinhood
 }
 ```
 
-`evm.recipient` is the seller's payout address — USDC lands there. The gateway holds **no key at all**: the agent's account is the transaction sender and pays gas.
+`evm.recipient` is the seller's payout address; USDC lands there. The gateway holds **no key at all**: the agent's account is the transaction sender and pays gas.
 
 **Funding, once.**
 
@@ -456,10 +457,10 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 
 **Operational facts.**
 
-- One allowance per (owner, agent) pair — so one owner can run many agents against one account, each with its own allowance and mandate.
+- One allowance per (owner, agent) pair, so one owner can run many agents against one account, each with its own allowance and mandate.
 - `tab evm revoke` (allowance to 0) ends an agent's spending instantly, independent of mandate expiry.
 - The agent pays gas, bounded per call by `gas_limit × max_fee_per_gas` from the challenge it signed. Keep ~0.005 ETH on an active agent; `tab evm balance` shows the ETH balance too.
-- A signed-but-voided payment stays broadcastable until the agent's nonce moves. The seller could broadcast it without serving — a one-priced-call trust bound; see SPEC.md §9.
+- A signed-but-voided payment stays broadcastable until the agent's nonce moves. The seller could broadcast it without serving, a one-priced-call trust bound; see SPEC.md §9.
 - The wallet endpoint (`/.well-known/tab/wallet/<id>`) takes a 0x address on this rail.
 - Only type-2 transactions, empty access lists, 6-decimal tokens in draft 0.2.
 

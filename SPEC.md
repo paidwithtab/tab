@@ -1,6 +1,6 @@
 # The tab protocol, draft 0.3
 
-How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail — Robinhood Chain — and the `evm_owner` mandate field, draft 0.3 removed the solana rail: `evm` is the settlement rail).
+How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail for Robinhood Chain and the `evm_owner` mandate field, draft 0.3 made `evm` the sole settlement rail).
 
 ## 1. Model and terms
 
@@ -11,7 +11,7 @@ How an agent pays a gateway for one HTTP request, under a spending grant its own
 | **gateway** | fronts an upstream API; issues challenges, verifies, reserves, forwards, captures on 2xx |
 | **realm** | the string a gateway names itself with (`spec.realm`); mandates allow-list realms |
 | **rail** | how money settles: `ledger` (gateway SQLite sandbox) or `evm` (ERC-20 stablecoin on Robinhood Chain) |
-| **resource** | `"METHOD /path"` — the priced thing being bought |
+| **resource** | `"METHOD /path"`: the priced thing being bought |
 
 All protocol objects are JSON. All amounts are **micro-USD** integers carried as decimal strings (`"10000"` = $0.01). Prices in gateway specs are USD strings with up to six decimals. On the evm rail, one micro-USD equals one base unit of a 6-decimal token (USDC).
 
@@ -40,7 +40,7 @@ The owner signs it once; it is not a secret, but it grants spending, so treat it
 }
 ```
 
-`evm_owner` (optional, lowercase 0x hex) is the owner's EVM account, attested by the owner's signature; the evm rail refuses mandates without it, and payments may only `transferFrom` that address — an agent cannot point a mandate at someone else's allowance. The *body* is the object minus `id` and `sig`. `id = sha256(canonical(body))`; `sig` is the owner's Ed25519 signature over the same bytes. `window: "day"` resets the budget each UTC calendar day; `"total"` is a lifetime budget. `allow` entries are globs over realms (`*` matches any run of characters); an empty list is invalid — use `["*"]`.
+`evm_owner` (optional, lowercase 0x hex) is the owner's EVM account, attested by the owner's signature; the evm rail refuses mandates without it, and payments may only `transferFrom` that address, so an agent cannot point a mandate at someone else's allowance. The *body* is the object minus `id` and `sig`. `id = sha256(canonical(body))`; `sig` is the owner's Ed25519 signature over the same bytes. `window: "day"` resets the budget each UTC calendar day; `"total"` is a lifetime budget. `allow` entries are globs over realms (`*` matches any run of characters); an empty list is invalid; use `["*"]`.
 
 On the evm rail the mandate has an on-chain half: the owner approves the agent as ERC-20 spender on the token (section 5.2). The mandate caps what the gateway will accept; the allowance caps what the chain will move. Both must hold.
 
@@ -92,18 +92,18 @@ Authorization: Tab <base64url(credential JSON)>
 }
 ```
 
-`request` is the **request commitment**: `query` is the URL search string exactly as sent (`""` if none) and `body_sha256` is the SHA-256 (base64url) of the request body — of zero bytes for bodyless requests. `sig` is the agent's signature over the canonical JSON of
+`request` is the **request commitment**: `query` is the URL search string exactly as sent (`""` if none) and `body_sha256` is the SHA-256 (base64url) of the request body, or of zero bytes for bodyless requests. `sig` is the agent's signature over the canonical JSON of
 
 ```json
 { "agent": …, "amount": …, "body": "<body_sha256>", "challenge": "<challenge id>",
   "mandate": "<mandate id>", "query": …, "realm": …, "recipient": …, "resource": … }
 ```
 
-so a credential authorizes **exactly this request** — method, path, query and body — for exactly this amount under that one challenge id, not merely "any call to the route". The `evm` member is required on the evm rail and absent on the ledger rail.
+so a credential authorizes **exactly this request** (method, path, query and body) for exactly this amount under that one challenge id, not merely "any call to the route". The `evm` member is required on the evm rail and absent on the ledger rail.
 
 ### 3.3 Receipts and voids
 
-On success the response carries `Tab-Receipt: <base64url(receipt JSON)>` — `{id, realm, resource, amount, currency, rail, payer, owner, recipient, ref, at}` with `ref` = `ledger:<hold id>` or `evm:<tx hash>`. If the upstream answered non-2xx, the response is passed through unchanged plus `Tab-Void: <hold id>` and nothing is charged. The upstream itself receives `Tab-Payer`, `Tab-Owner` and `Tab-Hold` request headers for attribution; the buyer's `Authorization` header is stripped and the gateway's `upstream_headers` are injected.
+On success the response carries `Tab-Receipt: <base64url(receipt JSON)>`, which decodes to `{id, realm, resource, amount, currency, rail, payer, owner, recipient, ref, at}` with `ref` = `ledger:<hold id>` or `evm:<tx hash>`. If the upstream answered non-2xx, the response is passed through unchanged plus `Tab-Void: <hold id>` and nothing is charged. The upstream itself receives `Tab-Payer`, `Tab-Owner` and `Tab-Hold` request headers for attribution; the buyer's `Authorization` header is stripped and the gateway's `upstream_headers` are injected.
 
 ## 4. Verification order
 
@@ -120,11 +120,11 @@ The gateway verifies in exactly this order. Each failure is a fresh 402 (RFC 945
 9. Inside **one SQLite transaction**:
    a. **Single redemption**: insert the challenge id into the redeemed set; a duplicate → `invalid-challenge`. Insert-before-reserve means two racing copies of one credential cannot both pay.
    b. **Per-call cap**, then **window budget** (spend counter keyed by mandate id and UTC day for `day` windows) → `mandate-exceeded`.
-   c. **Rail reservation**: ledger — debit the owner's balance or `insufficient-funds`; evm — parse the type-2 transaction, recover its sender from the secp256k1 signature, and require every field (chain id, fees, gas limit, token contract, value, `transferFrom(mandate.evm_owner, challenge recipient, amount)` calldata) to equal what the challenge dictates — only the nonce is the agent's to choose (→ `verification-failed`).
+   c. **Rail reservation.** Ledger: debit the owner's balance or `insufficient-funds`. Evm: parse the type-2 transaction, recover its sender from the secp256k1 signature, and require every field (chain id, fees, gas limit, token contract, value, `transferFrom(mandate.evm_owner, challenge recipient, amount)` calldata) to equal what the challenge dictates; only the nonce is the agent's to choose (→ `verification-failed`).
    d. evm only: the keccak hash of the raw transaction is stored **UNIQUE across non-voided holds**, so one signed payment can never back two served calls (→ `invalid-challenge`, "payment transaction already used"). A voided hold frees its hash: after a void the same nonce legitimately produces the same bytes.
 10. After the transaction commits, the rail's chain checks (evm): the sender's nonce must equal the account's pending nonce (→ `payment-expired`), the sender must afford `gas_limit × max_fee_per_gas` (→ `insufficient-funds`), and an `eth_call` **dry run** of the transfer must not revert (revert → `insufficient-funds`: owner balance or allowance short, or the allowance revoked). On failure the spend counter is refunded and the hold voided; the redeemed challenge id stays burned.
 11. **Forward upstream.** Unreachable or timed out → **502** `upstream-failed`, hold released, nothing charged. Non-2xx → passed through with `Tab-Void`, hold released, budget refunded.
-12. **Capture** on 2xx: ledger — credit the recipient; evm — broadcast and wait for the receipt. Only now does money move. If broadcasting fails after a 2xx, the hold is voided and the buyer gets the response uncharged — the failure mode is always in the buyer's favor.
+12. **Capture** on 2xx. Ledger: credit the recipient. Evm: broadcast and wait for the receipt. Only now does money move. If broadcasting fails after a 2xx, the hold is voided and the buyer gets the response uncharged; the failure mode is always in the buyer's favor.
 
 Rationale for the order: the cheapest, stateless checks run first; nothing touches the database until the credential is proven genuine; money is reserved before the upstream does any work but only *moves* after the upstream succeeded.
 
@@ -140,9 +140,9 @@ USDC (or any 6-decimal ERC-20) on an EVM chain. Built for **Robinhood Chain**, a
 
 Identity: a tab key file's 32-byte private seed doubles as a secp256k1 scalar (`d = seed mod (n-1) + 1`), so one key file yields both the Ed25519 wallet id and an EVM address (`tab evm address`). The protocol layer (mandates, credentials) stays Ed25519; only the payment transaction is secp256k1.
 
-Setup, once: the owner calls ERC-20 `approve(agentAddress, amount)` on the token (`tab evm approve`). The allowance decrements with every `transferFrom` and `approve(agent, 0)` revokes it instantly (`tab evm revoke`). The agent's account also needs a little ETH: EVM has no native fee-payer co-signing, so the transaction sender — the agent — pays gas (`tab evm fund` moves some over; bound per call by `gas_limit × max_fee_per_gas`, which the agent signs).
+Setup, once: the owner calls ERC-20 `approve(agentAddress, amount)` on the token (`tab evm approve`). The allowance decrements with every `transferFrom` and `approve(agent, 0)` revokes it instantly (`tab evm revoke`). The agent's account also needs a little ETH: EVM has no native fee-payer co-signing, so the transaction sender, the agent, pays gas (`tab evm fund` moves some over; bound per call by `gas_limit × max_fee_per_gas`, which the agent signs).
 
-Per payment the agent builds an EIP-1559 transaction from the challenge — to = token, value 0, calldata `transferFrom(evm_owner, challenge.evm.recipient, amount)`, fees and gas limit verbatim from the challenge — choosing only the nonce, which it reads from the gateway (`GET /.well-known/tab/evm/nonce/<0xaddress>`), so clients still need no RPC of their own. The gateway parses the transaction, recovers the sender, checks every field, enforces raw-tx-hash uniqueness, dry-runs the transfer, forwards upstream, and broadcasts only on 2xx. Receipt `ref` is `evm:<tx hash>`; `rail_info.explorer` (e.g. explorer.testnet.chain.robinhood.com) tells front ends where a ref can be viewed.
+Per payment the agent builds an EIP-1559 transaction from the challenge (to = token, value 0, calldata `transferFrom(evm_owner, challenge.evm.recipient, amount)`, fees and gas limit verbatim from the challenge), choosing only the nonce, which it reads from the gateway (`GET /.well-known/tab/evm/nonce/<0xaddress>`), so clients still need no RPC of their own. The gateway parses the transaction, recovers the sender, checks every field, enforces raw-tx-hash uniqueness, dry-runs the transfer, forwards upstream, and broadcasts only on 2xx. Receipt `ref` is `evm:<tx hash>`; `rail_info.explorer` (e.g. explorer.testnet.chain.robinhood.com) tells front ends where a ref can be viewed.
 
 ## 6. Discovery
 
@@ -172,15 +172,15 @@ The catalog's own API (`/v1/catalog.json`, `/v1/search`, `/v1/announce`, `/v1/re
 
 ## 9. Security considerations
 
-- **The owner key never travels.** Payments require only the agent key and the mandate. Compromise of an agent key is bounded by the mandate budget, per-call cap, realm list and expiry — and on-chain additionally by the ERC-20 allowance, which the owner can revoke at any moment.
-- **The gateway is trusted by the seller, not by the owner.** A malicious gateway can at most consume the mandate budget at the priced rates on its own realm; it cannot forge mandates (owner signature) and cannot move more than the agent signed — the transfer transaction is signed by the agent and field-checked against the challenge the agent accepted, and the gateway holds no payment key at all.
+- **The owner key never travels.** Payments require only the agent key and the mandate. Compromise of an agent key is bounded by the mandate budget, per-call cap, realm list and expiry, and on-chain additionally by the ERC-20 allowance, which the owner can revoke at any moment.
+- **The gateway is trusted by the seller, not by the owner.** A malicious gateway can at most consume the mandate budget at the priced rates on its own realm; it cannot forge mandates (owner signature) and cannot move more than the agent signed: the transfer transaction is signed by the agent and field-checked against the challenge the agent accepted, and the gateway holds no payment key at all.
 - **Replay** is stopped by single-redemption of the HMAC-bound challenge id, enforced with insert-before-reserve inside the same transaction as the budget and funds checks. On the evm rail the raw-transaction hash is additionally unique across non-voided holds, and the chain's own nonce rule stops on-chain replay.
 - **A gateway holding a signed payment** can broadcast it without serving the call. The buyer's exposure is one priced call; the transaction stays valid until the agent's nonce moves, so an agent that stops trusting a seller should make any other payment (moving its nonce) or have the owner revoke the allowance.
 - **Agent gas exposure (evm)**: a broadcast transaction costs the agent at most `gas_limit × max_fee_per_gas`, terms it signed. A hostile gateway could quote absurd fees; the agent implicitly accepts them by signing, so clients that pay strangers may want to sanity-cap `max_fee_per_gas`.
 - **The budget race** (two concurrent calls straddling the limit) is closed by doing the spend-counter update and the funds reservation in one SQLite transaction.
-- **Challenge forgery** is stopped by the per-database HMAC secret; losing the database rotates the secret implicitly (old challenges die harmlessly) but also resets spend counters — see `DEPLOY.md` section 12.
-- **Request binding** (new in draft 0.1): the credential signature covers the query string and a SHA-256 body digest, and the gateway compares both against the request it actually received — an authorization describes exactly one request. Residual gap: request *headers* are not bound; do not let header values change what an upstream sells for a given priced route.
-- **Catalog SSRF**: `/v1/announce` refuses origins that are IP-literals in, or resolve to, private/loopback/link-local/CGNAT/metadata ranges (unless started with `--allow-private-origins` for local development), refuses redirects and caps discovery documents at 1 MB; the wallet proxy only fetches already-catalogued origins. Residual gap: DNS rebinding between the resolve-check and the fetch — run public catalogs on hosts with no reachable internal services.
+- **Challenge forgery** is stopped by the per-database HMAC secret; losing the database rotates the secret implicitly (old challenges die harmlessly) but also resets spend counters; see `DEPLOY.md` section 12.
+- **Request binding** (new in draft 0.1): the credential signature covers the query string and a SHA-256 body digest, and the gateway compares both against the request it actually received, so an authorization describes exactly one request. Residual gap: request *headers* are not bound; do not let header values change what an upstream sells for a given priced route.
+- **Catalog SSRF**: `/v1/announce` refuses origins that are IP-literals in, or resolve to, private/loopback/link-local/CGNAT/metadata ranges (unless started with `--allow-private-origins` for local development), refuses redirects and caps discovery documents at 1 MB; the wallet proxy only fetches already-catalogued origins. Residual gap: DNS rebinding between the resolve-check and the fetch, so run public catalogs on hosts with no reachable internal services.
 - **Public receipts** expose payer and owner wallet ids; leave `public_receipts` off if that linkage matters.
 - The web try-it agent is a deliberate hole: anyone who can reach the catalog can spend that mandate. Give it a budget you are happy to lose.
 

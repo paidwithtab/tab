@@ -6,3 +6,4 @@ keys/
 .env
 .claude/settings.local.json
 image.png
+*.tgz

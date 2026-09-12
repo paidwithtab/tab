@@ -4,7 +4,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Catalog — tab</title>
+<title>Catalog · tab</title>
 <meta name="description" content="Priced routes agents can pay for, the gateways that serve them, and live receipts.">
 <link rel="stylesheet" href="/site.css">
 <style>
@@ -213,7 +213,7 @@ async function loadReceipts() {
     </tr>`).join('');
   $('#receipts tbody').innerHTML =
     `<tr><th>when (UTC)</th><th>resource</th><th>amount</th><th>ref</th></tr>` +
-    (rows || '<tr><td colspan="4" class="dim">no receipts yet — buy something above</td></tr>');
+    (rows || '<tr><td colspan="4" class="dim">no receipts yet. Buy something above.</td></tr>');
 }
 
 async function lookupWallet() {
@@ -239,7 +239,7 @@ async function verifyMandate() {
   if (!v.ok) { out.textContent = `INVALID: ${v.error}`; return; }
   const m = v.mandate;
   out.textContent = [
-    `VALID — owner signature checks out${realm ? ` and realm ${realm} is allowed` : ''}`,
+    `VALID: owner signature checks out${realm ? ` and realm ${realm} is allowed` : ''}`,
     `owner   ${m.owner}`, `agent   ${m.agent}`,
     `budget  $${m.budget_usd} per ${m.window === 'day' ? 'UTC day' : 'lifetime'}` +
       (m.max_per_call_usd ? `, at most $${m.max_per_call_usd} per call` : ''),

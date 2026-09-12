@@ -83,7 +83,7 @@ td.mono, .mono { font-family:var(--mono); font-size:13px; }
 dl.kv { display:grid; grid-template-columns:auto 1fr; gap:12px 32px; font-size:15px; margin:18px 0; }
 dl.kv dt { color:var(--dim); white-space:nowrap; } dl.kv dd { color:var(--fg); }
 ul.plain { list-style:none; display:grid; gap:10px; color:var(--fg2); font-size:15px; }
-ul.plain li::before { content:"—"; color:var(--dim); margin-right:12px; }
+ul.plain li::before { content:""; display:inline-block; width:12px; height:1px; background:var(--dim); vertical-align:middle; margin-right:12px; }
 .note { border-left:1px solid var(--accent); padding:4px 0 4px 18px; color:var(--fg2); font-size:15px; max-width:60ch; margin:22px 0; }
 .links { list-style:none; display:grid; gap:12px; font-size:15px; }
 .links a { color:var(--accent); }
