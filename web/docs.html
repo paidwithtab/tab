@@ -54,9 +54,12 @@
     <section id="quick-start">
       <h2>Quick start</h2>
       <p>tab runs on Node 22.13 or newer with no runtime dependencies. The demo brings up keys, sandbox money, a priced demo API on port 4101, a gateway on 1402, and the catalog with this site on 1403.</p>
-<pre><b>$ git clone &lt;the tab repo&gt; &amp;&amp; cd tab</b>
+<pre><b>$ git clone https://github.com/paidwithtab/tab &amp;&amp; cd tab</b>
 <b>$ npm install</b>
 <b>$ npm run demo</b>
+
+<i># or, without cloning, run the CLI from npm</i>
+<b>$ npx paidwithtab key new --out keys/agent.json</b>
 
 <i># then pay for something from another terminal</i>
 <b>$ npm run cli -- fetch --agent keys/agent-claude.json --mandate keys/mandate-claude.json \
@@ -205,7 +208,8 @@
 
     <section id="contact">
       <h2>Contact</h2>
-      <p>tab is open source and under active development. The next milestone is one real external API seller and one independent agent paying it. If that could be you, the fastest way to talk is an issue or a pull request on the repository.</p>
+      <p>tab is open source and under active development. The next milestone is one real external API seller and one independent agent paying it. If that could be you, open an issue or a pull request on <a href="https://github.com/paidwithtab/tab" rel="noopener">github.com/paidwithtab/tab</a>, or say hello at <a href="https://x.com/paidwithtab" rel="noopener">x.com/paidwithtab</a>.</p>
+      <p>The package is <code>paidwithtab</code> on npm. The command it installs is <code>tab</code>.</p>
     </section>
   </article>
 </div>
@@ -217,6 +221,8 @@
       <li><a href="/docs">Docs</a></li>
       <li><a href="/catalog">Catalog</a></li>
       <li><a href="/v1/catalog.json">Status</a></li>
+      <li><a href="https://github.com/paidwithtab/tab" rel="noopener">GitHub</a></li>
+      <li><a href="https://x.com/paidwithtab" rel="noopener">X</a></li>
       <li><a href="/docs#contact">Contact</a></li>
     </ul>
   </div>
