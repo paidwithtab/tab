@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docs — tab</title>
+<meta name="description" content="tab documentation: quick start, CLI reference, the 402 protocol, mandates, rails, the catalog API, and deployment.">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="/"><img src="/logo.png" alt="tab" width="52" height="22"></a>
+    <ul>
+      <li><a href="/product">Product</a></li>
+      <li><a href="/developers">Developers</a></li>
+      <li><a href="/providers">Providers</a></li>
+      <li><a href="/catalog">Catalog</a></li>
+      <li><a href="/docs" aria-current="page">Docs</a></li>
+    </ul>
+    <a class="btn ghost" href="#quick-start">Get started</a>
+  </div>
+</nav>
+
+<header class="head">
+  <div class="wrap">
+    <div class="eyebrow">Documentation</div>
+    <h1>Everything tab does, in one place.</h1>
+    <p class="sub">The short version of the three reference documents. The full protocol, the operator's manual, and the README are linked at the end and served from this site.</p>
+  </div>
+</header>
+
+<div class="wrap docs">
+  <ul class="toc">
+    <li class="h">Start</li>
+    <li><a href="#quick-start">Quick start</a></li>
+    <li><a href="#cli">CLI reference</a></li>
+    <li class="h">Protocol</li>
+    <li><a href="#protocol">Overview</a></li>
+    <li><a href="#mandates">Mandates</a></li>
+    <li><a href="#verification">Verification order</a></li>
+    <li><a href="#rails">Rails</a></li>
+    <li class="h">Services</li>
+    <li><a href="#gateway">Gateway HTTP surface</a></li>
+    <li><a href="#catalog-api">Catalog API</a></li>
+    <li><a href="#deploy">Deployment</a></li>
+    <li class="h">More</li>
+    <li><a href="#documents">Full documents</a></li>
+    <li><a href="#contact">Contact</a></li>
+  </ul>
+
+  <article>
+    <section id="quick-start">
+      <h2>Quick start</h2>
+      <p>tab runs on Node 22.13 or newer with no runtime dependencies. The demo brings up keys, sandbox money, a priced demo API on port 4101, a gateway on 1402, and the catalog with this site on 1403.</p>
+<pre><b>$ git clone &lt;the tab repo&gt; &amp;&amp; cd tab</b>
+<b>$ npm install</b>
+<b>$ npm run demo</b>
+
+<i># then pay for something from another terminal</i>
+<b>$ npm run cli -- fetch --agent keys/agent-claude.json --mandate keys/mandate-claude.json \
+    http://127.0.0.1:1402/quote</b></pre>
+      <p>Open <a href="/catalog">the catalog</a> to search routes, buy one from the browser with the demo's web agent, and watch receipts arrive. The test suites run in-process: <code>npm test</code>, <code>npm run test:adversarial</code>, and <code>npm run test:evm</code>.</p>
+      <p>For the step-by-step path that the <a href="/developers">Developers</a> and <a href="/providers">Providers</a> pages describe, use the commands below.</p>
+    </section>
+
+    <section id="cli">
+      <h2>CLI reference</h2>
+      <p>One binary, <code>tab</code>, for every role. During development run it as <code>npm run cli -- …</code>; after <code>npm run build</code> it is <code>node bin/tab.js</code>.</p>
+      <div class="tablewrap"><table>
+        <tr><th>Command</th><th>Does</th></tr>
+        <tr><td class="mono">tab key new [--out file]</td><td>Create an Ed25519 key file. The same seed doubles as the EVM account.</td></tr>
+        <tr><td class="mono">tab mandate issue --owner key.json --agent &lt;pub|file&gt; --budget 1.00<br>[--window total|day] [--max-per-call 0.05] [--allow realm]… [--days 7] [--out file]</td><td>Sign a spending limit for an agent.</td></tr>
+        <tr><td class="mono">tab mint --wallet &lt;pub|file&gt; --amount 5.00 [--db tab.db]</td><td>Create sandbox money on a ledger-rail gateway's database.</td></tr>
+        <tr><td class="mono">tab balance --wallet &lt;pub|file&gt; [--db tab.db]</td><td>Read a ledger balance.</td></tr>
+        <tr><td class="mono">tab serve --spec spec.json [--db tab.db] [--port 1402]<br>[--announce http://catalog:1403] [--origin url]</td><td>Run a gateway in front of the services in the spec.</td></tr>
+        <tr><td class="mono">tab catalog serve [--db catalog.db] [--port 1403]<br>[--try-agent key.json --try-mandate mandate.json] [--try-max-per-call 0.05]<br>[--allow-private-origins] [--seed origin]…</td><td>Run the catalog and this site. The try-agent lets the web UI buy routes.</td></tr>
+        <tr><td class="mono">tab evm address &lt;key.json&gt;</td><td>Show the 0x address for a key file.</td></tr>
+        <tr><td class="mono">tab evm approve --owner key.json --agent &lt;key|0x&gt; --amount 1.00 --token &lt;0x&gt; [--rpc url]</td><td>Let the agent move up to the amount of the owner's USDC.</td></tr>
+        <tr><td class="mono">tab evm revoke --owner key.json --token &lt;0x&gt; [--rpc url]</td><td>Withdraw that allowance.</td></tr>
+        <tr><td class="mono">tab evm balance --wallet &lt;key|0x&gt; --token &lt;0x&gt; [--agent &lt;key|0x&gt;] [--rpc url]</td><td>Token balance, and the agent's remaining allowance.</td></tr>
+        <tr><td class="mono">tab evm fund --from key.json --to &lt;key|0x&gt; --eth 0.005 [--rpc url]</td><td>Send gas to the agent's account.</td></tr>
+        <tr><td class="mono">tab fetch --agent key.json --mandate mandate.json [--max-per-call 0.05]<br>[-X POST] [-d body] &lt;url&gt;</td><td>Make a paid request from the command line.</td></tr>
+        <tr><td class="mono">tab mcp</td><td>Run the MCP server on stdio. Env: <code>TAB_AGENT</code>, <code>TAB_MANDATE</code>, optional <code>TAB_MAX_PER_CALL</code>, <code>TAB_CATALOG</code>.</td></tr>
+      </table></div>
+    </section>
+
+    <section id="protocol">
+      <h2>Protocol overview</h2>
+      <p>Wire version <code>tab/0</code>. Three roles, four objects, all JSON. Amounts are micro-USD integers carried as decimal strings, so <code>"10000"</code> is one cent.</p>
+      <div class="tablewrap"><table>
+        <tr><th>Role</th><th>Holds</th><th>Does</th></tr>
+        <tr><td>Owner</td><td>The funds and a key</td><td>Signs mandates offline. Never online during a payment.</td></tr>
+        <tr><td>Agent</td><td>Its own key and a mandate</td><td>Signs one credential per paid request.</td></tr>
+        <tr><td>Gateway</td><td>The spec and a database</td><td>Issues challenges, verifies, reserves, forwards, captures on 2xx.</td></tr>
+      </table></div>
+      <h3>Challenge</h3>
+      <p>An unpaid request to a priced route gets a 402 with <code>WWW-Authenticate: Tab challenge="…"</code>. The challenge names the realm, rail, recipient, amount, resource, and expiry, and carries an HMAC id so the gateway keeps no per-challenge state.</p>
+      <h3>Credential</h3>
+      <p>The agent retries with <code>Authorization: Tab &lt;credential&gt;</code>: the challenge, the mandate, a commitment to the request's query string and body hash, and the agent's signature over all of it. On the evm rail it also embeds the signed payment transaction.</p>
+      <h3>Receipt</h3>
+      <p>A successful paid response carries <code>Tab-Receipt</code> with the id, realm, resource, amount, currency, rail, payer, owner, recipient, a settlement reference (<code>ledger:&lt;hold&gt;</code> or <code>evm:&lt;tx hash&gt;</code>), and a timestamp. A non-2xx upstream answer is passed through with <code>Tab-Void</code> instead, and nothing is charged.</p>
+      <h3>Refusals</h3>
+      <p>Every refusal is a fresh 402 carrying an RFC 9457 problem with <code>type: urn:tab:problem:&lt;code&gt;</code> and a fresh challenge. Codes: <code>payment-required</code>, <code>malformed-credential</code>, <code>invalid-challenge</code>, <code>payment-expired</code>, <code>verification-failed</code>, <code>mandate-invalid</code>, <code>mandate-denied</code>, <code>mandate-exceeded</code>, <code>insufficient-funds</code>; plus <code>not-found</code> (404) and <code>upstream-failed</code> (502). Clients retry exactly once.</p>
+    </section>
+
+    <section id="mandates">
+      <h2>Mandates</h2>
+      <p>A mandate is the signed spending limit. The owner issues it once; the agent carries it in every credential; the gateway enforces it on every request. It is not secret, but it grants spending.</p>
+      <div class="tablewrap"><table>
+        <tr><th>Field</th><th>Meaning</th></tr>
+        <tr><td class="mono">owner</td><td>Wallet id that signs, and whose funds move.</td></tr>
+        <tr><td class="mono">agent</td><td>Wallet id allowed to spend under it.</td></tr>
+        <tr><td class="mono">budget</td><td>Micro-USD the agent may spend in the window.</td></tr>
+        <tr><td class="mono">window</td><td><code>total</code> for the mandate's lifetime, or <code>day</code> per UTC calendar day.</td></tr>
+        <tr><td class="mono">max_per_call</td><td>Ceiling on one request, or null.</td></tr>
+        <tr><td class="mono">allow</td><td>Realm globs. <code>["*"]</code> means any gateway.</td></tr>
+        <tr><td class="mono">issued_at, expires_at</td><td>ISO 8601. Expired mandates are refused.</td></tr>
+        <tr><td class="mono">evm_owner</td><td>The owner's 0x account, attested by the signature. Required on the evm rail so payments can only draw on this owner's allowance.</td></tr>
+        <tr><td class="mono">id, sig</td><td>SHA-256 of the canonical body, and the owner's Ed25519 signature over it.</td></tr>
+      </table></div>
+      <p>Paste a mandate into <a href="/catalog#verify">the catalog's verifier</a> to check its signature and see its terms in plain words.</p>
+    </section>
+
+    <section id="verification">
+      <h2>Verification order</h2>
+      <p>The gateway checks a credential in exactly this order. Each failure is a fresh 402 with the reason named.</p>
+      <ol class="seq">
+        <li class="on"><b>Parse the credential</b><span>Wrong shape → <code>malformed-credential</code>.</span></li>
+        <li class="on"><b>Challenge authenticity and relevance</b><span>The HMAC id must verify, and realm, rail, recipient, amount and resource must match what this request would cost → <code>invalid-challenge</code>. Expired → <code>payment-expired</code>.</span></li>
+        <li class="on"><b>Mandate validity and agent binding</b><span>Structure, id, owner signature, expiry → <code>mandate-invalid</code>. The credential's agent must be the mandate's agent and the signature must cover the request → <code>verification-failed</code>.</span></li>
+        <li class="on"><b>Request commitment</b><span>The query string and the SHA-256 of the body actually received must equal what the agent signed.</span></li>
+        <li class="on"><b>Realm allow-list</b><span>The gateway's realm must match a mandate glob → <code>mandate-denied</code>.</span></li>
+        <li class="on"><b>One database transaction</b><span>Burn the challenge id (a duplicate is refused), check the per-call cap and the window budget → <code>mandate-exceeded</code>, then reserve on the rail → <code>insufficient-funds</code>. On evm, the embedded transaction's every field must match the challenge, and its hash must be unused.</span></li>
+        <li class="on"><b>Forward, then capture</b><span>Unreachable upstream → 502, nothing charged. Non-2xx → <code>Tab-Void</code>. Only on 2xx does money move.</span></li>
+      </ol>
+    </section>
+
+    <section id="rails">
+      <h2>Rails</h2>
+      <p>A rail is how money settles. Each gateway uses one, set in its spec, and challenges name it so an agent knows what it is signing.</p>
+      <h3>ledger</h3>
+      <p>Sandbox balances in the gateway's SQLite file, funded with <code>tab mint</code>. Free, instant, and the default. Receipts reference <code>ledger:&lt;hold id&gt;</code>.</p>
+      <h3>evm: USDC on Robinhood Chain</h3>
+      <p>The owner approves the agent as a spender of their USDC with <code>tab evm approve</code>. Each payment is a transfer transaction the agent builds from the challenge and signs itself; the gateway checks every field, dry-runs it, forwards upstream, and broadcasts only on 2xx. The gateway holds no payment key. Receipts reference <code>evm:&lt;tx hash&gt;</code>, and the gateway's <code>rail_info.explorer</code> tells front ends where to show it.</p>
+      <dl class="kv">
+        <dt>Network</dt><dd>Robinhood Chain testnet, chain id 46630</dd>
+        <dt>RPC</dt><dd><code>https://rpc.testnet.chain.robinhood.com</code></dd>
+        <dt>USDC</dt><dd><code>0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5</code></dd>
+        <dt>Explorer</dt><dd><code>https://explorer.testnet.chain.robinhood.com</code></dd>
+      </dl>
+    </section>
+
+    <section id="gateway">
+      <h2>Gateway HTTP surface</h2>
+      <p>Besides the priced routes themselves, a gateway serves a small discovery surface. Every JSON endpoint sends <code>Access-Control-Allow-Origin: *</code>.</p>
+      <div class="tablewrap"><table>
+        <tr><th>Path</th><th>Returns</th></tr>
+        <tr><td class="mono">GET /.well-known/tab</td><td>Realm, rail, recipient, rail info, and the full service and route list with prices.</td></tr>
+        <tr><td class="mono">GET /.well-known/tab/wallet/&lt;id&gt;</td><td>Available balance for a wallet on this gateway's rail.</td></tr>
+        <tr><td class="mono">GET /.well-known/tab/receipts?limit=</td><td>The last 200 receipts, only if the spec sets <code>public_receipts</code>.</td></tr>
+        <tr><td class="mono">GET /.well-known/tab/evm/nonce/&lt;0x&gt;</td><td>The pending nonce for an account, so agents need no RPC of their own. evm rail only.</td></tr>
+      </table></div>
+      <p>Unlisted paths are 404 and never proxied. Routes priced <code>"0"</code> are forwarded unpaid.</p>
+    </section>
+
+    <section id="catalog-api">
+      <h2>Catalog API</h2>
+      <p>The catalog is discovery, not part of the payment protocol. It polls announced gateways, indexes their routes, and serves this site.</p>
+      <div class="tablewrap"><table>
+        <tr><th>Path</th><th>Does</th></tr>
+        <tr><td class="mono">GET /v1/catalog.json</td><td>Every known gateway with its status, rail, and routes.</td></tr>
+        <tr><td class="mono">GET /v1/search?q=</td><td>Search routes by name, path and description. Empty query lists all.</td></tr>
+        <tr><td class="mono">POST /v1/announce</td><td>Register a gateway origin. Private origins are refused unless the catalog runs with <code>--allow-private-origins</code>.</td></tr>
+        <tr><td class="mono">POST /v1/refresh</td><td>Re-read every gateway now.</td></tr>
+        <tr><td class="mono">POST /v1/mandate/verify</td><td>Check a mandate's structure and signature, optionally against a realm.</td></tr>
+        <tr><td class="mono">GET /v1/wallet?origin=&amp;wallet=</td><td>Ask a gateway for a wallet's available balance.</td></tr>
+        <tr><td class="mono">GET /v1/receipts?limit=</td><td>Recent receipts across gateways that publish them.</td></tr>
+        <tr><td class="mono">GET, POST /v1/try</td><td>Whether the catalog has a web agent, and a paid request made with it. Anyone who can reach the catalog can spend that agent's limit.</td></tr>
+      </table></div>
+    </section>
+
+    <section id="deploy">
+      <h2>Deployment</h2>
+      <p>The operator's manual takes a clean VPS to a running gateway, catalog and site behind nginx with TLS. The shape is:</p>
+      <ol class="seq">
+        <li class="on"><b>Install and build</b><span>Node 22.13+, <code>npm install</code>, <code>npm run build</code>. Keep <code>web/</code> next to <code>dist/</code>.</span></li>
+        <li class="on"><b>Write the spec and keys</b><span>Owner and agent keys, a mandate, and <code>spec.json</code> for each upstream you front.</span></li>
+        <li class="on"><b>Run the gateway and catalog</b><span>As systemd services on loopback, ports 1402 and 1403, with database files you back up.</span></li>
+        <li class="on"><b>Proxy with TLS</b><span>nginx or Caddy in front, passing the host and the <code>Authorization</code> header through.</span></li>
+        <li class="on"><b>Go to real money</b><span>Switch the spec to the evm rail, approve the agent's allowance, fund it with gas, and run the security checklist.</span></li>
+      </ol>
+      <p style="margin-top:22px">All servers bind to every interface by default. Firewall them or bind to loopback before exposing a machine.</p>
+    </section>
+
+    <section id="documents">
+      <h2>Full documents</h2>
+      <ul class="links">
+        <li><a href="/README.md">README.md</a> <span class="dim">— the pitch and the one-command demo</span></li>
+        <li><a href="/SPEC.md">SPEC.md</a> <span class="dim">— the protocol: wire format, verification order, rails. Draft 0.3</span></li>
+        <li><a href="/DEPLOY.md">DEPLOY.md</a> <span class="dim">— the operator's manual, clean VPS to production</span></li>
+      </ul>
+    </section>
+
+    <section id="contact">
+      <h2>Contact</h2>
+      <p>tab is open source and under active development. The next milestone is one real external API seller and one independent agent paying it. If that could be you, the fastest way to talk is an issue or a pull request on the repository.</p>
+    </section>
+  </article>
+</div>
+
+<footer>
+  <div class="wrap">
+    <a class="logo" href="/"><img src="/logo.png" alt="tab" width="52" height="22"></a>
+    <ul>
+      <li><a href="/docs">Docs</a></li>
+      <li><a href="/catalog">Catalog</a></li>
+      <li><a href="/v1/catalog.json">Status</a></li>
+      <li><a href="/docs#contact">Contact</a></li>
+    </ul>
+  </div>
+</footer>
+</body>
+</html>

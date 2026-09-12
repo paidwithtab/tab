@@ -119,13 +119,28 @@ function findUi(): string | null {
   return null;
 }
 
-// the two pages the catalog serves: the landing page and the catalog app (web/)
-const PAGES: Record<string, [file: string, type: string]> = {
-  '/': ['index.html', 'text/html; charset=utf-8'], '/index.html': ['index.html', 'text/html; charset=utf-8'],
-  '/catalog': ['catalog.html', 'text/html; charset=utf-8'], '/catalog.html': ['catalog.html', 'text/html; charset=utf-8'],
-  '/logo.png': ['logo.png', 'image/png'],
-  '/hero.jpg': ['hero.jpg', 'image/jpeg'],
+// static files under web/: clean URLs for the pages (/product -> product.html), plus assets and the
+// three markdown documents at the repo root, which the docs page links to
+const TYPES: Record<string, string> = {
+  html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', png: 'image/png', jpg: 'image/jpeg',
+  md: 'text/markdown; charset=utf-8',
 };
+const DOCS = new Set(['README.md', 'SPEC.md', 'DEPLOY.md']);
+function staticFile(uiDir: string, path: string): [file: string, type: string] | null {
+  if (path === '/' || path === '/index.html') return [join(uiDir, 'index.html'), TYPES.html];
+  const m = /^\/([a-z0-9-]+)(?:\.(html|css|png|jpg))?$/.exec(path);
+  if (m) {
+    const ext = m[2] ?? 'html';
+    const file = join(uiDir, `${m[1]}.${ext}`);
+    return existsSync(file) ? [file, TYPES[ext]] : null;
+  }
+  const name = path.slice(1);
+  if (DOCS.has(name)) {
+    const file = join(uiDir, '..', name);
+    return existsSync(file) ? [file, TYPES.md] : null;
+  }
+  return null;
+}
 
 function routesOf(row: GatewayRow): CatalogRoute[] {
   if (!row.ok || !row.payload) return [];
@@ -218,14 +233,15 @@ export function createCatalog(opts: CatalogOptions): Server {
         return;
       }
 
-      if (method === 'GET' && PAGES[path]) {
-        if (!uiPath) {
-          sendJson(res, 500, { error: 'ui not found: keep web/ next to dist/' });
-          return;
-        }
-        const [file, type] = PAGES[path];
+      const page = method === 'GET' && !path.startsWith('/v1/') ? (uiPath ? staticFile(uiPath, path) : null) : null;
+      if (page) {
+        const [file, type] = page;
         res.writeHead(200, { 'content-type': type, 'cache-control': 'public, max-age=300' });
-        res.end(readFileSync(join(uiPath, file)));
+        res.end(readFileSync(file));
+        return;
+      }
+      if (method === 'GET' && !uiPath && (path === '/' || path === '/catalog')) {
+        sendJson(res, 500, { error: 'ui not found: keep web/ next to dist/' });
         return;
       }
 

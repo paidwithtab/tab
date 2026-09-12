@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Developers — tab</title>
+<meta name="description" content="Give your agent a tab: a key, a signed limit, and one command. Use the CLI, the client library, or the MCP server in Claude Code.">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="/"><img src="/logo.png" alt="tab" width="52" height="22"></a>
+    <ul>
+      <li><a href="/product">Product</a></li>
+      <li><a href="/developers" aria-current="page">Developers</a></li>
+      <li><a href="/providers">Providers</a></li>
+      <li><a href="/catalog">Catalog</a></li>
+      <li><a href="/docs">Docs</a></li>
+    </ul>
+    <a class="btn ghost" href="/docs#quick-start">Get started</a>
+  </div>
+</nav>
+
+<header class="head">
+  <div class="wrap">
+    <div class="eyebrow">Developers</div>
+    <h1>Give your agent a tab.</h1>
+    <p class="sub">Two key files, one signed limit, and a fetch that knows how to pay. Works from the command line, from your own code, or inside Claude Code.</p>
+  </div>
+</header>
+
+<section class="block" id="quick-start">
+  <div class="wrap split">
+    <div>
+      <h2>Five minutes, sandbox money.</h2>
+      <p>tab needs Node 22.13 or newer and nothing else. The sandbox ledger settles instantly and costs nothing, so the whole loop runs on one machine.</p>
+      <p>The demo script does all of this for you, including a priced demo API and a catalog, if you would rather watch first.</p>
+<pre><b>$ git clone &lt;the tab repo&gt; &amp;&amp; cd tab &amp;&amp; npm install</b>
+<b>$ npm run demo</b>   <i># keys, sandbox money, demo API :4101, gateway :1402, catalog :1403</i></pre>
+    </div>
+    <div>
+<pre><i># 1. a key for the owner of the money, and one for the agent</i>
+<b>$ tab key new --out keys/owner.json</b>
+<b>$ tab key new --out keys/agent.json</b>
+
+<i># 2. the owner signs a limit for that agent, once</i>
+<b>$ tab mandate issue --owner keys/owner.json --agent keys/agent.json \
+    --budget 25 --window day --max-per-call 0.05 --days 30 \
+    --out keys/mandate.json</b>
+
+<i># 3. sandbox money on a gateway's ledger (development only)</i>
+<b>$ tab mint --wallet keys/owner.json --amount 25 --db tab.db</b>
+
+<i># 4. pay for a request</i>
+<b>$ tab fetch --agent keys/agent.json --mandate keys/mandate.json \
+    http://127.0.0.1:1402/quote</b>
+<em>✓ paid $0.01 · 200 OK</em></pre>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="code">
+  <div class="wrap split">
+    <div>
+      <h2>From your own code.</h2>
+      <p>The client wraps <code>fetch</code>. On a 402 it reads the price, checks it against your own per-call ceiling, signs a payment, and retries exactly once.</p>
+      <p>If the price is over your ceiling, or your veto says no, it throws before anything is sent. The gateway never sees a credential you did not agree to.</p>
+      <ul class="plain">
+        <li><code>TabClient</code> keeps the agent key and mandate and exposes <code>fetch</code>.</li>
+        <li><code>tabFetch(url, init, options)</code> is the one-shot form.</li>
+        <li><code>receiptOf(response)</code> returns the receipt, or null when the route was free or the call was voided.</li>
+        <li><code>PaymentRefused</code> is thrown when the client itself declined to pay.</li>
+      </ul>
+    </div>
+<pre><b>import</b> { TabClient, receiptOf, PaymentRefused } <b>from</b> 'tab/client';
+
+<b>const</b> client = <b>new</b> TabClient({
+  agent, mandate,
+  maxPerCallUsd: '0.05',                       <i>// your own ceiling, on top of the limit</i>
+  onChallenge: (challenge, req) =&gt; req.amountUsd !== '0.05', <i>// optional veto</i>
+});
+
+<b>try</b> {
+  <b>const</b> res = <b>await</b> client.fetch('https://api.lingua.example/v1/translate', {
+    method: 'POST', body: JSON.stringify({ text: 'Hello, world', to: 'ja' }),
+  });
+  <b>const</b> receipt = receiptOf(res);            <i>// { amount, resource, rail, ref, … } or null</i>
+} <b>catch</b> (e) {
+  <b>if</b> (e <b>instanceof</b> PaymentRefused) console.log('declined:', e.reason);
+}</pre>
+  </div>
+</section>
+
+<section class="block" id="claude-code">
+  <div class="wrap split">
+    <div>
+      <h2>Inside Claude Code.</h2>
+      <p><code>tab mcp</code> is a Model Context Protocol server that runs where Claude Code runs. It needs the agent key, the mandate, and network access to the gateway and catalog. Claude never sees the owner key.</p>
+      <p>It exposes five tools:</p>
+      <dl class="kv">
+        <dt><code>tab_limits</code></dt><dd>What this agent may spend, and what is left.</dd>
+        <dt><code>tab_search</code></dt><dd>Search the catalog by keywords and an optional price ceiling.</dd>
+        <dt><code>tab_discover</code></dt><dd>Read a gateway's own service list.</dd>
+        <dt><code>tab_fetch</code></dt><dd>Make a paid request.</dd>
+        <dt><code>tab_balance</code></dt><dd>Available balance on a gateway.</dd>
+      </dl>
+    </div>
+    <div>
+<pre><i>// .mcp.json next to your project</i>
+{ "mcpServers": { "tab": {
+  "command": "node",
+  "args": ["/opt/tab/dist/src/cli.js", "mcp"],
+  "env": {
+    "TAB_AGENT":        "/opt/tab/keys/agent.json",
+    "TAB_MANDATE":      "/opt/tab/keys/mandate.json",
+    "TAB_MAX_PER_CALL": "0.05",
+    "TAB_CATALOG":      "https://catalog.example.com"
+  }
+} } }</pre>
+      <p class="dim" style="font-size:14px">Or for every project: <code>claude mcp add --scope user tab -e TAB_AGENT=… -e TAB_MANDATE=… -- node /opt/tab/dist/src/cli.js mcp</code></p>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="limits">
+  <div class="wrap split">
+    <div>
+      <h2>What a limit says.</h2>
+      <p>A mandate is a small signed object. The owner signs it once; the agent carries it with every payment; the gateway enforces it on every request. It is not secret, but it grants spending, so treat it like a key.</p>
+      <p>A second, client-side ceiling lives with the agent (<code>--max-per-call</code> or <code>maxPerCallUsd</code>) and is checked before any request is signed.</p>
+    </div>
+    <div class="tablewrap"><table>
+      <tr><th>Term</th><th>Flag</th><th>Meaning</th></tr>
+      <tr><td>Budget</td><td class="mono">--budget 25</td><td>Total the agent may spend in the window, in USD.</td></tr>
+      <tr><td>Window</td><td class="mono">--window total|day</td><td>Whether the budget is for the mandate's lifetime or per UTC day.</td></tr>
+      <tr><td>Per request</td><td class="mono">--max-per-call 0.05</td><td>Ceiling on any single request.</td></tr>
+      <tr><td>Services</td><td class="mono">--allow realm</td><td>Which gateways may be paid, by realm name, with globs. Repeatable.</td></tr>
+      <tr><td>Expiry</td><td class="mono">--days 30</td><td>When the mandate stops working.</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<section class="block" id="refusals">
+  <div class="wrap split">
+    <div>
+      <h2>When a payment is refused.</h2>
+      <p>A refused payment is a plain 402 with a problem document that names the reason, and a fresh challenge so a corrected retry can follow. Nothing is charged on a refusal. The client retries once; a second 402 is an answer.</p>
+    </div>
+    <div class="tablewrap"><table>
+      <tr><th>Reason</th><th>What it means</th></tr>
+      <tr><td class="mono">mandate-exceeded</td><td>The per-request cap or the window budget would be exceeded.</td></tr>
+      <tr><td class="mono">mandate-denied</td><td>This gateway's realm is not in the mandate's allow list.</td></tr>
+      <tr><td class="mono">mandate-invalid</td><td>The mandate is malformed, badly signed, or expired.</td></tr>
+      <tr><td class="mono">insufficient-funds</td><td>The owner's balance or allowance cannot cover the price.</td></tr>
+      <tr><td class="mono">payment-expired</td><td>The challenge was too old. Retry to get a fresh one.</td></tr>
+      <tr><td class="mono">verification-failed</td><td>The signature or the signed request does not match what arrived.</td></tr>
+      <tr><td class="mono">upstream-failed</td><td>502. The service did not answer. Nothing charged.</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="wrap">
+    <h2>Go deeper.</h2>
+    <ul class="links" style="margin-top:22px">
+      <li><a href="/docs#cli">CLI reference</a></li>
+      <li><a href="/docs#protocol">Protocol overview: challenge, credential, receipt</a></li>
+      <li><a href="/docs#rails">Sandbox ledger and USDC on Robinhood Chain</a></li>
+      <li><a href="/catalog">Live catalog</a></li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <a class="logo" href="/"><img src="/logo.png" alt="tab" width="52" height="22"></a>
+    <ul>
+      <li><a href="/docs">Docs</a></li>
+      <li><a href="/catalog">Catalog</a></li>
+      <li><a href="/v1/catalog.json">Status</a></li>
+      <li><a href="/docs#contact">Contact</a></li>
+    </ul>
+  </div>
+</footer>
+</body>
+</html>

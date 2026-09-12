@@ -1,78 +1,126 @@
 <!doctype html>
-<!-- the whole front end: no build step, no external scripts; talks to the catalog's /v1 API on the same origin -->
+<!-- the catalog app: talks to this catalog's /v1 API on the same origin; no build step, no external scripts -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>tab catalog — pay-per-request APIs</title>
+<title>Catalog — tab</title>
+<meta name="description" content="Priced routes agents can pay for, the gateways that serve them, and live receipts.">
+<link rel="stylesheet" href="/site.css">
 <style>
-  :root { --bg:#0d1117; --panel:#161b22; --line:#30363d; --fg:#e6edf3; --dim:#8b949e; --accent:#3fb950; --link:#58a6ff; }
-  * { box-sizing:border-box; margin:0; }
-  body { background:var(--bg); color:var(--fg); font:15px/1.5 ui-sans-serif,system-ui,sans-serif; padding:2rem 1rem 4rem; }
-  main { max-width:56rem; margin:0 auto; display:grid; gap:1.5rem; }
-  h1 { font-size:1.6rem; } h1 small { color:var(--dim); font-weight:400; font-size:1rem; margin-left:.6rem; }
-  h2 { font-size:1rem; color:var(--dim); text-transform:uppercase; letter-spacing:.08em; margin-bottom:.6rem; }
-  section { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:1.1rem 1.2rem; }
-  input, textarea, select { width:100%; padding:.55rem .8rem; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); font:inherit; }
-  textarea { font-family:ui-monospace,Menlo,monospace; font-size:.8rem; min-height:6rem; resize:vertical; }
-  table { width:100%; border-collapse:collapse; font-size:.92rem; }
-  th, td { text-align:left; padding:.45rem .5rem; border-top:1px solid var(--line); vertical-align:top; }
-  th { color:var(--dim); font-weight:500; border-top:none; }
-  code, .mono { font-family:ui-monospace,Menlo,monospace; font-size:.86em; }
-  .price { color:var(--accent); white-space:nowrap; }
-  .dim { color:var(--dim); } .ok { color:var(--accent); } .bad { color:#f85149; }
-  a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
-  button { padding:.35rem .8rem; border-radius:7px; border:1px solid var(--line); background:#21262d; color:var(--fg); font:inherit; cursor:pointer; }
-  button:hover { border-color:var(--dim); } button:disabled { opacity:.5; cursor:default; }
-  pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.7rem .9rem; overflow-x:auto; font-size:.82rem; margin-top:.6rem; white-space:pre-wrap; word-break:break-all; }
-  .row { display:grid; gap:.6rem; grid-template-columns:1fr auto; align-items:start; }
-  .row3 { display:grid; gap:.6rem; grid-template-columns:1fr 1fr auto; align-items:start; }
-  .wallet { overflow-wrap:anywhere; }
+  .app { display:grid; gap:clamp(48px,6vw,80px); padding-bottom:20px; }
+  .app section h2 { font-size:clamp(22px,2.4vw,30px); margin-bottom:6px; }
+  .app section .sub { font-size:15px; margin-bottom:22px; }
+  input, textarea, select { width:100%; padding:13px 16px; border-radius:10px; border:1px solid var(--line); background:var(--bg2); color:var(--fg); font:inherit; font-size:15px; }
+  input:focus, textarea:focus, select:focus { outline:0; border-color:rgba(255,255,255,.35); }
+  input::placeholder, textarea::placeholder { color:var(--dim); }
+  textarea { font-family:var(--mono); font-size:13px; min-height:7rem; resize:vertical; }
+  select { appearance:none; }
+  .app table { margin:0; font-size:14.5px; }
+  .app th { padding-top:18px; }
+  .app td { padding:14px 14px 14px 0; }
+  .app td:first-child { white-space:normal; }
+  .app tr.out td { padding-top:0; border-top:0; }
+  .app tr.out pre { margin:0 0 6px; padding:14px 18px; }
+  .price { color:var(--fg); font-family:var(--mono); white-space:nowrap; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  .wallet { overflow-wrap:anywhere; font-family:var(--mono); font-size:13px; }
+  .app td a { color:var(--accent); }
+  .app td a:hover { text-decoration:underline; }
+  .app button { font:inherit; font-size:13px; padding:6px 14px; border-radius:999px; border:1px solid rgba(156,195,255,.3); background:transparent; color:var(--accent); cursor:pointer; }
+  .app button:hover { border-color:var(--accent); }
+  .app button:disabled { opacity:.5; cursor:default; }
+  .app pre[id] { margin:16px 0 0; white-space:pre-wrap; word-break:break-all; }
+  .row { display:grid; gap:12px; grid-template-columns:1fr auto; align-items:start; }
+  .row3 { display:grid; gap:12px; grid-template-columns:1fr 1fr auto; align-items:start; }
+  .row .btn, .row3 .btn { padding:12px 20px; }
+  @media (max-width:700px) { .row3 { grid-template-columns:1fr; } }
+  .two { display:grid; grid-template-columns:1fr 1fr; gap:clamp(32px,5vw,72px); }
+  @media (max-width:900px) { .two { grid-template-columns:1fr; } }
 </style>
 </head>
 <body>
-<main>
-  <header>
-    <h1><a href="/"><img src="/logo.png" alt="tab" style="height:28px;vertical-align:middle"></a><small>pay-per-request APIs for software agents</small></h1>
-    <p class="dim">Every route below answers HTTP 402 until it is paid. Agents pay under a signed mandate; owners stay offline.</p>
-  </header>
 
-  <section>
-    <h2>Search routes</h2>
-    <input id="q" placeholder="try: quote, translate, echo … (empty lists everything)" autocomplete="off">
-    <table id="results"><tbody></tbody></table>
+<nav class="top">
+  <div class="wrap">
+    <a class="logo" href="/"><img src="/logo.png" alt="tab" width="52" height="22"></a>
+    <ul>
+      <li><a href="/product">Product</a></li>
+      <li><a href="/developers">Developers</a></li>
+      <li><a href="/providers">Providers</a></li>
+      <li><a href="/catalog" aria-current="page">Catalog</a></li>
+      <li><a href="/docs">Docs</a></li>
+    </ul>
+    <a class="btn ghost" href="/developers">Get started</a>
+  </div>
+</nav>
+
+<header class="head">
+  <div class="wrap">
+    <div class="eyebrow">Catalog</div>
+    <h1>What agents can buy right now.</h1>
+    <p class="sub">Every route below answers with a price until it is paid. Agents pay under a signed limit; owners stay offline. Prices are per request.</p>
+  </div>
+</header>
+
+<main class="wrap app">
+  <section id="search">
+    <h2>Routes</h2>
+    <p class="sub">Search by name, path or description. An empty search lists everything.</p>
+    <input id="q" placeholder="try: translate, quote, echo …" autocomplete="off">
+    <div class="tablewrap"><table id="results"><tbody></tbody></table></div>
   </section>
 
-  <section>
-    <h2>Gateways</h2>
-    <table id="gateways"><tbody></tbody></table>
-  </section>
+  <div class="two">
+    <section id="gateways-section">
+      <h2>Gateways</h2>
+      <p class="sub">Where the routes are served, and whether each gateway is reachable.</p>
+      <div class="tablewrap"><table id="gateways"><tbody></tbody></table></div>
+    </section>
 
-  <section>
-    <h2>Live receipts</h2>
-    <table id="receipts"><tbody></tbody></table>
-  </section>
+    <section id="receipts-section">
+      <h2>Live receipts</h2>
+      <p class="sub">Payments as they happen, from gateways that publish them.</p>
+      <div class="tablewrap"><table id="receipts"><tbody></tbody></table></div>
+    </section>
+  </div>
 
-  <section>
-    <h2>Check a wallet</h2>
-    <div class="row3">
-      <select id="w-origin"></select>
-      <input id="w-id" placeholder="wallet id (base64url public key)" autocomplete="off">
-      <button id="w-go">Look&nbsp;up</button>
-    </div>
-    <pre id="w-out" hidden></pre>
-  </section>
+  <div class="two">
+    <section id="wallet">
+      <h2>Check a wallet</h2>
+      <p class="sub">The available balance for a wallet on one gateway's rail.</p>
+      <div class="row3">
+        <select id="w-origin"></select>
+        <input id="w-id" placeholder="wallet id (base64url public key)" autocomplete="off">
+        <button id="w-go" class="btn ghost">Look up</button>
+      </div>
+      <pre id="w-out" hidden></pre>
+    </section>
 
-  <section>
-    <h2>Verify a mandate</h2>
-    <textarea id="m-json" placeholder='paste a mandate JSON (keys/mandate-*.json) — mandates are not secret, but they grant spending'></textarea>
-    <div class="row" style="margin-top:.6rem">
-      <input id="m-realm" placeholder="realm to check against, e.g. quotes.local (optional)" autocomplete="off">
-      <button id="m-go">Verify</button>
-    </div>
-    <pre id="m-out" hidden></pre>
-  </section>
+    <section id="verify">
+      <h2>Verify a mandate</h2>
+      <p class="sub">Paste a mandate to check its signature and read its terms. Mandates are not secret, but they grant spending.</p>
+      <textarea id="m-json" placeholder='{ "ver": "tab/0", "owner": "…", "agent": "…", … }'></textarea>
+      <div class="row" style="margin-top:12px">
+        <input id="m-realm" placeholder="realm to check against, e.g. lingua.example (optional)" autocomplete="off">
+        <button id="m-go" class="btn ghost">Verify</button>
+      </div>
+      <pre id="m-out" hidden></pre>
+    </section>
+  </div>
 </main>
+
+<footer>
+  <div class="wrap">
+    <a class="logo" href="/"><img src="/logo.png" alt="tab" width="52" height="22"></a>
+    <ul>
+      <li><a href="/docs">Docs</a></li>
+      <li><a href="/catalog">Catalog</a></li>
+      <li><a href="/v1/catalog.json">Status</a></li>
+      <li><a href="/docs#contact">Contact</a></li>
+    </ul>
+  </div>
+</footer>
 <script>
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));

@@ -80,7 +80,12 @@ src/                        # the code, ~2,000 lines
   keys.ts  mandate.ts  store.ts
   rails/{index,ledger,evm,budget}.ts
   evm/{keccak,secp256k1,rlp,tx,rpc,pay}.ts   # hand-written keccak-256 + ECDSA, EIP-1559, ERC-20
-web/index.html              # landing page, single file, no build step, no CDN
+web/index.html              # landing page, self-contained, no build step, no CDN
+web/product.html            # product, developers, providers and docs pages; share web/site.css
+web/developers.html
+web/providers.html
+web/docs.html
+web/site.css
 web/catalog.html            # catalog app (search, try-it, receipts, wallet, mandate check)
 web/logo.png                # wordmark, served at /logo.png
 web/hero.jpg                # landing page hero background, served at /hero.jpg
@@ -469,8 +474,10 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 | Endpoint | What |
 | --- | --- |
 | `GET /` | the landing page (`web/index.html`) |
+| `GET /product`, `/developers`, `/providers`, `/docs` | the site's pages (`web/<name>.html`, styled by `web/site.css`) |
 | `GET /catalog` | the catalog app (`web/catalog.html`) |
-| `GET /logo.png` | the wordmark used by both pages |
+| `GET /README.md`, `/SPEC.md`, `/DEPLOY.md` | the three documents at the repo root, as `text/markdown`; the docs page links to them |
+| `GET /logo.png` | the wordmark used by every page |
 | `GET /hero.jpg` | the landing page hero background |
 | `GET /v1/catalog.json` | every known gateway with services and routes |
 | `GET /v1/search?q=&max_price=` | route search, route-level text matches outrank service-level, cheapest first; results carry the full URL to call |
@@ -482,7 +489,7 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 | `GET /v1/try` | is the try-it agent configured, and its limits |
 | `POST /v1/try {url, method, body}` | pay for a catalogued route with the try-it agent, return status, receipt and body |
 
-The front end is two HTML files with no build step and no external scripts or fonts: a 325-line landing page at `/` and the 217-line catalog app at `/catalog`. The catalog app links `evm:` receipts to the gateway's own explorer (`rail_info.explorer`, defaulting to `explorer.testnet.chain.robinhood.com`); that is the only outbound URL in either file. Serve them from the catalog process or copy them anywhere static and point the app at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
+The front end is static files under `web/` with no build step and no external scripts or fonts: the landing page at `/` (329 lines, self-contained), four pages at `/product`, `/developers`, `/providers` and `/docs` that share `web/site.css`, and the catalog app at `/catalog` (265 lines). The catalog app links `evm:` receipts to the gateway's own explorer (`rail_info.explorer`, defaulting to `explorer.testnet.chain.robinhood.com`); that is the only outbound URL in either file. Serve them from the catalog process or copy them anywhere static and point the app at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
 
 ---
 
@@ -596,7 +603,7 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 | 402 `insufficient-funds` on ledger | owner wallet empty in **this gateway's** `tab.db` | `tab mint --db <that db>`; ledger balances are per gateway database |
 | 502 `upstream-failed` | upstream unreachable from the gateway | check the `upstream` origin; nothing was charged |
 | `EADDRINUSE` | another gateway or the demo still running | `ss -ltnp | grep 140` and stop it, or pick `--port` |
-| `ui not found` at `/` or `/catalog` | `web/` not next to `dist/` | keep the tree layout; catalog looks in `../web` and `../../web` relative to `catalog.js` |
+| `ui not found` at `/` or `/catalog` | `web/` not next to `dist/` | keep the tree layout; catalog looks in `../web` and `../../web` relative to `catalog.js`, and serves any `web/<name>.html` at `/<name>` |
 | `npm test` hangs or is slow | it is doing ~50 real HTTP round trips plus a catalog refresh; 1 to 2 minutes is normal | run with `SCRATCH=/some/fast/dir` |
 
 ---
