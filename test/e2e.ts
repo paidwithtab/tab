@@ -3,7 +3,7 @@
 //   npm test
 
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -256,6 +256,53 @@ async function main(): Promise<void> {
   const recs = await (await fetch(`${GW}/.well-known/tab/receipts?limit=100`)).json() as any;
   check('public receipts', Array.isArray(recs.receipts) && recs.receipts.length >= 5
     && recs.receipts.every((r: any) => typeof r.ref === 'string' && r.ref.startsWith('ledger:')));
+
+  // -- 9b. starter credits (faucet) + tab init ------------------------------
+
+  const faucetStore = new Store(join(scratch, 'faucet.db'));
+  const faucetGw = createGateway(spec, { store: faucetStore, faucetUsd: '1.00', faucetPerIpPerDay: 3 });
+  const FGW = `http://127.0.0.1:${await listen(faucetGw)}`;
+  const fDisc = await (await fetch(`${FGW}/.well-known/tab`)).json() as any;
+  check('faucet advertised in discovery', fDisc.faucet === '1.00' && disc.faucet === undefined);
+  const claimer = newKeyPair();
+  const claim = async (wallet: string) => fetch(`${FGW}/.well-known/tab/faucet`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wallet }),
+  });
+  const fc1 = await (await claim(claimer.publicKey)).json() as any;
+  const fc2 = await (await claim(claimer.publicKey)).json() as any;
+  check('faucet credits once per wallet', fc1.credited === '1.00' && fc1.available === '1.00'
+    && fc2.credited === '0.00' && fc2.already_claimed === true && faucetStore.balance(claimer.publicKey) === 1_000_000);
+  const cBad = await claim('not-a-wallet');
+  check('faucet rejects a malformed wallet', cBad.status === 400);
+  check('no faucet on a plain gateway', (await fetch(`${GW}/.well-known/tab/faucet`, { method: 'POST', body: '{}' })).status === 404);
+
+  const initDir = join(scratch, 'home');
+  const initRun = () => new Promise<{ code: number | null; out: string }>((resolve) => {
+    const p = spawn(process.execPath, ['--no-warnings=ExperimentalWarning', '--import', 'tsx', 'src/cli.ts', 'init',
+      '--dir', initDir, '--gateway', FGW, '--catalog', 'http://127.0.0.1:1', '--budget', '0.50', '--max-per-call', '0.02'], { stdio: ['ignore', 'pipe', 'inherit'] });
+    let out = '';
+    p.stdout!.on('data', (d) => { out += d; });
+    p.on('close', (code) => resolve({ code, out }));
+  });
+  const i1 = await initRun();
+  const initOwner = JSON.parse(readFileSync(join(initDir, 'owner.json'), 'utf8')).publicKey as string;
+  const initMandate = JSON.parse(readFileSync(join(initDir, 'mandate.json'), 'utf8'));
+  check('tab init writes keys, a mandate and claims credits', i1.code === 0
+    && verifyMandate(initMandate).ok && initMandate.owner === initOwner && initMandate.budget === '500000'
+    && initMandate.max_per_call === '20000' && faucetStore.balance(initOwner) === 1_000_000
+    && /1\.00 starter credits/.test(i1.out) && /claude mcp add/.test(i1.out));
+  const i2 = await initRun();
+  check('tab init is idempotent', i2.code === 0 && /already claimed/.test(i2.out)
+    && JSON.parse(readFileSync(join(initDir, 'owner.json'), 'utf8')).publicKey === initOwner);
+  const paidByInit = await new TabClient({
+    agent: JSON.parse(readFileSync(join(initDir, 'agent.json'), 'utf8')),
+    mandate: JSON.parse(readFileSync(join(initDir, 'mandate.json'), 'utf8')),
+  }).fetch(`${FGW}/quote`);
+  check('init credentials pay on the faucet gateway', paidByInit.status === 200 && receiptOf(paidByInit)?.amount === '10000');
+  await claim(newKeyPair().publicKey); // third claim from this address: allowed
+  check('faucet rate limits per address', (await claim(newKeyPair().publicKey)).status === 429);
+  faucetGw.close();
+  faucetStore.close();
 
   // -- 10. spec loading -----------------------------------------------------
 

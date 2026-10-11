@@ -2,6 +2,14 @@
 
 This guide takes you from nothing to an agent that can discover APIs, pay for them in USDC on Robinhood Chain, and prove what it bought, while being cryptographically unable to spend past the limits you set.
 
+## The fast path
+
+```sh
+npx paidwithtab init
+```
+
+One command creates the keys below, signs a mandate, and claims $1.00 of starter credits on the public gateway. Those credits are sandbox money that only spends on `pay.paidwithtab.com`. The rest of this guide is the real-money path: USDG on Robinhood Chain, where the same keys and the same mandate work unchanged.
+
 ## The three keys, and who holds what
 
 | Key | Held by | Grants |

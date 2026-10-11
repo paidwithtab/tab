@@ -158,41 +158,47 @@ If the upstream service fails, the payment is voided.
 
 > **Requires** Node.js 22.13 or newer.
 
-```sh
-git clone https://github.com/paidwithtab/tab
-cd tab
-
-npm install
-npm run demo
-```
-
-The demo starts a paid API, a tab gateway, a catalog, and a local wallet.
-
-**1. Call the paid endpoint directly.**
+Give an agent a tab in one command:
 
 ```sh
-curl -i http://127.0.0.1:1402/quote
+npx paidwithtab init
 ```
 
-The server answers with a signed challenge:
+This creates an owner key and an agent key in `~/.tab`, signs a mandate ($1.00 per day, $0.05 per call, 90 days), and claims $1.00 of starter credits on the public gateway at `pay.paidwithtab.com`. Nothing to fund, no chain, no API keys.
+
+**1. Pay for something from the shell.**
+
+```sh
+npx paidwithtab fetch "https://pay.paidwithtab.com/wikipedia/api/rest_v1/page/summary/Lisbon"
+```
+
+```
+paid 0.001 (ledger:cpKKYHocOLKlDW8n)
+{"type":"standard","title":"Lisbon", ...}
+```
+
+**2. Let Claude Code spend.**
+
+```sh
+claude mcp add --scope user tab -- npx -y paidwithtab mcp
+```
+
+Then ask Claude for something it needs to pay for, for example "find the weather in Lisbon through tab". It searches the catalog at [paidwithtab.com/catalog](https://paidwithtab.com/catalog), pays per request, and can never exceed the mandate.
+
+**3. See a price tag.**
+
+```sh
+curl -i https://pay.paidwithtab.com/fx/latest?base=USD
+```
 
 ```http
 HTTP/1.1 402 Payment Required
 WWW-Authenticate: Tab challenge="eyJ2ZXIiOiJ0YWIvMCIs..."
 ```
 
-**2. Call it through tab.**
+The starter credits are sandbox money on that one gateway. For real money, fund an agent with USDG on Robinhood Chain: [docs/buyers.md](docs/buyers.md).
 
-```sh
-npm run cli -- fetch \
-  --agent keys/agent-claude.json \
-  --mandate keys/mandate-claude.json \
-  http://127.0.0.1:1402/quote
-```
-
-tab handles the payment and returns the API response together with a receipt.
-
-**[Full walkthrough](docs/quickstart.md)**
+Want the whole stack on your machine? `git clone https://github.com/paidwithtab/tab && cd tab && npm install && npm run demo` starts a paid API, a gateway, a catalog and a local wallet. **[Full walkthrough](docs/quickstart.md)**
 
 ## For API providers
 
@@ -267,6 +273,8 @@ const res = await client.fetch('https://api.example.com/v1/things/42');
 console.log(receiptOf(res)?.ref);
 ```
 
+Or skip the key handling: `npx paidwithtab init` does all three steps and claims starter credits on the public gateway.
+
 tab also exposes five MCP tools, so compatible agents can discover and purchase services without ever receiving the owner's private key:
 
 | Tool | Purpose |
@@ -320,11 +328,11 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 106 automated checks across protocol behavior, adversarial conditions, and EVM settlement.
+tab currently runs 114 automated checks across protocol behavior, adversarial conditions, and EVM settlement.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
-| `npm test` | 51 | Gateway, catalog, MCP, receipts, payment lifecycle |
+| `npm test` | 59 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init` |
 | `npm run test:adversarial` | 24 | Concurrency, replay, mutation, SSRF, persistence |
 | `npm run test:evm` | 31 | Cryptography, EVM transactions, Robinhood Chain |
 

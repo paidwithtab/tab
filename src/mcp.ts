@@ -189,7 +189,7 @@ export function runMcpServer(opts: McpOptions): void {
       reply(id, {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'tab', version: '0.0.1' },
+        serverInfo: { name: 'tab', version: '0.4.0' },
       });
     } else if (method === 'notifications/initialized' || String(method ?? '').startsWith('notifications/')) {
       // notifications need no reply

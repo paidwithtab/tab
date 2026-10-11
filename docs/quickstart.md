@@ -1,6 +1,23 @@
 # Quickstart
 
-Everything below runs on your machine with sandbox money. No chain, no faucet, no accounts. When it clicks, [sellers.md](sellers.md) puts tab in front of a real API and [buyers.md](buyers.md) funds a real agent on Robinhood Chain.
+## The one-minute version
+
+```sh
+npx paidwithtab init
+```
+
+That writes an owner key, an agent key and a signed mandate to `~/.tab` ($1.00 per day, $0.05 per call) and claims $1.00 of starter credits on the public gateway, `pay.paidwithtab.com`, which fronts real APIs: web page reading, Wikipedia, weather, exchange rates. Then:
+
+```sh
+npx paidwithtab fetch "https://pay.paidwithtab.com/weather/forecast?latitude=38.72&longitude=-9.14&current=temperature_2m"
+claude mcp add --scope user tab -- npx -y paidwithtab mcp
+```
+
+The second line gives Claude Code the five tab tools. Ask it to look something up and it will search [paidwithtab.com/catalog](https://paidwithtab.com/catalog), pay, and show you the receipt. Running `init` again is safe: it keeps your keys and tells you the credits were already claimed.
+
+## The whole stack on your machine
+
+Everything below runs locally with sandbox money. No chain, no faucet, no accounts. When it clicks, [sellers.md](sellers.md) puts tab in front of a real API and [buyers.md](buyers.md) funds a real agent on Robinhood Chain.
 
 ## 1. Run the sandbox
 

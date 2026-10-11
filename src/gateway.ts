@@ -130,6 +130,13 @@ export interface GatewayOptions {
   log?: (msg: string) => void;
   challengeTtlMs?: number; // default 120 s
   upstreamTimeoutMs?: number; // default 60 s
+  /**
+   * Starter credits, ledger rail only: USD credited once to any wallet that
+   * asks via POST /.well-known/tab/faucet. Per-address rate limited. Unset
+   * means no faucet.
+   */
+  faucetUsd?: string;
+  faucetPerIpPerDay?: number; // default 20
 }
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
@@ -164,6 +171,9 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   const log = opts.log ?? (() => {});
   const ttlMs = opts.challengeTtlMs ?? 120_000;
   const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? 60_000;
+  const faucetMicro = opts.faucetUsd != null ? usdToMicro(opts.faucetUsd) : 0;
+  if (faucetMicro > 0 && rail.name !== 'ledger') throw new Error('the faucet only works on the ledger rail');
+  const faucetPerIpPerDay = opts.faucetPerIpPerDay ?? 20;
 
   const discovery = () => ({
     ver: VERSION,
@@ -171,6 +181,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     rail: rail.name,
     rail_info: rail.info(),
     recipient: spec.recipient,
+    faucet: faucetMicro > 0 ? microToUsd(faucetMicro) : undefined,
     services: spec.services.map((s) => ({
       name: s.name,
       prefix: s.prefix,
@@ -399,6 +410,39 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         } catch (err) {
           sendJson(res, 502, { error: `nonce lookup failed: ${(err as Error).message}` });
         }
+        return;
+      }
+      if (pathname === '/.well-known/tab/faucet' && method === 'POST') {
+        if (faucetMicro === 0) {
+          sendJson(res, 404, { error: 'this gateway has no faucet' });
+          return;
+        }
+        let wallet = '';
+        try {
+          wallet = String(JSON.parse((await readBody(req)).toString('utf8') || '{}').wallet ?? '');
+        } catch {
+          /* fall through to the validation below */
+        }
+        if (!/^[A-Za-z0-9_-]{43}$/.test(wallet)) {
+          sendJson(res, 400, { error: 'wallet must be a tab wallet id (base64url public key)' });
+          return;
+        }
+        const ip = String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '')
+          .split(',')[0].trim();
+        const now = new Date();
+        const since = new Date(now.getTime() - 86_400_000).toISOString();
+        if (store.faucetClaimsFrom(ip, since) >= faucetPerIpPerDay) {
+          sendJson(res, 429, { error: 'too many claims from this address today' });
+          return;
+        }
+        const credited = store.claimFaucet(wallet, ip, faucetMicro, now.toISOString());
+        log(`faucet ${wallet} ${credited ? 'credited ' + microToUsd(faucetMicro) : 'already claimed'} (${ip})`);
+        sendJson(res, 200, {
+          wallet,
+          credited: credited ? microToUsd(faucetMicro) : '0.00',
+          available: microToUsd(store.balance(wallet)),
+          already_claimed: !credited,
+        });
         return;
       }
       if (pathname === '/.well-known/tab/receipts' && method === 'GET') {

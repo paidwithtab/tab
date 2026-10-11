@@ -1,6 +1,6 @@
 # tab: build and deploy guide
 
-Everything needed to take this project from a clean VPS to a running gateway, catalog and front end. Written against the tree as of 2026-09-12 (`paidwithtab` version 0.3.0). `README.md` is the short pitch and `SPEC.md` is the protocol; this file is the operator's manual.
+Everything needed to take this project from a clean VPS to a running gateway, catalog and front end. Written against the tree as of 2026-10-11 (`paidwithtab` version 0.4.0). `README.md` is the short pitch and `SPEC.md` is the protocol; this file is the operator's manual.
 
 ---
 
@@ -95,7 +95,7 @@ examples/
   spec-evm.json             # same routes on the evm rail (Robinhood Chain testnet)
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh                   # one-command sandbox
-test/e2e.ts                 # 51 in-process checks, temp DB, ~1-2 min
+test/e2e.ts                 # 59 in-process checks, temp DB, ~1-2 min
 test/adversarial.ts         # 24 hostile checks: concurrency, replay, mutation, SSRF, forgery
 test/evm.ts                 # 31 checks: crypto vectors, a mock EVM node, live Robinhood testnet reads
 ```
@@ -108,7 +108,7 @@ test/evm.ts                 # 31 checks: crypto vectors, a mock EVM node, live R
 cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
-npm test                    # 51 passed, 0 failed on the dev box
+npm test                    # 59 passed, 0 failed on the dev box
 npm run test:adversarial    # 24 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery
 npm run test:evm            # 31 passed, 0 failed: keccak/secp256k1 vectors, mock chain, live testnet reads
 ```
@@ -166,9 +166,10 @@ One gateway can front many upstreams; one catalog can list many gateways; you ca
 | `MINT` | `demo.sh` | **ledger amount** to mint to the owner, default `5.00` |
 | `UPSTREAM_PORT` | `examples/upstream.ts` | default 4101 |
 | `BUDGET`, `MAX_PER_CALL`, `WEB_BUDGET` | demo scripts | mandate terms for the Claude agent (1.00 / 0.05) and the web try-it agent (0.50) |
-| `TAB_AGENT`, `TAB_MANDATE` | `tab mcp` | paths to the agent key and mandate JSON (required) |
+| `TAB_AGENT`, `TAB_MANDATE` | `tab mcp` | paths to the agent key and mandate JSON; default `~/.tab/agent.json` and `~/.tab/mandate.json` from `tab init` |
+| `TAB_HOME` | `tab init`, `tab fetch`, `tab mcp` | where the buyer's keys live; default `~/.tab` |
 | `TAB_MAX_PER_CALL` | `tab mcp` | client-side per-call ceiling in USD, independent of the mandate |
-| `TAB_CATALOG` | `tab mcp` | catalog origin for `tab_search`, `tab_discover`, `tab_balance` |
+| `TAB_CATALOG` | `tab mcp` | catalog origin for `tab_search`, `tab_discover`, `tab_balance`; default `https://paidwithtab.com` |
 | `SCRATCH` | tests | where temp DBs go; default OS tmpdir |
 
 Any `${UPPER_CASE_NAME}` inside a spec file is replaced from the environment when the spec is loaded (`loadSpec` in `src/gateway.ts`). Unset variables become empty strings, and an empty `recipient` makes `tab serve` refuse to start.
@@ -178,12 +179,15 @@ Any `${UPPER_CASE_NAME}` inside a spec file is replaced from the environment whe
 ## 7. CLI reference
 
 ```
+tab init  [--dir ~/.tab] [--budget 1.00] [--max-per-call 0.05] [--days 90]
+          [--gateway https://pay.paidwithtab.com] [--catalog https://paidwithtab.com]
 tab key new [--out file]
 tab mandate issue --owner key.json --agent <pub|file> --budget 1.00
                   [--window total|day] [--max-per-call 0.05] [--allow realm]... [--days 7] [--out file]
 tab mint    --wallet <pub|file> --amount 5.00 [--db tab.db]        sandbox: create ledger money
 tab balance --wallet <pub|file> [--db tab.db]
 tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin http://host:1402]
+            [--faucet 1.00]                                         ledger rail: starter credits, once per wallet
 tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
                   [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
 tab evm address <key.json>                                          key file -> 0x address (EIP-55)
@@ -191,12 +195,14 @@ tab evm approve --owner key.json --agent <key.json|0x> --amount 1.00 --token <0x
 tab evm revoke  --owner key.json --agent <key.json|0x> --token <0x> [--rpc url]
 tab evm balance --wallet <key.json|0x> --token <0x> [--agent <key.json|0x>] [--rpc url]
 tab evm fund    --from key.json --to <key.json|0x> --eth 0.005 [--rpc url]
-tab fetch --agent key.json --mandate mandate.json [--max-per-call 0.05] [-X POST] [-d body] <url>
+tab fetch [--agent key.json --mandate mandate.json] [--max-per-call 0.05] [-X POST] [-d body] <url>
 tab mcp                                                             stdio; TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CATALOG]
 ```
 
 Notes:
 
+- `tab init` is the buyer's whole setup: it writes `owner.json`, `agent.json` and `mandate.json` to `~/.tab` (reusing keys that are already there), signs a daily-window mandate for any realm, and claims the gateway's starter credits for the owner wallet if the gateway advertises a `faucet` in its discovery document. `tab fetch` and `tab mcp` fall back to those files when no `--agent`/`--mandate` or `TAB_AGENT`/`TAB_MANDATE` is given, and `tab mcp` defaults `TAB_CATALOG` to `https://paidwithtab.com`. `TAB_HOME` moves the directory.
+- `tab serve --faucet 1.00` (ledger rail only) opens `POST /.well-known/tab/faucet {wallet}`: one credit per wallet, ever, at most 20 claims per client address per day (`cf-connecting-ip`, then `x-forwarded-for`, then the socket). The discovery document gains `"faucet": "1.00"` so clients can find it. Starter credits are sandbox money that only spends on that gateway.
 - Anywhere a `<pub|file>` is accepted, a path ending in `.json` is read as a key file and its `publicKey` used; anything else is taken as the public key itself.
 - Key files are written with mode `0600` and look like `{"publicKey":"…","privateKey":"…"}`, both base64url raw 32 bytes. A wallet id **is** the public key; its seed also derives the key's EVM address (`tab evm address`).
 - `--allow` may be repeated. Values are globs over realms: `*`, `*.example.com`, `quotes.local`. Omitted means `*`.
@@ -420,7 +426,7 @@ Everything in section 8 applies. Robinhood Chain is an Arbitrum-stack L2; the ra
 | Cluster | chain id | public RPC (rate-limited) | explorer | USDC |
 | --- | --- | --- | --- | --- |
 | testnet | 46630 | `https://rpc.testnet.chain.robinhood.com` | `https://explorer.testnet.chain.robinhood.com` | `0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5` |
-| mainnet | 4663 | `https://rpc.mainnet.chain.robinhood.com` | `https://robinhoodchain.blockscout.com` | check the explorer |
+| mainnet | 4663 | `https://rpc.mainnet.chain.robinhood.com` | `https://robinhoodchain.blockscout.com` | the dollar on mainnet is **USDG** (Paxos), `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, 6 decimals; bridged USDC arrives as USDG |
 
 For production use a provider endpoint (Alchemy/QuickNode/dRPC support Robinhood Chain) instead of the public RPC. Beware lookalike explorer domains (rh-scan and similar); the two above are the official ones. Testnet ETH comes from `https://faucet.testnet.chain.robinhood.com/`.
 
@@ -498,9 +504,10 @@ The front end is static files under `web/` with no build step and no external sc
 
 | Endpoint | What |
 | --- | --- |
-| `GET /.well-known/tab` | discovery: version, realm, rail, rail_info, recipient, services, routes |
+| `GET /.well-known/tab` | discovery: version, realm, rail, rail_info, recipient, services, routes, and `faucet` when starter credits are on |
 | `GET /.well-known/tab/wallet/<id>` | available balance of a wallet on this rail |
 | `GET /.well-known/tab/receipts?limit=` | last receipts, only if `public_receipts` |
+| `POST /.well-known/tab/faucet {wallet}` | starter credits, only with `--faucet`: credits the wallet once, 429 past the per-address limit |
 | `OPTIONS /.well-known/tab*` | CORS preflight |
 | any priced route | 402 with `WWW-Authenticate: Tab …` until paid; then proxied |
 | any unpriced path | 404 `not-found`, never proxied |
@@ -531,7 +538,13 @@ The gateway prunes redeemed challenge ids older than one hour every ten minutes.
 
 `tab mcp` is a Model Context Protocol server on stdio, implemented without an SDK. It exposes five tools: `tab_limits`, `tab_search`, `tab_discover`, `tab_fetch`, `tab_balance`. It runs **where Claude Code runs**, not on the gateway, and needs only an agent key, a mandate, and network access to the gateway and catalog.
 
-Register it for one project by keeping `.mcp.json` next to the code:
+The short way, for a buyer who ran `tab init` (keys and mandate in `~/.tab`, catalog defaulting to `https://paidwithtab.com`):
+
+```sh
+claude mcp add --scope user tab -- npx -y paidwithtab mcp
+```
+
+Register it for one project with explicit files by keeping `.mcp.json` next to the code:
 
 ```json
 { "mcpServers": { "tab": {
@@ -627,4 +640,32 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 
 ## 18. What is not built yet
 
-From the README roadmap, so you do not go looking for it: x402 client compatibility, agents acting as sellers, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2.)
+From the README roadmap, so you do not go looking for it: x402 client compatibility, agents acting as sellers, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4.)
+
+Starter credits are not a wallet product: they live in one gateway's ledger and cannot be moved, topped up with a card, or spent on another gateway. The path from starter credits to real money is still the evm rail with a funded owner account.
+
+---
+
+## 19. The public gateway at pay.paidwithtab.com
+
+The reference deployment that `tab init` points at by default. Same box as the catalog; the ledger rail, so no chain and no gas; `--faucet 1.00` so any new owner wallet gets $1.00 once.
+
+| Piece | Where |
+| --- | --- |
+| spec | `examples/spec-public.json`: realm `pay.paidwithtab.com`, six priced routes over keyless public APIs (Jina Reader, Wikipedia, Open-Meteo, Frankfurter), all between $0.001 and $0.003 |
+| seller key | `keys/pay-seller.json` (the spec carries its public key as `recipient`) |
+| state | `pay.db` next to the repo, WAL mode; back it up with the catalog db |
+| service | `~/.config/systemd/user/tab-gateway.service`, a user unit (lingering is on), port 1402 |
+| tunnel | `~/.cloudflared/tab-config.yml` gains `pay.paidwithtab.com -> http://127.0.0.1:1402` and `cloudflared tunnel route dns tab pay.paidwithtab.com` creates the record |
+| catalog | the unit passes `--announce http://127.0.0.1:1403 --origin https://pay.paidwithtab.com`, so the catalog lists it within seconds of start |
+
+Bringing it up after a build (`npm run build`):
+
+```sh
+systemctl --user daemon-reload && systemctl --user enable --now tab-gateway
+sudo systemctl restart cloudflared-tab          # picks up the new ingress rule
+curl -s https://pay.paidwithtab.com/.well-known/tab | head -c 300
+curl -s https://paidwithtab.com/v1/catalog.json | head -c 300
+```
+
+To turn on the Buy button on `/catalog`, run `tab init --dir keys/try --gateway http://127.0.0.1:1402` on the box and add `--try-agent keys/try/agent.json --try-mandate keys/try/mandate.json --try-max-per-call 0.01` to the catalog unit. That mandate's daily budget is what the public can spend through the site.

@@ -1,0 +1,15 @@
+# User-level systemd unit for the public gateway at pay.paidwithtab.com (DEPLOY.md section 19).
+# Install: cp examples/tab-gateway.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now tab-gateway
+[Unit]
+Description=tab public gateway (pay.paidwithtab.com, ledger rail, starter credits)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/tab
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js serve --spec %h/tab/examples/spec-public.json --db %h/tab/pay.db --port 1402 --faucet 1.00 --announce http://127.0.0.1:1403 --origin https://pay.paidwithtab.com
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

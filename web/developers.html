@@ -34,9 +34,12 @@
 <section class="block" id="quick-start">
   <div class="wrap split">
     <div>
-      <h2>Five minutes, sandbox money.</h2>
-      <p>tab needs Node 22.13 or newer and nothing else. The sandbox ledger settles instantly and costs nothing, so the whole loop runs on one machine.</p>
-      <p>The demo script does all of this for you, including a priced demo API and a catalog, if you would rather watch first.</p>
+      <h2>One command, starter credits.</h2>
+      <p>tab needs Node 22.13 or newer and nothing else. <code>init</code> writes an owner key, an agent key and a signed mandate to <code>~/.tab</code>, then claims $1.00 of starter credits on the public gateway, which fronts real APIs.</p>
+<pre><b>$ npx paidwithtab init</b>
+<b>$ npx paidwithtab fetch https://pay.paidwithtab.com/fx/latest?base=USD</b>
+<em>✓ paid $0.001 · 200 OK</em></pre>
+      <p>Prefer the whole stack on your machine? The demo script starts a priced demo API, a gateway and a catalog with sandbox money.</p>
 <pre><b>$ git clone https://github.com/paidwithtab/tab &amp;&amp; cd tab &amp;&amp; npm install</b>
 <b>$ npm run demo</b>   <i># keys, sandbox money, demo API :4101, gateway :1402, catalog :1403</i></pre>
     </div>
@@ -108,18 +111,20 @@
       </dl>
     </div>
     <div>
-<pre><i>// .mcp.json next to your project</i>
+<pre><i># after npx paidwithtab init, once, for every project</i>
+<b>$ claude mcp add --scope user tab -- npx -y paidwithtab mcp</b>
+
+<i># or pin your own keys and catalog in .mcp.json</i>
 { "mcpServers": { "tab": {
-  "command": "node",
-  "args": ["/opt/tab/dist/src/cli.js", "mcp"],
+  "command": "npx", "args": ["-y", "paidwithtab", "mcp"],
   "env": {
-    "TAB_AGENT":        "/opt/tab/keys/agent.json",
-    "TAB_MANDATE":      "/opt/tab/keys/mandate.json",
+    "TAB_AGENT":        "/path/to/agent.json",
+    "TAB_MANDATE":      "/path/to/mandate.json",
     "TAB_MAX_PER_CALL": "0.05",
-    "TAB_CATALOG":      "https://catalog.example.com"
+    "TAB_CATALOG":      "https://paidwithtab.com"
   }
 } } }</pre>
-      <p class="dim" style="font-size:14px">Or for every project: <code>claude mcp add --scope user tab -e TAB_AGENT=… -e TAB_MANDATE=… -- node /opt/tab/dist/src/cli.js mcp</code></p>
+      <p class="dim" style="font-size:14px">With no env set, <code>tab mcp</code> uses the agent and mandate from <code>~/.tab</code> and the public catalog.</p>
     </div>
   </div>
 </section>

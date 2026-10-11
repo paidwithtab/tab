@@ -1,6 +1,6 @@
 {
   "name": "paidwithtab",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402, spending capped by signed mandates, settled in USDC on Robinhood Chain. Zero runtime dependencies.",
   "type": "module",
   "bin": { "tab": "bin/tab.js" },
@@ -9,6 +9,7 @@
     "dist/src",
     "web",
     "docs",
+    "!docs/x-posting.md",
     "SPEC.md",
     "DEPLOY.md"
   ],

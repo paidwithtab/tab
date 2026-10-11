@@ -56,6 +56,7 @@ export class Store {
         PRIMARY KEY (mandate_id, window_key)
       );
       CREATE TABLE IF NOT EXISTS redeemed (challenge_id TEXT PRIMARY KEY, at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS faucet_claims (wallet TEXT PRIMARY KEY, ip TEXT NOT NULL, amount INTEGER NOT NULL, at TEXT NOT NULL);
     `);
     // databases created before the evm rail lack the tx_hash column
     try {
@@ -112,6 +113,31 @@ export class Store {
       .prepare('UPDATE wallets SET balance = balance - ? WHERE id = ? AND balance >= ?')
       .run(micro, wallet, micro);
     return Number(res.changes) > 0;
+  }
+
+  // -- starter credits ------------------------------------------------------
+
+  /**
+   * Credit a wallet once from the faucet. Returns false if this wallet already
+   * claimed. The claim and the credit share one transaction.
+   */
+  claimFaucet(wallet: string, ip: string, micro: number, at: string): boolean {
+    return this.tx(() => {
+      const res = this.db
+        .prepare('INSERT OR IGNORE INTO faucet_claims (wallet, ip, amount, at) VALUES (?, ?, ?, ?)')
+        .run(wallet, ip, micro, at);
+      if (Number(res.changes) === 0) return false;
+      this.credit(wallet, micro);
+      return true;
+    });
+  }
+
+  /** Claims from one address since a given time, for rate limiting. */
+  faucetClaimsFrom(ip: string, sinceIso: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM faucet_claims WHERE ip = ? AND at >= ?')
+      .get(ip, sinceIso) as { n: number };
+    return Number(row.n);
   }
 
   // -- challenge redemption (once, ever) -----------------------------------
