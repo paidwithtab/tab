@@ -17,19 +17,33 @@ The second line gives Claude Code the five tab tools. Ask it to look something u
 
 ## What the starter credits buy
 
-| What | Route on `pay.paidwithtab.com` | Price |
-| --- | --- | --- |
-| Web search (Tavily) | `POST /search` | $0.01 |
-| Translation (DeepL) | `POST /translate` | $0.02 |
-| Speech to text (Deepgram) | `POST /speech/listen` | $0.02 |
-| Read a web page as markdown (Jina Reader) | `POST /read` | $0.003 |
-| Wikipedia summary | `GET /wikipedia/api/rest_v1/page/summary/:title` | $0.001 |
-| Wikipedia search | `GET /wikipedia/w/rest.php/v1/search/page?q=` | $0.001 |
-| Weather forecast (Open-Meteo) | `GET /weather/forecast?latitude=&longitude=` | $0.001 |
-| Exchange rates (ECB) | `GET /fx/latest?base=USD` | $0.001 |
-| Rates on a date (ECB) | `GET /fx/:date?base=USD` | $0.001 |
+40 routes across 23 services are live on `pay.paidwithtab.com` today, between $0.001 and $0.02 a call. The same routes are served for test USDC at `testnet.paidwithtab.com` and for USDG at `mainnet.paidwithtab.com`. The live list, with every route's path and price, is [paidwithtab.com/catalog](https://paidwithtab.com/catalog); this table is the services as of 2026-10-12.
 
-The same nine routes are served for test USDC at `testnet.paidwithtab.com` and for USDG at `mainnet.paidwithtab.com`. The live list is [paidwithtab.com/catalog](https://paidwithtab.com/catalog).
+| Prefix | What | Price per call |
+| --- | --- | --- |
+| `/read` | Read any web page as clean text or markdown (Jina Reader) | 0.003 |
+| `/wikipedia` | English Wikipedia: article summaries and search | 0.001 |
+| `/weather` | Weather forecasts for any coordinates (Open-Meteo) | 0.001 |
+| `/fx` | Currency exchange rates from the European Central Bank (Frankfurter) | 0.001 |
+| `/search` | Web search built for agents: ranked results with content snippets and an optional answer (Tavily) | 0.01 |
+| `/translate` | Translation between 30+ languages (DeepL) | 0.02 |
+| `/speech` | Speech to text and text to speech (Deepgram) | 0.02 |
+| `/geocode` | Place names to coordinates, worldwide (Open-Meteo geocoding) | 0.001 |
+| `/airquality` | Air quality for any coordinates: PM2.5, PM10, ozone, pollen, European and US AQI (Open-Meteo) | 0.001 |
+| `/marine` | Marine forecasts: wave height, swell, sea temperature (Open-Meteo) | 0.001 |
+| `/arxiv` | Search arXiv preprints: physics, maths, computer science, more (returns Atom XML) | 0.002 |
+| `/hn` | Hacker News search and items (Algolia) | 0.001 |
+| `/books` | Books and authors from Open Library | 0.001 |
+| `/wikidata` | Wikidata: entity search and structured facts about anything | 0.001 |
+| `/osm` | Geocoding and reverse geocoding from OpenStreetMap (Nominatim). Low volume only | 0.002 |
+| `/crossref` | Scholarly metadata for 150 million works, by DOI or text (Crossref) | 0.002 |
+| `/pubmed` | PubMed: biomedical literature search and summaries (NCBI E-utilities) | 0.002 |
+| `/quakes` | Earthquakes worldwide, real time (USGS) | 0.001 |
+| `/stackexchange` | Stack Overflow and the Stack Exchange network: questions and answers | 0.001 |
+| `/crypto` | Crypto prices and market data (CoinGecko public API) | 0.001 |
+| `/github` | GitHub public data: repository search and metadata (unauthenticated, rate limited) | 0.001, 0.002 |
+| `/openalex` | OpenAlex: 250 million scholarly works, authors and institutions | 0.001, 0.002 |
+| `/extract` | Extract the content of one or more URLs, cleaned for agents (Tavily) | 0.01 |
 
 Three paid calls, as pasted:
 
