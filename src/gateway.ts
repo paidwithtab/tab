@@ -346,7 +346,12 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     search: string,
     hold: HoldRow | null,
   ): Promise<Response> {
-    const url = match.service.upstream.replace(/\/$/, '') + match.rest + search;
+    // upstream plus the remaining path. A route of "/" on an upstream that already names an
+    // endpoint (https://api.example.com/search) forwards to that endpoint as written, since
+    // many providers reject a trailing slash.
+    const base = match.service.upstream.replace(/\/$/, '');
+    const rest = match.rest === '/' && new URL(base).pathname !== '/' ? '' : match.rest;
+    const url = base + rest + search;
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
       if (v === undefined) continue;

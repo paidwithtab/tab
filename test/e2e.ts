@@ -98,6 +98,11 @@ async function main(): Promise<void> {
         upstream_headers: { 'X-Api-Key': 'k-123' },
         routes: [{ method: 'GET', path: '/secret', price: '0.02', description: 'injected key' }],
       },
+      {
+        // an upstream that names its endpoint, with a root route: forwards to /quote, not /quote/
+        name: 'rooted', prefix: '/rooted', upstream: `http://127.0.0.1:${upPort}/quote`,
+        routes: [{ method: 'GET', path: '/', price: '0', description: 'endpoint in the upstream url' }],
+      },
     ],
   };
 
@@ -117,7 +122,7 @@ async function main(): Promise<void> {
 
   const disc = await (await fetch(`${GW}/.well-known/tab`)).json() as any;
   check('discovery document', disc.ver === 'tab/0' && disc.realm === 'quotes.local'
-    && disc.rail === 'ledger' && disc.recipient === seller.publicKey && disc.services.length === 2);
+    && disc.rail === 'ledger' && disc.recipient === seller.publicKey && disc.services.length === 3);
 
   const freeRes = await fetch(`${GW}/free?x=1`);
   check('free route forwarded unpaid', freeRes.status === 200 && (await freeRes.json() as any).q === '?x=1' && receiptOf(freeRes) === null);
@@ -143,6 +148,11 @@ async function main(): Promise<void> {
     && receipt !== null && receipt.amount === '10000'
     && receipt.ref.startsWith('ledger:') && receipt.payer === agent.publicKey
     && receipt.owner === owner.publicKey && receipt.resource === 'GET /quote');
+  {
+    const rooted = await fetch(`${GW}/rooted`);
+    check('a root route on an upstream that names its endpoint forwards there without a trailing slash',
+      rooted.status === 200 && (await rooted.json() as any).quote === 'stub' && receiptOf(rooted) === null);
+  }
   check('seller paid, owner debited', store.balance(seller.publicKey) === 10_000
     && store.balance(owner.publicKey) === usdToMicro('5.00') - 10_000);
 
@@ -359,7 +369,7 @@ async function main(): Promise<void> {
   check('search finds routes with full urls', s1.results.length >= 1
     && s1.results[0].url === `${GW}/quote` && s1.results[0].price === '0.01');
   const s2 = await (await fetch(`${CAT}/v1/search`)).json() as any;
-  check('empty search lists everything, cheapest first', s2.results.length === 6
+  check('empty search lists everything, cheapest first', s2.results.length === 7
     && s2.results[0].price_micro <= s2.results[s2.results.length - 1].price_micro);
   const s3 = await (await fetch(`${CAT}/v1/search?max_price=0.005`)).json() as any;
   check('max_price filter', s3.results.length >= 1 && s3.results.every((r: any) => usdToMicro(r.price) <= 5000));
