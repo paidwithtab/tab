@@ -76,7 +76,7 @@
   .screen.r { transform:perspective(1400px) rotateX(18deg) translateY(70px) scale(.94); transform-origin:50% 0; transition:opacity 1.2s ease, transform 1.5s cubic-bezier(.2,.7,.2,1); }
   .screen.r.in { transform:none; }
   .mandate.r .bar i { width:0; transition:width 1.8s cubic-bezier(.2,.7,.2,1) .4s; }
-  .mandate.r.in .bar i { width:31.4%; }
+  .mandate.r.in .bar i { width:max(3px,.2%); }
   .facts.r { opacity:1; transform:none; }
   .facts.r > div { opacity:0; transform:translateY(22px); transition:opacity .9s ease, transform .9s ease; transition-delay:calc(var(--i) * 110ms); }
   .facts.r.in > div { opacity:1; transform:none; }
@@ -112,6 +112,10 @@
   .tx[data-state="authorize"] .amount, .tx[data-state="pay"] .amount, .tx[data-state="receive"] .amount { color:#fff; }
   .tx[data-state="receive"] .result, .tx[data-state="receive"] .receipt { opacity:1; transform:none; }
   .tx + .sub { margin-top:clamp(40px,5vw,64px); max-width:none; }
+  .tx .receipt a, .real a { color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(156,195,255,.3); }
+  .real { margin:18px auto 0; max-width:720px; color:var(--fg2); font-size:14.5px; line-height:1.6; }
+  .live { margin:clamp(28px,4vw,44px) auto 0; display:flex; justify-content:center; gap:clamp(18px,2.2vw,34px); flex-wrap:wrap; font-family:var(--mono); font-size:12px; letter-spacing:.2em; text-transform:uppercase; color:var(--dim); }
+  .live b { color:var(--fg2); font-weight:500; } .live a { color:var(--accent); }
   @media (max-width:880px) {
     .tx { grid-template-columns:1fr; gap:40px; }
     .tx .mid::before, .tx .mid::after { display:none; }
@@ -143,7 +147,7 @@
   .mandate .big { font-size:clamp(44px,6vw,80px); font-weight:500; letter-spacing:-.05em; line-height:1; font-variant-numeric:tabular-nums; }
   .mandate .big small { font-size:.32em; color:var(--fg2); letter-spacing:-.01em; margin-left:.4em; font-weight:400; }
   .mandate .bar { height:2px; background:rgba(255,255,255,.1); margin:34px 0 14px; position:relative; }
-  .mandate .bar i { position:absolute; left:0; top:0; bottom:0; width:31.4%; background:var(--accent); }
+  .mandate .bar i { position:absolute; left:0; top:0; bottom:0; width:max(3px,.2%); background:var(--accent); }
   .mandate .row { display:flex; justify-content:space-between; font-family:var(--mono); font-size:12.5px; color:var(--fg2); font-variant-numeric:tabular-nums; }
   .mandate dl { margin-top:40px; display:grid; grid-template-columns:auto 1fr; gap:14px 40px; font-size:15px; }
   .mandate dt { color:var(--dim); } .mandate dd { color:var(--fg); }
@@ -210,22 +214,24 @@
     <div class="tx" data-r data-state="idle" id="tx">
       <div class="side">
         <div class="role">Agent</div>
-        <div class="ask">“Translate ‘Hello, world’ to Japanese.”</div>
-        <div class="result"><b>Done</b>こんにちは、世界</div>
+        <div class="ask">“What does HTTP status 402 mean?”</div>
+        <div class="result"><b>Done</b>402 Payment Required. Reserved for future use, says the Wikipedia summary.</div>
       </div>
       <div class="mid">
-        <div class="amount">$0.004</div>
-        <div class="for">Translation API</div>
+        <div class="amount">$0.001</div>
+        <div class="for">Wikipedia summary</div>
         <div class="state"><span class="s1">Discover</span><span class="s2">Authorize</span><span class="s3">Pay</span><span class="s4">Receive</span></div>
-        <div class="status" id="tx-status">Finding a translation service</div>
+        <div class="status" id="tx-status">Finding an encyclopedia service</div>
       </div>
       <div class="side">
         <div class="role">Service</div>
-        <div class="svc">Translation API<small>$0.004 per request</small></div>
-        <div class="receipt"><b>Receipt ✓</b>paid $0.004 · ref 0x3f9c…a1e2<br>within limit · $17.16 left today</div>
+        <div class="svc">Wikipedia<small>$0.001 per request · mainnet.paidwithtab.com</small></div>
+        <div class="receipt"><b>Receipt ✓</b>paid $0.001 USDG · ref <a href="https://robinhoodchain.blockscout.com/tx/0xed2380386cdb99d1597ad544d2cee0798e247ef0d48784b60e78bfc5e2db733d" target="_blank" rel="noopener">evm:0xed23…733d</a><br>within limit · $0.499 left today</div>
       </div>
     </div>
     <p class="sub" data-r>You set the limit. The agent handles the rest.</p>
+    <p class="real" data-r>This one is real. It settled in USDG on Robinhood Chain mainnet on October 11, 2026. <a href="https://robinhoodchain.blockscout.com/tx/0xed2380386cdb99d1597ad544d2cee0798e247ef0d48784b60e78bfc5e2db733d" target="_blank" rel="noopener">See the transfer</a> · <a href="/catalog#receipts-section">All receipts</a></p>
+    <div class="live" id="live" hidden></div>
   </div>
 </section>
 
@@ -234,14 +240,14 @@
     <h2 data-r>They find what they need.</h2>
     <div class="screen" data-r aria-label="The tab catalog">
       <div class="bar"><div class="dots"><i></i><i></i><i></i></div><span class="url">tab catalog</span></div>
-      <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>translate</span><em>6 services</em></div>
+      <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>wikipedia</span><em id="live-count">6 routes</em></div>
       <table>
-        <tr><td class="route">POST /v1/translate</td><td class="name"><b>Translation API</b><span>High quality translation, 40 languages</span></td><td class="price">$0.004</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
-        <tr><td class="route">GET /v1/search</td><td class="name"><b>Web Search</b><span>Fresh results with citations</span></td><td class="price">$0.002</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
-        <tr><td class="route">POST /v1/ocr</td><td class="name"><b>OCR</b><span>Text from images and PDFs</span></td><td class="price">$0.010</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
-        <tr><td class="route">GET /v1/weather</td><td class="name"><b>Weather</b><span>Current conditions and a 7-day forecast</span></td><td class="price">$0.001</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
-        <tr><td class="route">GET /v1/quotes</td><td class="name"><b>Market Data</b><span>Delayed equity quotes</span></td><td class="price">$0.005</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
-        <tr><td class="route">POST /v1/summarize</td><td class="name"><b>Summaries</b><span>Long documents, short answers</span></td><td class="price">$0.003</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
+        <tr><td class="route">GET /wikipedia/api/rest_v1/page/summary/:title</td><td class="name"><b>Wikipedia summary</b><span>Any article by title, from English Wikipedia</span></td><td class="price">$0.001</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
+        <tr><td class="route">GET /wikipedia/w/rest.php/v1/search/page</td><td class="name"><b>Wikipedia search</b><span>Articles matching a text query</span></td><td class="price">$0.001</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
+        <tr><td class="route">POST /read</td><td class="name"><b>Reader</b><span>Any web page as clean text or markdown, by Jina Reader</span></td><td class="price">$0.003</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
+        <tr><td class="route">GET /weather/forecast</td><td class="name"><b>Weather</b><span>Forecast for any coordinates, from Open-Meteo</span></td><td class="price">$0.001</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
+        <tr><td class="route">GET /fx/latest</td><td class="name"><b>Exchange rates</b><span>Latest rates from the European Central Bank</span></td><td class="price">$0.001</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
+        <tr><td class="route">GET /fx/:date</td><td class="name"><b>Exchange rates by date</b><span>Rates on any day since 1999</span></td><td class="price">$0.001</td><td class="buy"><a href="/catalog">Buy</a></td></tr>
       </table>
     </div>
   </div>
@@ -251,13 +257,13 @@
   <div class="wrap">
     <h2 data-r>You’re always in control.</h2>
     <div class="mandate" data-r>
-      <div class="big">$25.00<small>per day</small></div>
+      <div class="big">$0.50<small>per day</small></div>
       <div class="bar"><i></i></div>
-      <div class="row"><span>$7.84 spent</span><span>$17.16 left</span></div>
+      <div class="row"><span>$0.001 spent</span><span>$0.499 left</span></div>
       <dl>
         <dt>Per request</dt><dd>Up to $0.05</dd>
         <dt>Services</dt><dd>Any listed in the catalog</dd>
-        <dt>Until</dt><dd>October 11, 2026</dd>
+        <dt>Until</dt><dd>November 10, 2026</dd>
       </dl>
       <p>You sign the limit once. tab enforces it on every request, and the agent can never exceed it.</p>
     </div>
@@ -271,14 +277,14 @@
       <div data-r>
         <h3>The exchange</h3>
         <p>One retry, one payment, one receipt. Every step is a plain HTTP header.</p>
-<pre><b>GET</b> /v1/translate
+<pre><b>GET</b> /wikipedia/api/rest_v1/page/summary/HTTP_402
 <i>→</i> <u>402 Payment Required</u>
-<i>  WWW-Authenticate: Tab challenge="…"   price 0.004 USD</i>
+<i>  WWW-Authenticate: Tab challenge="…"   price 0.001 USD</i>
 
-<b>GET</b> /v1/translate
+<b>GET</b> /wikipedia/api/rest_v1/page/summary/HTTP_402
 <b>Authorization:</b> Tab &lt;signed credential&gt;
 <i>→</i> <em>200 OK</em>
-<i>  Tab-Receipt: … ref evm:0x3f9c…</i></pre>
+<i>  Tab-Receipt: … ref evm:0xed2380…733d</i></pre>
       </div>
       <div data-r id="providers">
         <h3>Three commands</h3>
@@ -288,18 +294,18 @@
 
 <i># owner: sign a limit for your agent, once</i>
 <b>$ tab mandate issue --owner owner.json --agent agent.json \
-    --budget 25 --max-per-call 0.05</b>
+    --budget 0.50 --max-per-call 0.05</b>
 
 <i># agent: pay per request under that limit</i>
 <b>$ tab fetch --agent agent.json --mandate mandate.json \
-    https://api.lingua.example/v1/translate</b>
-<em>✓ paid $0.004 · 200 OK</em></pre>
+    https://mainnet.paidwithtab.com/wikipedia/api/rest_v1/page/summary/HTTP_402</b>
+<em>✓ paid $0.001 · 200 OK</em></pre>
       </div>
     </div>
     <div class="facts" data-r>
       <div><b>HTTP 402</b><span>The standard status code for payment, finally used.</span></div>
       <div><b>Signed limits</b><span>Mandates are signed by the owner and checked on every request.</span></div>
-      <div><b>Real money or sandbox</b><span>USDC on Robinhood Chain, or a free local ledger for development.</span></div>
+      <div><b>Real money or sandbox</b><span>USDG on Robinhood Chain mainnet, USDC on testnet, or a free local ledger for development.</span></div>
       <div><b>Open source</b><span>Node.js, no runtime dependencies, MCP server included.</span></div>
     </div>
   </div>
@@ -1286,9 +1292,9 @@ void main(){
   // the transaction plays Discover → Authorize → Pay → Receive once it scrolls into view
   const tx = document.getElementById('tx'), status = document.getElementById('tx-status');
   const steps = [
-    ['discover', 'Finding a translation service'],
-    ['authorize', 'Checking your limit: $0.004 of $17.16 left'],
-    ['pay', 'Paying $0.004'],
+    ['discover', 'Finding an encyclopedia service'],
+    ['authorize', 'Checking your limit: $0.001 of $0.50 left'],
+    ['pay', 'Paying $0.001 in USDG on Robinhood Chain'],
     ['receive', 'Result delivered, receipt issued'],
   ];
   let i = 0, started = false;
@@ -1301,6 +1307,37 @@ void main(){
   };
   if (io) new IntersectionObserver((es, o) => { if (es.some((e) => e.isIntersecting)) { play(); o.disconnect(); } }, { threshold: 0.4 }).observe(tx);
   else play();
+
+  // live numbers from this site's own catalog: payments settled through listed gateways, and the routes on offer.
+  // Zero is honest, so the strip stays hidden until there is at least one receipt.
+  (async () => {
+    const esc = (x) => String(x).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    try {
+      const [rc, cat] = await Promise.all([
+        fetch('/v1/receipts?limit=200').then((r) => r.json()),
+        fetch('/v1/catalog.json').then((r) => r.json()),
+      ]);
+      const gws = (cat.gateways || []).filter((g) => g.ok);
+      const routes = gws.reduce((n, g) => n + (g.services || []).reduce((m, s) => m + (s.routes || []).length, 0), 0);
+      const count = document.getElementById('live-count');
+      if (count && routes) count.textContent = routes + ' routes on ' + gws.length + ' gateway' + (gws.length === 1 ? '' : 's');
+      const rs = rc.receipts || [];
+      if (!rs.length) return;
+      const explorers = {};
+      for (const g of gws) if (g.rail_info && g.rail_info.explorer) explorers[g.origin] = g.rail_info.explorer;
+      const paid = rs.reduce((n, r) => n + Number(r.amount || 0), 0) / 1e6;
+      const chain = rs.filter((r) => String(r.ref || '').startsWith('evm:')).length;
+      const latest = rs[0];
+      let ref = esc(String(latest.ref || '').slice(0, 20));
+      if (String(latest.ref || '').startsWith('evm:') && explorers[latest.origin]) {
+        const h = latest.ref.slice(4);
+        ref = '<a href="' + esc(explorers[latest.origin]) + '/tx/' + esc(h) + '" target="_blank" rel="noopener">' + esc(h.slice(0, 10)) + '…' + esc(h.slice(-4)) + '</a>';
+      }
+      const live = document.getElementById('live');
+      live.innerHTML = '<span><b>' + rs.length + '</b> payments settled</span><span><b>' + chain + '</b> on Robinhood Chain</span><span><b>$' + paid.toFixed(3) + '</b> paid</span><span>latest ' + ref + '</span>';
+      live.hidden = false;
+    } catch { /* the strip simply stays hidden */ }
+  })();
 </script>
 </body>
 </html>
