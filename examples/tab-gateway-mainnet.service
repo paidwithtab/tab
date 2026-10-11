@@ -1,0 +1,15 @@
+# User-level systemd unit for the mainnet gateway at mainnet.paidwithtab.com (evm rail, USDG on Robinhood Chain).
+# Install: cp examples/tab-gateway-mainnet.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now tab-gateway-mainnet
+[Unit]
+Description=tab mainnet gateway (mainnet.paidwithtab.com, evm rail, USDG on Robinhood Chain)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/tab
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js serve --spec %h/tab/examples/spec-mainnet.json --db %h/tab/mainnet.db --port 1405 --announce http://127.0.0.1:1403 --origin https://mainnet.paidwithtab.com
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

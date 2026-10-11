@@ -1,0 +1,17 @@
+# System unit for the catalog and site at paidwithtab.com, with the Buy button enabled by a try-it mandate.
+# Install: sudo cp examples/tab-catalog.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart tab-catalog
+[Unit]
+Description=tab catalog and site (serves paidwithtab.com via the tab tunnel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ohmar
+WorkingDirectory=/home/ohmar/tab
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning /home/ohmar/tab/dist/src/cli.js catalog serve --db /home/ohmar/tab/catalog.db --port 1403 --try-agent /home/ohmar/tab/keys/try/agent.json --try-mandate /home/ohmar/tab/keys/try/mandate.json --try-max-per-call 0.01
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

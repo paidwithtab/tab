@@ -1,0 +1,15 @@
+# User-level systemd unit for the testnet gateway at testnet.paidwithtab.com (evm rail, testnet USDC on Robinhood Chain).
+# Install: cp examples/tab-gateway-testnet.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now tab-gateway-testnet
+[Unit]
+Description=tab testnet gateway (testnet.paidwithtab.com, evm rail, testnet USDC on Robinhood Chain)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/tab
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js serve --spec %h/tab/examples/spec-testnet.json --db %h/tab/testnet.db --port 1404 --announce http://127.0.0.1:1403 --origin https://testnet.paidwithtab.com
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

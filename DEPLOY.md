@@ -668,4 +668,17 @@ curl -s https://pay.paidwithtab.com/.well-known/tab | head -c 300
 curl -s https://paidwithtab.com/v1/catalog.json | head -c 300
 ```
 
-To turn on the Buy button on `/catalog`, run `tab init --dir keys/try --gateway http://127.0.0.1:1402` on the box and add `--try-agent keys/try/agent.json --try-mandate keys/try/mandate.json --try-max-per-call 0.01` to the catalog unit. That mandate's daily budget is what the public can spend through the site.
+To turn on the Buy button on `/catalog`, run `tab init --dir keys/try --gateway http://127.0.0.1:1402` on the box and add `--try-agent keys/try/agent.json --try-mandate keys/try/mandate.json --try-max-per-call 0.01` to the catalog unit (`examples/tab-catalog.service` has it). That mandate's daily budget is what the public can spend through the site.
+
+### 19.1 The chain gateways: testnet.paidwithtab.com and mainnet.paidwithtab.com
+
+Two more gateways on the same box serve the same six routes over the evm rail, so a buyer can pay with test USDC on Robinhood testnet or USDG on Robinhood Chain mainnet instead of starter credits.
+
+| Realm | Port | Spec | Unit | Dollar |
+| --- | --- | --- | --- | --- |
+| `testnet.paidwithtab.com` | 1404 | `examples/spec-testnet.json` | `examples/tab-gateway-testnet.service` | test USDC, chain id 46630, open mint |
+| `mainnet.paidwithtab.com` | 1405 | `examples/spec-mainnet.json` | `examples/tab-gateway-mainnet.service` | USDG, chain id 4663 |
+
+Both specs name `keys/mainnet-seller.json` as the recipient (same address on both chains). `scripts/go-live.sh` installs the units, adds the three hostnames to the tunnel ingress and DNS, restarts the tunnel, installs the catalog unit with the try-it mandate, and announces all three gateways to the catalog. Run it once from a normal terminal; it asks for sudo.
+
+`scripts/chain-trial.sh testnet|mainnet` then makes one paid call end to end with the owner and agent keys in `keys/`: mint test dollars (testnet only), fund the agent with gas, approve the allowance, issue a mandate for the realm, fetch a Wikipedia summary for $0.001 and print the receipt. The owner address needs ETH on that chain first: the testnet faucet at `https://faucet.testnet.chain.robinhood.com/` or, on mainnet, a bridge. Mainnet also needs USDG at the owner address, and the owner key should not stay on the server once real money is involved (section 9).

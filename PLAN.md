@@ -24,11 +24,11 @@ Everything below assumes the VPS layout from DEPLOY.md section 8 (`/opt/tab`, se
 
 Buyers must be able to install the client and the MCP server without cloning.
 
-- [ ] `npm whoami` as the account that owns the `paidwithtab` name (or claim it; the registry returns 404 today).
-- [ ] `npm publish --dry-run` and check the tarball holds `bin`, `dist/src`, `web`, `docs`, `SPEC.md`, `DEPLOY.md` and nothing from `keys/` or `*.db`.
-- [ ] `npm publish` (the `prepublishOnly` script builds and runs the e2e suite first).
-- [ ] `npx paidwithtab --help` works from a clean directory on another machine.
-- [ ] README install section says `npm i paidwithtab` and the quickstart no longer requires `git clone`.
+- [x] `npm whoami` as the account that owns the `paidwithtab` name (or claim it; the registry returns 404 today).
+- [x] `npm publish --dry-run` and check the tarball holds `bin`, `dist/src`, `web`, `docs`, `SPEC.md`, `DEPLOY.md` and nothing from `keys/` or `*.db`.
+- [x] `npm publish` (the `prepublishOnly` script builds and runs the e2e suite first).
+- [x] `npx paidwithtab --help` works from a clean directory on another machine.
+- [x] README install section says `npm i paidwithtab` and the quickstart no longer requires `git clone`.
 - [ ] Tag the release: `git tag v0.3.0 && git push --tags`.
 
 ---
@@ -109,7 +109,7 @@ Robinhood Chain mainnet launched 2026-07-01. Bridged USDC arrives there as USDG 
 
 ---
 
-## Phase 2b: what shipped on 2026-10-11 (version 0.4.0, uncommitted)
+## Phase 2b: what shipped on 2026-10-11 (version 0.4.0)
 
 Instead of asking every buyer to fund a chain account before their first call, the public gateway runs on the ledger rail and hands out starter credits. The first run is now one command.
 
@@ -118,8 +118,9 @@ Instead of asking every buyer to fund a chain account before their first call, t
 - [x] `tab fetch` and `tab mcp` default to `~/.tab`; `tab mcp` defaults the catalog to paidwithtab.com.
 - [x] `examples/spec-public.json`: six routes over keyless APIs (Jina Reader, Wikipedia summary and search, Open-Meteo forecast, Frankfurter latest and by date), verified paid end to end against the live upstreams.
 - [x] Tests: 59 e2e (8 new), 24 adversarial, all green. README, docs and DEPLOY.md section 19 rewritten around `npx paidwithtab init`.
-- [ ] Deploy on the box: user unit, tunnel ingress, DNS route, cloudflared restart (DEPLOY.md section 19; needs the operator).
-- [ ] `npm publish` (needs `npm login`).
+- [ ] Deploy on the box: `bash scripts/go-live.sh` (units, tunnel ingress, DNS, catalog with the Buy button, announce). Prepared 2026-10-11; needs the operator's sudo.
+- [x] Chain gateways prepared: `examples/spec-testnet.json`, `examples/spec-mainnet.json`, their units, and `scripts/chain-trial.sh` for the first paid call on each chain. All owner, agent and seller balances were zero on both chains on 2026-10-11.
+- [x] `npm publish` (needs `npm login`). Published 2026-10-11 as 0.4.0.
 - [ ] Enable the catalog's Buy button with a try-it mandate on the public gateway.
 
 ## Phase 4: make the first run survivable (one week)

@@ -1,0 +1,90 @@
+{
+ "realm": "testnet.paidwithtab.com",
+ "recipient": "SWKeJfKEl49rqteapC98hn4-OjbXP-cUax6emcjw3ds",
+ "rail": "evm",
+ "evm": {
+  "rpc": "https://rpc.testnet.chain.robinhood.com",
+  "chain_id": 46630,
+  "token": "0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5",
+  "decimals": 6,
+  "recipient": "0xcce49b5F24b08195Bc121810C9df2484c92aa1F3",
+  "explorer": "https://explorer.testnet.chain.robinhood.com"
+ },
+ "public_receipts": true,
+ "services": [
+  {
+   "name": "reader",
+   "prefix": "/read",
+   "upstream": "https://r.jina.ai",
+   "upstream_headers": {
+    "Accept": "application/json"
+   },
+   "description": "Read any web page as clean text or markdown (Jina Reader)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/",
+     "price": "0.003",
+     "description": "Read a web page. JSON body {\"url\": \"https://...\"}; returns title, description and content as markdown"
+    }
+   ]
+  },
+  {
+   "name": "wikipedia",
+   "prefix": "/wikipedia",
+   "upstream": "https://en.wikipedia.org",
+   "upstream_headers": {
+    "User-Agent": "tab-gateway/0.4 (https://paidwithtab.com)"
+   },
+   "description": "English Wikipedia: article summaries and search",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/api/rest_v1/page/summary/:title",
+     "price": "0.001",
+     "description": "Summary of a Wikipedia article by title, e.g. /api/rest_v1/page/summary/Lisbon"
+    },
+    {
+     "method": "GET",
+     "path": "/w/rest.php/v1/search/page",
+     "price": "0.001",
+     "description": "Search Wikipedia articles: ?q=<terms>&limit=5"
+    }
+   ]
+  },
+  {
+   "name": "weather",
+   "prefix": "/weather",
+   "upstream": "https://api.open-meteo.com/v1",
+   "description": "Weather forecasts for any coordinates (Open-Meteo)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/forecast",
+     "price": "0.001",
+     "description": "Forecast for coordinates: ?latitude=38.72&longitude=-9.14&current=temperature_2m,wind_speed_10m&daily=temperature_2m_max,precipitation_sum&timezone=auto (Lisbon is 38.72,-9.14; London 51.51,-0.13; New York 40.71,-74.01)"
+    }
+   ]
+  },
+  {
+   "name": "fx",
+   "prefix": "/fx",
+   "upstream": "https://api.frankfurter.dev/v1",
+   "description": "Currency exchange rates from the European Central Bank (Frankfurter)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/latest",
+     "price": "0.001",
+     "description": "Latest rates: ?base=USD&symbols=EUR,GBP,JPY"
+    },
+    {
+     "method": "GET",
+     "path": "/:date",
+     "price": "0.001",
+     "description": "Rates on a date: /2024-01-31?base=USD&symbols=EUR"
+    }
+   ]
+  }
+ ]
+}
