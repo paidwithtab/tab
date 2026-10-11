@@ -7,6 +7,7 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=%h/tab
+EnvironmentFile=-%h/tab/.env
 ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js serve --spec %h/tab/examples/spec-testnet.json --db %h/tab/testnet.db --port 1404 --announce http://127.0.0.1:1403 --origin https://testnet.paidwithtab.com
 Restart=always
 RestartSec=3

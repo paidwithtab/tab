@@ -178,6 +178,7 @@ async function main(): Promise<void> {
       });
       if (!values.spec) die('--spec is required');
       const spec = loadSpec(values.spec as string);
+      for (const name of spec.skipped ?? []) log(`skipping service ${name}: set it in the environment and restart`);
       const store = new Store(values.db as string);
       const server = createGateway(spec, { store, log, faucetUsd: values.faucet as string | undefined });
       const port = Number(values.port);

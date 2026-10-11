@@ -316,6 +316,26 @@ async function main(): Promise<void> {
   let specThrew = false;
   try { loadSpec(specPath); } catch { specThrew = true; }
   check('unset ${VAR} makes an empty recipient refuse to load', specThrew);
+  {
+    const two = { realm: 'r', recipient: seller.publicKey, services: [
+      { name: 'free', prefix: '/free', upstream: 'http://x', routes: [{ method: 'GET', path: '/a', price: '0.01' }] },
+      { name: 'paid', prefix: '/paid', upstream: 'http://y', upstream_headers: { Authorization: 'Bearer ${PAID_KEY_E2E}' }, requires: ['PAID_KEY_E2E'], routes: [{ method: 'GET', path: '/b', price: '0.02' }] },
+    ] };
+    writeFileSync(specPath, JSON.stringify(two));
+    delete process.env.PAID_KEY_E2E;
+    const without = loadSpec(specPath);
+    check('a service whose required key is unset is skipped and named', without.services.length === 1 && without.services[0].name === 'free'
+      && without.skipped?.length === 1 && /paid \(needs PAID_KEY_E2E\)/.test(without.skipped[0]));
+    process.env.PAID_KEY_E2E = 'k';
+    const withKey = loadSpec(specPath);
+    check('the same service is listed once the key is set', withKey.services.length === 2 && withKey.skipped === undefined
+      && withKey.services[1].upstream_headers?.Authorization === 'Bearer k');
+    writeFileSync(specPath, JSON.stringify({ ...two, services: [two.services[1]] }));
+    delete process.env.PAID_KEY_E2E;
+    let allSkipped = '';
+    try { loadSpec(specPath); } catch (e) { allSkipped = (e as Error).message; }
+    check('every service skipped is a clear refusal to start', /every service was skipped/.test(allSkipped));
+  }
 
   // -- 11. catalog ----------------------------------------------------------
 
