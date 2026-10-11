@@ -44,6 +44,8 @@ export interface ServiceSpec {
   upstream: string;
   upstream_headers?: Record<string, string>;
   description?: string;
+  /** Environment variables the service needs (API keys). If any is unset or empty, loadSpec drops the service and lists it in Spec.skipped. */
+  requires?: string[];
   routes: RouteSpec[];
 }
 
@@ -54,6 +56,8 @@ export interface Spec {
   evm?: { rpc: string; chain_id: number; token: string; decimals: number; recipient: string; explorer?: string };
   public_receipts?: boolean;
   services: ServiceSpec[];
+  /** Services dropped at load time because a variable in their `requires` list was not set. */
+  skipped?: string[];
 }
 
 /** Load a spec file, expanding ${UPPER_CASE_NAME} from the environment. */
@@ -83,6 +87,15 @@ export function loadSpec(path: string): Spec {
   if (!Array.isArray(spec.services) || spec.services.length === 0) {
     throw new Error('spec.services is required');
   }
+  // a service that needs an API key the environment does not have is dropped, not listed broken
+  const skipped: string[] = [];
+  spec.services = spec.services.filter((s) => {
+    const missing = (s.requires ?? []).filter((name) => !process.env[name]);
+    if (missing.length) skipped.push(`${s.name} (needs ${missing.join(', ')})`);
+    return missing.length === 0;
+  });
+  if (skipped.length) spec.skipped = skipped;
+  if (spec.services.length === 0) throw new Error(`every service was skipped for missing environment variables: ${skipped.join('; ')}`);
   for (const s of spec.services) {
     if (typeof s.prefix !== 'string' || !s.upstream) throw new Error(`service ${s.name}: prefix and upstream are required`);
     for (const r of s.routes) usdToMicro(r.price); // validate prices early

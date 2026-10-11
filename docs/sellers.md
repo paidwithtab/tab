@@ -62,6 +62,7 @@ The rules that matter:
 - Paths support `:param` segments. A price of `"0"` means free and proxied; paths with no priced route return 404 and are never proxied.
 - `upstream_headers` are injected on the way through and the buyer's `Authorization` is stripped, so buyers never see your internal credentials and your API never sees theirs.
 - `${UPPER_CASE}` in the spec is expanded from the environment at load time. Keep secrets in an env file, not the spec.
+- `requires: ["MY_INTERNAL_TOKEN"]` on a service lists the variables it cannot run without. If one is unset at start, the gateway skips that service and logs it, rather than listing routes that would fail upstream.
 - `public_receipts: true` exposes your last 200 receipts, which the catalog's live feed reads. Turn it off if payer wallet ids should stay private.
 - For chain ids, RPC endpoints and the mainnet USDG address, see [DEPLOY.md section 9](../DEPLOY.md).
 

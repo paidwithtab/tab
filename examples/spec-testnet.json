@@ -85,6 +85,66 @@
      "description": "Rates on a date: /2024-01-31?base=USD&symbols=EUR"
     }
    ]
+  },
+  {
+   "name": "search",
+   "prefix": "/search",
+   "upstream": "https://api.tavily.com",
+   "upstream_headers": {
+    "Authorization": "Bearer ${TAVILY_API_KEY}"
+   },
+   "requires": [
+    "TAVILY_API_KEY"
+   ],
+   "description": "Web search built for agents: ranked results with content snippets and an optional answer (Tavily)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/",
+     "price": "0.01",
+     "description": "Search the web. JSON body {\"query\": \"...\", \"max_results\": 5}; returns results with url, title, content and score"
+    }
+   ]
+  },
+  {
+   "name": "translate",
+   "prefix": "/translate",
+   "upstream": "https://api-free.deepl.com/v2",
+   "upstream_headers": {
+    "Authorization": "DeepL-Auth-Key ${DEEPL_API_KEY}"
+   },
+   "requires": [
+    "DEEPL_API_KEY"
+   ],
+   "description": "Translation between 30+ languages (DeepL)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/",
+     "price": "0.02",
+     "description": "Translate text. JSON body {\"text\": [\"Hello, world\"], \"target_lang\": \"JA\"}; returns translations with the detected source language"
+    }
+   ]
+  },
+  {
+   "name": "speech",
+   "prefix": "/speech",
+   "upstream": "https://api.deepgram.com/v1",
+   "upstream_headers": {
+    "Authorization": "Token ${DEEPGRAM_API_KEY}"
+   },
+   "requires": [
+    "DEEPGRAM_API_KEY"
+   ],
+   "description": "Speech to text for audio up to a few minutes (Deepgram)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/listen",
+     "price": "0.02",
+     "description": "Transcribe audio. Send the file as the body with its content type (audio/wav, audio/mpeg, ...) or JSON {\"url\": \"https://...\"}; query ?model=nova-3&smart_format=true"
+    }
+   ]
   }
  ]
 }

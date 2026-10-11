@@ -7,6 +7,7 @@ Wants=network-online.target
 
 [Service]
 WorkingDirectory=%h/tab
+EnvironmentFile=-%h/tab/.env
 ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js serve --spec %h/tab/examples/spec-mainnet.json --db %h/tab/mainnet.db --port 1405 --announce http://127.0.0.1:1403 --origin https://mainnet.paidwithtab.com
 Restart=always
 RestartSec=3

@@ -99,7 +99,7 @@ examples/
   spec-evm.json             # same routes on the evm rail (Robinhood Chain testnet)
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh                   # one-command sandbox
-test/e2e.ts                 # 59 in-process checks, temp DB, ~1-2 min
+test/e2e.ts                 # 62 in-process checks, temp DB, ~1-2 min
 test/adversarial.ts         # 24 hostile checks: concurrency, replay, mutation, SSRF, forgery
 test/evm.ts                 # 34 checks: crypto vectors, a mock EVM node, rpc failover, live Robinhood testnet reads
 ```
@@ -112,7 +112,7 @@ test/evm.ts                 # 34 checks: crypto vectors, a mock EVM node, rpc fa
 cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
-npm test                    # 59 passed, 0 failed on the dev box
+npm test                    # 62 passed, 0 failed on the dev box
 npm run test:adversarial    # 24 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery
 npm run test:evm            # 34 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
 ```
@@ -659,7 +659,7 @@ The reference deployment that `tab init` points at by default. Same box as the c
 
 | Piece | Where |
 | --- | --- |
-| spec | `examples/spec-public.json`: realm `pay.paidwithtab.com`, six priced routes over keyless public APIs (Jina Reader, Wikipedia, Open-Meteo, Frankfurter), all between $0.001 and $0.003 |
+| spec | `examples/spec-public.json`: realm `pay.paidwithtab.com`, six priced routes over keyless public APIs (Jina Reader, Wikipedia, Open-Meteo, Frankfurter) between $0.001 and $0.003, plus three paid routes that appear once their provider key is in `.env` (section 19.3) |
 | seller key | `keys/pay-seller.json` (the spec carries its public key as `recipient`) |
 | state | `pay.db` next to the repo, WAL mode; back it up with the catalog db |
 | service | `~/.config/systemd/user/tab-gateway.service`, a user unit (lingering is on), port 1402 |
@@ -689,6 +689,18 @@ Two more gateways on the same box serve the same six routes over the evm rail, s
 Both specs name `keys/mainnet-seller.json` as the recipient (same address on both chains). `scripts/go-live.sh` installs the units, adds the three hostnames to the tunnel ingress and DNS, restarts the tunnel, installs the catalog unit with the try-it mandate, and announces all three gateways to the catalog. Run it once from a normal terminal; it asks for sudo.
 
 `scripts/chain-trial.sh testnet|mainnet` then makes one paid call end to end with the owner and agent keys in `keys/`: mint test dollars (testnet only), fund the agent with gas, approve the allowance, issue a mandate for the realm, fetch a Wikipedia summary for $0.001 and print the receipt. The owner address needs ETH on that chain first: the testnet faucet at `https://faucet.testnet.chain.robinhood.com/` or, on mainnet, a bridge. Mainnet also needs USDG at the owner address, and the owner key should not stay on the server once real money is involved (section 9).
+
+### 19.3 Paid routes and provider keys
+
+Three services in the public specs front paid providers. The gateway injects the provider key as an upstream header, so buyers never see it and the spec never holds it. Each service names the variable it needs in `requires`; if that variable is unset or empty when the gateway starts, the service is skipped with a log line instead of being listed broken. Set the key, restart the unit, and the routes appear in discovery and in the catalog within seconds.
+
+| Route | Provider | Buyer pays | Provider charges you | Key |
+| --- | --- | --- | --- | --- |
+| `POST /search` | Tavily, `api.tavily.com/search` | $0.01 | about $0.008 per search | `TAVILY_API_KEY` |
+| `POST /translate` | DeepL, `api-free.deepl.com/v2/translate` | $0.02 | free tier 500k chars a month; pro is `api.deepl.com`, change the upstream | `DEEPL_API_KEY` |
+| `POST /speech/listen` | Deepgram, `api.deepgram.com/v1/listen` | $0.02 | about $0.0043 per audio minute | `DEEPGRAM_API_KEY` |
+
+Keys live in `~/tab/.env` (mode 600, gitignored; `examples/env.example` is the template). The three gateway units read it through `EnvironmentFile=-%h/tab/.env`, so one file feeds all three rails. The try-it mandate behind the Buy button caps a call at $0.01, so `/search` works from the site and the two $0.02 routes need a buyer's own mandate.
 
 ### 19.2 Backups
 
