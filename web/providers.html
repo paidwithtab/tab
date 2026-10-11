@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Providers · tab</title>
-<meta name="description" content="Price your API in one JSON file, put tab in front of it, and get paid per request by agents.">
+<meta name="description" content="Put a price on any HTTP API in one JSON file, run one process in front of it, and get paid per request in USDG on Robinhood Chain. This is exactly how the public gateways at paidwithtab.com run.">
 <link rel="stylesheet" href="/site.css">
 </head>
 <body>
@@ -19,7 +19,7 @@
       <li><a href="/catalog">Catalog</a></li>
       <li><a href="/docs">Docs</a></li>
     </ul>
-    <a class="btn ghost" href="/docs#quickstart">Get started</a>
+    <a class="btn ghost" href="#list">Get started</a>
   </div>
 </nav>
 
@@ -27,42 +27,69 @@
   <div class="wrap">
     <div class="eyebrow">Providers</div>
     <h1>Price your API. Get paid per request.</h1>
-    <p class="sub">Put tab in front of any HTTP API. Describe your routes and prices in one JSON file. Agents pay before you answer, and you never build a billing system.</p>
+    <p class="sub">You have an HTTP API. You write one JSON file that says what each route costs, and run one process in front of it. Agents find your routes in the catalog, pay before you answer, and you receive USDG on Robinhood Chain for every successful call. No accounts, no billing code, no invoices.</p>
   </div>
 </header>
+
+<section class="block" id="proof">
+  <div class="wrap split">
+    <div>
+      <h2>This is how our own gateways run.</h2>
+      <p>Everything on this page is what we use for pay.paidwithtab.com, testnet.paidwithtab.com and mainnet.paidwithtab.com. Those three gateways serve nine routes over Tavily, DeepL, Deepgram, Jina Reader, Wikipedia, Open-Meteo and the European Central Bank, and they have settled real payments. Their spec is public, and their discovery documents are what agents read.</p>
+      <ul class="plain">
+        <li><a href="https://github.com/paidwithtab/tab/blob/main/examples/spec-public.json" rel="noopener">The spec behind the public gateways</a>, in the open source repo.</li>
+        <li><a href="https://pay.paidwithtab.com/.well-known/tab" rel="noopener">What agents see</a>: the discovery document, straight from the gateway.</li>
+        <li><a href="/catalog">The catalog</a>, with every route and the live receipts.</li>
+      </ul>
+    </div>
+<pre><i># the search service from that spec: a real provider behind a key only the gateway holds</i>
+{
+  "name": "search",
+  "prefix": "/search",
+  "upstream": "https://api.tavily.com/search",
+  "upstream_headers": { "Authorization": "Bearer ${TAVILY_API_KEY}" },
+  "requires": ["TAVILY_API_KEY"],
+  "description": "Web search built for agents: ranked results with content snippets (Tavily)",
+  "routes": [
+    { "method": "POST", "path": "/", "price": "0.01",
+      "description": "Search the web. JSON body {\"query\": \"...\", \"max_results\": 5}" }
+  ]
+}</pre>
+  </div>
+</section>
 
 <section class="block" id="spec">
   <div class="wrap split">
     <div>
       <h2>One file describes your prices.</h2>
-      <p>A spec names your gateway (its realm), says who gets paid, and lists your services. Each service points at your existing upstream and lists priced routes.</p>
-      <p>Prices are USD strings. A price of <code>"0"</code> is forwarded free. Paths may have parameters like <code>/v1/things/:id</code>. Anything not listed is not proxied.</p>
+      <p>A spec names your gateway (its realm), says who gets paid, and lists your services. Each service points at your existing upstream and lists priced routes. Prices are USD strings. A price of <code>"0"</code> is forwarded free. Paths may have parameters like <code>/v1/things/:id</code>. Anything not listed is not proxied.</p>
       <dl class="kv">
-        <dt><code>realm</code></dt><dd>Your gateway's name. Owners allow-list realms in their limits.</dd>
-        <dt><code>recipient</code></dt><dd>The wallet that receives payments.</dd>
+        <dt><code>realm</code></dt><dd>Your gateway's name, usually its hostname. Owners allow-list realms in the limits they sign.</dd>
+        <dt><code>recipient</code></dt><dd>The wallet that receives payments: your seller key's public id, and on chain its address.</dd>
         <dt><code>prefix</code></dt><dd>Mounts a service under a path. Empty for the root.</dd>
-        <dt><code>upstream</code></dt><dd>Where tab forwards paid requests.</dd>
-        <dt><code>upstream_headers</code></dt><dd>Headers tab injects, such as your real API key. Callers never see them.</dd>
+        <dt><code>upstream</code></dt><dd>Where tab forwards paid requests. May include a path.</dd>
+        <dt><code>upstream_headers</code></dt><dd>Headers tab injects, such as your real API key. Callers never see them. <code>${NAME}</code> is read from the environment.</dd>
+        <dt><code>requires</code></dt><dd>Variables the service cannot run without. If one is unset at start, the service is skipped and logged, not listed broken.</dd>
         <dt><code>public_receipts</code></dt><dd>Publish the last 200 receipts for the catalog's live feed.</dd>
       </dl>
     </div>
-<pre><i>// spec.json</i>
+<pre><i>// spec.json for an API of your own</i>
 {
-  "realm": "lingua.example",
-  "recipient": "&lt;your wallet id&gt;",
+  "realm": "api.yourcompany.com",
+  "recipient": "&lt;your seller key's public id&gt;",
   "public_receipts": true,
   "services": [
     {
-      "name": "Translation API",
+      "name": "yourapi",
       "prefix": "",
       "upstream": "http://127.0.0.1:8080",
-      "upstream_headers": { "X-Api-Key": "${LINGUA_KEY}" },
-      "description": "High quality translation, 40 languages",
+      "upstream_headers": { "X-Internal-Key": "${INTERNAL_KEY}" },
+      "description": "What your API does, in one line buyers can search for",
       "routes": [
-        { "method": "POST", "path": "/v1/translate", "price": "0.004",
-          "description": "Translate text" },
-        { "method": "GET",  "path": "/v1/languages", "price": "0",
-          "description": "Supported languages" }
+        { "method": "POST", "path": "/v1/analyze", "price": "0.02",
+          "description": "Analyze a document. JSON body {\"url\": \"...\"}" },
+        { "method": "GET",  "path": "/v1/status", "price": "0",
+          "description": "Free health check" }
       ]
     }
   ]
@@ -70,23 +97,25 @@
   </div>
 </section>
 
-<section class="block" id="serve">
+<section class="block" id="list">
   <div class="wrap split">
     <div>
-      <h2>Start the gateway.</h2>
-      <p>The gateway is one process in front of your API. It answers unpaid requests with a price, verifies payments, forwards paid requests upstream, and settles only when you answered successfully.</p>
-      <p>Announce it to a catalog and agents can find your routes by searching. The catalog reads your gateway's own service list, so it stays in sync with your spec.</p>
+      <h2>List your API in the catalog today.</h2>
+      <p>Three commands. The gateway is one process in front of your API: it answers unpaid requests with a price, verifies payments, forwards paid requests, and settles only when you answered successfully. Announce it and the catalog reads your gateway's own service list, so the listing stays in sync with your spec.</p>
+      <p>The catalog accepts any public origin that serves a valid discovery document over HTTPS. Your routes appear at <a href="/catalog">paidwithtab.com/catalog</a> and in agent searches within a minute.</p>
+      <p class="dim" style="font-size:14px">Run it behind nginx, Caddy or a Cloudflare tunnel with TLS, and bind the gateway to loopback so only the proxy reaches it. The deployment guide has a complete setup, including the systemd units we use.</p>
     </div>
-    <div>
-<pre><b>$ tab serve --spec spec.json --port 1402 \
-    --origin https://pay.lingua.example \
-    --announce https://catalog.example.com</b>
+<pre><i># 1. a seller key: payments go to it</i>
+<b>$ npx paidwithtab key new --out keys/seller.json</b>
 
-<i># what agents see, straight from your gateway</i>
-<b>$ curl https://pay.lingua.example/.well-known/tab</b>
-{ "realm": "lingua.example", "rail": "ledger", "services": [ … ] }</pre>
-      <p class="dim" style="font-size:14px">Behind nginx or Caddy with TLS in production. The deployment guide covers the full setup.</p>
-    </div>
+<i># 2. put its public id in spec.json as "recipient", then serve</i>
+<b>$ INTERNAL_KEY=... npx paidwithtab serve --spec spec.json --port 1402 \
+    --origin https://api.yourcompany.com \
+    --announce https://paidwithtab.com</b>
+
+<i># 3. check what agents will see</i>
+<b>$ curl https://api.yourcompany.com/.well-known/tab</b>
+{ "ver": "tab/0", "realm": "api.yourcompany.com", "rail": "ledger", "services": [ … ] }</pre>
   </div>
 </section>
 
@@ -111,24 +140,26 @@
   <div class="wrap split">
     <div>
       <h2>How you get paid.</h2>
-      <p>Every gateway settles on one rail. Start on the sandbox ledger while you integrate, then switch the spec to real value.</p>
-      <p>On Robinhood Chain, payments are USDG transfers from the owner's wallet to yours, one per request, broadcast only after you answered. The gateway holds no payment key. Receipts carry the transaction hash, and the explorer link shows in the catalog.</p>
+      <p>Every gateway settles on one rail. Start on the sandbox ledger while you integrate: balances live in the gateway's own database, and <code>--faucet</code> can hand new buyers starter credits. Then switch the spec to real value.</p>
+      <p>On Robinhood Chain, each payment is a USDG transfer from the buyer's owner wallet straight to your address, one per request, broadcast only after you answered. The gateway holds no payment key and never custodies funds. Receipts carry the transaction hash, and the catalog links each one to the explorer.</p>
       <dl class="kv">
-        <dt>Sandbox</dt><dd><code>"rail": "ledger"</code>, or omit. Balances live in the gateway's SQLite file.</dd>
-        <dt>Real value</dt><dd><code>"rail": "evm"</code> with the block on the right.</dd>
-        <dt>Chain</dt><dd>Robinhood Chain testnet, chain id 46630.</dd>
+        <dt>Sandbox</dt><dd><code>"rail": "ledger"</code>, or omit the rail.</dd>
+        <dt>Mainnet</dt><dd><code>"rail": "evm"</code> with the block on the right. USDG, chain id 4663.</dd>
+        <dt>Testnet</dt><dd>Same block with chain id 46630, token <code>0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5</code>, rpc <code>rpc.testnet.chain.robinhood.com</code>, explorer <code>explorer.testnet.chain.robinhood.com</code>.</dd>
       </dl>
     </div>
-<pre><i>// add to spec.json for USDG on Robinhood Chain mainnet (test USDC on testnet)</i>
+<pre><i>// add to spec.json for USDG on Robinhood Chain mainnet</i>
 "rail": "evm",
 "evm": {
-  "rpc":       "https://rpc.testnet.chain.robinhood.com",
-  "chain_id":  46630,
-  "token":     "0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5",
+  "rpc":       "https://rpc.mainnet.chain.robinhood.com,https://robinhood-mainnet.drpc.org",
+  "chain_id":  4663,
+  "token":     "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
   "decimals":  6,
-  "recipient": "0x…your address",
-  "explorer":  "https://explorer.testnet.chain.robinhood.com"
-}</pre>
+  "recipient": "0x…your address, from: tab evm address keys/seller.json",
+  "explorer":  "https://robinhoodchain.blockscout.com"
+}
+
+<i># rpc may be a list: the gateway moves to the next endpoint when one refuses</i></pre>
   </div>
 </section>
 
@@ -137,14 +168,16 @@
     <h2>Before real money.</h2>
     <ul class="plain" style="max-width:60ch">
       <li>Serve behind TLS, and bind the gateway to loopback so only the proxy reaches it.</li>
-      <li>Keep <code>spec.json</code> private if it carries upstream API keys. Use environment variables for them.</li>
-      <li>Back up the gateway's database file. It holds balances on the ledger rail and the record of every hold.</li>
+      <li>Keep provider keys in an env file the unit reads, never in the spec. Name them in <code>requires</code>.</li>
+      <li>Back up the gateway's database file. It holds ledger balances and the record of every hold and receipt.</li>
       <li>Turn on <code>public_receipts</code> only if you are happy to expose payer and owner wallet ids.</li>
+      <li>Price above what your upstream charges you. Buyers see the price before they pay; you see nothing until they do.</li>
     </ul>
     <ul class="links" style="margin-top:36px">
-      <li><a href="/deployment">Deployment guide</a></li>
+      <li><a href="/deployment">Deployment guide, including the units behind paidwithtab.com</a></li>
       <li><a href="/deployment#11-gateway-http-surface">Gateway HTTP surface</a></li>
       <li><a href="/protocol">How verification works, step by step</a></li>
+      <li><a href="https://github.com/paidwithtab/tab/issues" rel="noopener">Ask a question or report a snag</a></li>
     </ul>
   </div>
 </section>

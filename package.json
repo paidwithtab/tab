@@ -3,7 +3,14 @@
   "version": "0.4.0",
   "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402, spending capped by signed mandates, settled in USDC on Robinhood Chain. Zero runtime dependencies.",
   "type": "module",
-  "bin": { "tab": "bin/tab.js" },
+  "bin": {
+    "tab": "bin/tab.js"
+  },
+  "exports": {
+    ".": "./dist/src/client.js",
+    "./client": "./dist/src/client.js",
+    "./package.json": "./package.json"
+  },
   "files": [
     "bin",
     "dist/src",
@@ -23,9 +30,14 @@
     "demo": "bash examples/demo.sh",
     "prepublishOnly": "tsc && node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts"
   },
-  "repository": { "type": "git", "url": "git+https://github.com/paidwithtab/tab.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paidwithtab/tab.git"
+  },
   "homepage": "https://github.com/paidwithtab/tab#readme",
-  "bugs": { "url": "https://github.com/paidwithtab/tab/issues" },
+  "bugs": {
+    "url": "https://github.com/paidwithtab/tab/issues"
+  },
   "keywords": [
     "agents",
     "payments",
@@ -38,7 +50,9 @@
     "claude"
   ],
   "license": "MIT",
-  "engines": { "node": ">=22.13" },
+  "engines": {
+    "node": ">=22.13"
+  },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.0",
