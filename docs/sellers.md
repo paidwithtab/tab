@@ -70,7 +70,7 @@ The rules that matter:
 
 ```sh
 npx paidwithtab serve --spec spec.json \
-  --announce https://catalog.example.com \
+  --announce https://paidwithtab.com \
   --origin https://api.example.com
 ```
 

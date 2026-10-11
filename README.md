@@ -166,6 +166,8 @@ npx paidwithtab init
 
 This creates an owner key and an agent key in `~/.tab`, signs a mandate ($1.00 per day, $0.05 per call, 90 days), and claims $1.00 of starter credits on the public gateway at `pay.paidwithtab.com`. Nothing to fund, no chain, no API keys.
 
+Those credits buy real things: web search, translation, speech to text, web page reading, Wikipedia, weather and exchange rates, between $0.001 and $0.02 a call. The full list with prices is in the [quickstart](docs/quickstart.md#what-the-starter-credits-buy).
+
 **1. Pay for something from the shell.**
 
 ```sh
@@ -229,7 +231,7 @@ Start the gateway:
 ```sh
 tab serve \
   --spec spec.json \
-  --announce https://catalog.example.com
+  --announce https://paidwithtab.com
 ```
 
 The gateway handles payment negotiation, authorization, settlement, receipts, and proxying. Your application keeps serving normal HTTP.
@@ -260,7 +262,7 @@ tab mandate issue \
 **3. Spend within those limits.**
 
 ```ts
-import { TabClient, receiptOf } from './src/client.js';
+import { TabClient, receiptOf } from 'paidwithtab/client';
 
 const client = new TabClient({
   agent,
@@ -332,9 +334,9 @@ tab currently runs 121 automated checks across protocol behavior, adversarial co
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
-| `npm test` | 59 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init` |
+| `npm test` | 63 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init` |
 | `npm run test:adversarial` | 24 | Concurrency, replay, mutation, SSRF, persistence |
-| `npm run test:evm` | 31 | Cryptography, EVM transactions, Robinhood Chain |
+| `npm run test:evm` | 34 | Cryptography, EVM transactions, Robinhood Chain |
 
 > The concurrency suite fires 150 simultaneous $0.01 requests at a $1.00 mandate. Exactly 100 settle.
 

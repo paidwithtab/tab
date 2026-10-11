@@ -1,6 +1,6 @@
 # tab: build and deploy guide
 
-Everything needed to take this project from a clean VPS to a running gateway, catalog and front end. Written against the tree as of 2026-10-11 (`paidwithtab` version 0.4.0). `README.md` is the short pitch and `SPEC.md` is the protocol; this file is the operator's manual.
+Everything needed to take this project from a clean VPS to a running gateway, catalog and front end. Written against the tree as of 2026-10-12 (`paidwithtab` version 0.4.1). `README.md` is the short pitch and `SPEC.md` is the protocol; this file is the operator's manual.
 
 ---
 
@@ -580,7 +580,7 @@ Claude never sees the owner key. It can only spend within the mandate, the gatew
 ## 14. Using it from code
 
 ```ts
-import { TabClient, tabFetch, receiptOf, PaymentRefused } from './src/client.js';
+import { TabClient, tabFetch, receiptOf, PaymentRefused } from 'paidwithtab/client';
 
 const client = new TabClient({ agent, mandate, maxPerCallUsd: '0.05',
   onChallenge: (challenge, request) => Number(request.amount) <= 20_000 });   // optional veto, amounts in micro-USD
@@ -663,7 +663,7 @@ The reference deployment that `tab init` points at by default. Same box as the c
 
 | Piece | Where |
 | --- | --- |
-| spec | `examples/spec-public.json`: realm `pay.paidwithtab.com`, six priced routes over keyless public APIs (Jina Reader, Wikipedia, Open-Meteo, Frankfurter) between $0.001 and $0.003, plus three paid routes that appear once their provider key is in `.env` (section 19.3) |
+| spec | `examples/spec-public.json`: realm `pay.paidwithtab.com`, nine priced routes: six over keyless public APIs (Jina Reader, Wikipedia, Open-Meteo, Frankfurter) between $0.001 and $0.003, and three over paid providers (Tavily, DeepL, Deepgram) that appear once their key is in `.env` (section 19.3) |
 | seller key | `keys/pay-seller.json` (the spec carries its public key as `recipient`) |
 | state | `pay.db` next to the repo, WAL mode; back it up with the catalog db |
 | service | `~/.config/systemd/user/tab-gateway.service`, a user unit (lingering is on), port 1402 |
@@ -683,7 +683,7 @@ To turn on the Buy button on `/catalog`, run `tab init --dir keys/try --gateway 
 
 ### 19.1 The chain gateways: testnet.paidwithtab.com and mainnet.paidwithtab.com
 
-Two more gateways on the same box serve the same six routes over the evm rail, so a buyer can pay with test USDC on Robinhood testnet or USDG on Robinhood Chain mainnet instead of starter credits.
+Two more gateways on the same box serve the same nine routes over the evm rail, so a buyer can pay with test USDC on Robinhood testnet or USDG on Robinhood Chain mainnet instead of starter credits.
 
 | Realm | Port | Spec | Unit | Dollar |
 | --- | --- | --- | --- | --- |
