@@ -90,10 +90,10 @@ On a laptop, not the server, using the published package:
 Robinhood Chain mainnet launched 2026-07-01. Bridged USDC arrives there as USDG (Paxos), not USDC. The rail accepts any 6-decimal ERC-20, so this should be configuration, but nobody has verified it.
 
 - [x] Confirm the USDG contract address on mainnet (chain id 4663) from `robinhoodchain.blockscout.com`, and that `decimals()` returns 6. If it does not, the rail needs a decimals change before anything else.
-- [ ] A paid RPC endpoint (Alchemy, QuickNode or dRPC) in `EVM_RPC` instead of the public one.
-- [ ] Bridge a small amount (under $20) of USDC to Robinhood Chain and confirm it lands as USDG at the owner address.
-- [ ] Second gateway spec, or a second realm, with chain id 4663, the USDG token and the mainnet explorer.
-- [ ] One real paid call end to end with real money; receipt visible on the mainnet explorer.
+- [ ] A paid RPC endpoint (Alchemy, QuickNode or dRPC) in `EVM_RPC` instead of the public one. The public mainnet RPC answered 403 to `tab evm balance` minutes after the first paid call on 2026-10-11, so this is now urgent.
+- [x] Funded 2026-10-11: 5.02 USDG sent from the Robinhood app on the Robinhood Chain network, 0.0019 ETH bridged from Ethereum through the Inbox with `scripts/bridge-eth.mjs`.
+- [x] Second gateway spec, or a second realm, with chain id 4663, the USDG token and the mainnet explorer: `examples/spec-mainnet.json`, live at mainnet.paidwithtab.com.
+- [x] One real paid call end to end with real money; receipt visible on the mainnet explorer. 2026-10-11, tx 0xed2380386cdb99d1597ad544d2cee0798e247ef0d48784b60e78bfc5e2db733d, 0.001 USDG owner to seller, block 85911415.
 - [ ] `tab evm revoke` tested on mainnet so you know the kill switch works.
 - [x] DEPLOY.md section 9 mainnet row updated with the real token address and the USDG naming.
 - [ ] README and site copy say "USDG on Robinhood Chain mainnet, USDC on testnet" or whatever turns out to be true. Do not say USDC mainnet if it is not.
@@ -162,7 +162,7 @@ From the roadmap, and deliberately parked until there are paying users: x402 com
 ## Definition of done
 
 - [x] `npx paidwithtab` installs.
-- [ ] `paidwithtab.com/catalog` lists at least four real routes behind `pay.paidwithtab.com`.
+- [x] `paidwithtab.com/catalog` lists at least four real routes behind `pay.paidwithtab.com` (six routes, on three gateways).
 - [ ] A new user on a blank laptop completes a testnet paid call in under ten minutes following only the README.
-- [ ] One mainnet payment settled and visible on the explorer.
+- [x] One mainnet payment settled and visible on the explorer (2026-10-11).
 - [ ] Every box in the security checklist is ticked.
