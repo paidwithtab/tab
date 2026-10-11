@@ -233,6 +233,14 @@ async function main(): Promise<void> {
   const node = chain.serve();
   const RPC = `http://127.0.0.1:${await listen(node)}`;
   const rpc = new EvmRpc(RPC);
+  {
+    const failover = new EvmRpc('http://127.0.0.1:1/,' + RPC, 3_000);
+    check('rpc failover: a dead endpoint is skipped and the next one answers', (await failover.chainId()) === CHAIN_ID);
+    check('rpc failover: the client stays on the endpoint that answered', failover.urls[1] === RPC && (await failover.chainId()) === CHAIN_ID);
+    let threw = '';
+    try { await new EvmRpc('http://127.0.0.1:1/,http://127.0.0.1:2/', 1_000).chainId(); } catch (e) { threw = (e as Error).message; }
+    check('rpc failover: every endpoint down is one clear error', /all 2 endpoints failed/.test(threw));
+  }
 
   check('tab evm address matches the derivation', (await cli('evm', 'address', join(scratch, 'agent.json'))).toLowerCase() === agentAddr);
 

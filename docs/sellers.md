@@ -1,6 +1,6 @@
 # Sell your API
 
-You have an HTTP API. tab puts a price tag on it and collects per request, in USDC on Robinhood Chain, with no accounts, no billing code, and no payment keys on your server.
+You have an HTTP API. tab puts a price tag on it and collects per request, in USDG on Robinhood Chain, with no accounts, no billing code, and no payment keys on your server.
 
 ## What you are setting up
 
@@ -8,7 +8,7 @@ You have an HTTP API. tab puts a price tag on it and collects per request, in US
 buyers ──▶ your gateway (tab serve) ──▶ your existing API
                  │
         402 until paid, then proxy
-        USDC ──▶ your payout address
+        USDG ──▶ your payout address
 ```
 
 The gateway is a reverse proxy you run next to your API. It answers 402 with a signed challenge until a request is paid, verifies the payment, forwards the request, and broadcasts the settlement only after your API answers 2xx. If your API errors, the buyer is not charged. You are only paid when you deliver, and buyers can verify that property in [SPEC.md](../SPEC.md) rather than take your word for it.
@@ -63,7 +63,7 @@ The rules that matter:
 - `upstream_headers` are injected on the way through and the buyer's `Authorization` is stripped, so buyers never see your internal credentials and your API never sees theirs.
 - `${UPPER_CASE}` in the spec is expanded from the environment at load time. Keep secrets in an env file, not the spec.
 - `public_receipts: true` exposes your last 200 receipts, which the catalog's live feed reads. Turn it off if payer wallet ids should stay private.
-- For chain ids, RPC endpoints and mainnet USDC, see [DEPLOY.md section 9](../DEPLOY.md).
+- For chain ids, RPC endpoints and the mainnet USDG address, see [DEPLOY.md section 9](../DEPLOY.md).
 
 ## 3. Serve
 

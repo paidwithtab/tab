@@ -1,6 +1,6 @@
 # Give an agent a tab
 
-This guide takes you from nothing to an agent that can discover APIs, pay for them in USDC on Robinhood Chain, and prove what it bought, while being cryptographically unable to spend past the limits you set.
+This guide takes you from nothing to an agent that can discover APIs, pay for them in USDG on Robinhood Chain, and prove what it bought, while being cryptographically unable to spend past the limits you set.
 
 ## The fast path
 

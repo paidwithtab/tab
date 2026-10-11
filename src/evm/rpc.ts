@@ -1,6 +1,11 @@
 // A minimal Ethereum JSON-RPC client over global fetch. Built for Robinhood
 // Chain (an Arbitrum-stack L2) but plain EVM throughout. 20 s per call,
 // receipt polling for up to 30 s.
+//
+// The url may be a comma-separated list. Transport failures (connection errors,
+// timeouts, HTTP 403/429/5xx) move on to the next endpoint and the client stays
+// on whichever endpoint last answered. JSON-RPC errors are answers from the
+// chain (reverts, insufficient funds, bad nonce) and are never retried elsewhere.
 
 import { bytesToHex, hexToBig, bigToHex, erc20 } from './tx.js';
 
@@ -8,6 +13,14 @@ export class EvmRpcError extends Error {
   constructor(message: string, public data?: unknown) {
     super(message);
     this.name = 'EvmRpcError';
+  }
+}
+
+/** A transport failure at one endpoint: connection, timeout, HTTP status or unparsable body. Retried on the next endpoint. */
+class EvmTransportError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EvmTransportError';
   }
 }
 
@@ -21,24 +34,59 @@ export class EvmRevert extends Error {
 
 export class EvmRpc {
   private nextId = 1;
+  /** Every endpoint, in the order given. */
+  readonly urls: string[];
+  /** Index of the endpoint that last answered; the next call starts there. */
+  private current = 0;
 
-  constructor(public readonly url: string, private timeoutMs = 20_000) {}
+  constructor(public readonly url: string, private timeoutMs = 20_000) {
+    this.urls = url.split(',').map((u) => u.trim()).filter(Boolean);
+    if (this.urls.length === 0) throw new EvmRpcError('no rpc url');
+  }
 
   async call(method: string, params: unknown[] = []): Promise<any> {
-    const res = await fetch(this.url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method, params }),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    if (!res.ok) throw new EvmRpcError(`${method}: HTTP ${res.status}`);
-    const body = (await res.json()) as { result?: unknown; error?: { message: string; data?: unknown } };
-    if (body.error) {
-      const msg = body.error.message ?? 'rpc error';
-      if (/revert|execution reverted/i.test(msg)) throw new EvmRevert(`${msg}`);
-      throw new EvmRpcError(`${method}: ${msg}`, body.error.data);
+    const body = JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method, params });
+    let lastErr: unknown;
+    for (let i = 0; i < this.urls.length; i++) {
+      const idx = (this.current + i) % this.urls.length;
+      try {
+        const result = await this.callOne(this.urls[idx], method, body);
+        this.current = idx;
+        return result;
+      } catch (e) {
+        if (!(e instanceof EvmTransportError)) throw e; // a chain answer: do not ask another node
+        lastErr = e;
+      }
     }
-    return body.result;
+    const err = lastErr as EvmTransportError;
+    throw new EvmRpcError(`${method}: ${err.message}${this.urls.length > 1 ? ` (all ${this.urls.length} endpoints failed)` : ''}`);
+  }
+
+  private async callOne(url: string, method: string, body: string): Promise<unknown> {
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (e) {
+      throw new EvmTransportError(`${(e as Error).name === 'TimeoutError' ? 'timeout' : (e as Error).message} at ${url}`);
+    }
+    if (!res.ok) throw new EvmTransportError(`HTTP ${res.status} at ${url}`);
+    let parsed: { result?: unknown; error?: { message: string; data?: unknown } };
+    try {
+      parsed = (await res.json()) as typeof parsed;
+    } catch {
+      throw new EvmTransportError(`bad json at ${url}`);
+    }
+    if (parsed.error) {
+      const msg = parsed.error.message ?? 'rpc error';
+      if (/revert|execution reverted/i.test(msg)) throw new EvmRevert(`${msg}`);
+      throw new EvmRpcError(`${method}: ${msg}`, parsed.error.data);
+    }
+    return parsed.result;
   }
 
   async chainId(): Promise<bigint> {

@@ -3,7 +3,7 @@
  "recipient": "SWKeJfKEl49rqteapC98hn4-OjbXP-cUax6emcjw3ds",
  "rail": "evm",
  "evm": {
-  "rpc": "https://rpc.testnet.chain.robinhood.com",
+  "rpc": "https://rpc.testnet.chain.robinhood.com,https://robinhood-testnet.drpc.org,https://46630.rpc.thirdweb.com",
   "chain_id": 46630,
   "token": "0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5",
   "decimals": 6,

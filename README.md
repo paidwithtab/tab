@@ -15,8 +15,8 @@
   <img src="https://img.shields.io/badge/spec-draft%200.3-1f6feb?style=flat-square" alt="Spec draft 0.3">
   <img src="https://img.shields.io/badge/wire-tab%2F0-1f6feb?style=flat-square" alt="Wire protocol tab/0">
   <img src="https://img.shields.io/badge/node-22.13%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 22.13+">
-  <img src="https://img.shields.io/badge/checks-106-2da44e?style=flat-square" alt="106 automated checks">
-  <img src="https://img.shields.io/badge/settlement-USDC-2775ca?style=flat-square" alt="USDC settlement">
+  <img src="https://img.shields.io/badge/checks-117-2da44e?style=flat-square" alt="117 automated checks">
+  <img src="https://img.shields.io/badge/settlement-USDG-2775ca?style=flat-square" alt="USDG settlement">
   <img src="https://img.shields.io/badge/license-MIT-24292f?style=flat-square" alt="MIT license">
 </p>
 
@@ -86,7 +86,7 @@ Gateway ────────► API
   │ enforces budget
   │ settles payment
   ▼
-USDC
+USDG
 ```
 
 ## Why tab
@@ -289,7 +289,7 @@ tab also exposes five MCP tools, so compatible agents can discover and purchase 
 
 ## Settlement
 
-tab supports USDC settlement on Robinhood Chain, following a delivery first model. The gateway does not settle a payment until the upstream service has responded successfully.
+tab settles in USDG on Robinhood Chain mainnet and test USDC on its testnet, following a delivery first model. The gateway does not settle a payment until the upstream service has responded successfully.
 
 ```text
 authorize
@@ -328,7 +328,7 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 114 automated checks across protocol behavior, adversarial conditions, and EVM settlement.
+tab currently runs 117 automated checks across protocol behavior, adversarial conditions, and EVM settlement.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
@@ -364,7 +364,7 @@ tab currently runs 114 automated checks across protocol behavior, adversarial co
                 ┌─────────────┴─────────────┐
                 ▼                           ▼
           ┌──────────┐                ┌──────────┐
-          │   API    │                │   USDC   │
+          │   API    │                │   USDG   │
           └──────────┘                └──────────┘
 ```
 
