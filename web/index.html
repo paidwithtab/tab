@@ -645,7 +645,28 @@ void main(){
 
   float hH=(r-1.0)*uRadius/H;        // height above the limb, in element heights
   float up=max(hH,0.0);
-  vec3 rim=vec3(0.78,0.87,1.0)*exp(-abs(hH)/0.0026)*(0.18+2.8*sunLimb*uSunAmt*pulse);
+  // The horizon glow, ported from the earlier landing page: a soft pale band that is strongest under the sun,
+  // a thin bright line on the limb, and a faint wide haze above it. Those colours were drawn raw; this engine
+  // tone-maps (x0.70) and gamma-corrects, so they are pre-compensated to land at the same brightness.
+  vec3 rim;
+  {
+    vec3 gBlue=vec3(0.30,0.52,1.0),gPale=vec3(0.61,0.76,1.0);
+    float arc=0.10+0.90*sunLimb;
+    vec3 g=vec3(0.0);
+    if(hH>0.0){
+      float d=hH;
+      g+=vec3(0.014,0.034,0.080)*exp(-d/0.40)*(0.25+0.75*sunLimb);
+      float band=exp(-d/0.0035)*1.05+exp(-d/0.028)*0.42+exp(-d/0.13)*0.18;
+      g+=mix(gBlue,gPale,exp(-d/0.03))*band*arc*pulse;
+      g+=vec3(1.0)*exp(-d/0.011)*sunLimb*sunLimb*0.85*pulse;
+    }else{
+      float din=-hH;
+      g+=mix(gBlue,gPale,0.45)*exp(-din/0.022)*0.42*arc*pulse;
+      g+=gPale*exp(-din/0.003)*0.95*arc*pulse;
+      g+=vec3(1.0)*exp(-din/0.006)*sunLimb*sunLimb*0.55*pulse;
+    }
+    rim=pow(max(g*mix(0.7,1.0,uSunAmt),0.0),vec3(2.2))/0.70;
+  }
 
   vec3 sky=vec3(0.0);
   if(cov<1.0){
@@ -653,15 +674,7 @@ void main(){
     vec2 np=frag/H;
     float neb=fbm3(vec3(np*1.6+vec2(uTime*0.003,0.0),uTime*0.008));
     sky+=vec3(0.001,0.002,0.007)*smoothstep(-0.1,0.7,neb);
-    vec3 atm=vec3(0.30,0.42,0.75)*exp(-up/0.018)*(0.10+1.0*sunLimb*uSunAmt);
-    atm+=vec3(0.015,0.06,0.30)*exp(-up/0.08)*(0.03+0.6*sunBroad*uSunAmt);
-    atm+=vec3(0.003,0.012,0.06)*exp(-up/0.38)*(0.06+0.4*sunBroad*uSunAmt);
-    sky+=atm*0.55;
-    // crepuscular rays fanning up from the sun
-    float ang=atan(s.x,s.y);
-    float rays=snoise(vec3(ang*7.0,uTime*0.035,3.0))*0.5+0.5;
-    rays=pow(rays,4.0)*exp(-sd*3.0)*smoothstep(0.0,0.03,up);
-    sky+=vec3(0.25,0.45,1.0)*rays*0.03*uSunAmt;
+    vec3 atm=vec3(0.0); // the horizon glow above carries the haze
     // stars, slowly wheeling about the planet and hidden by the glow
     vec2 sp=frag-uCenter;
     sp=vec2(sp.x*uStarRot.x-sp.y*uStarRot.y,sp.x*uStarRot.y+sp.y*uStarRot.x)/uDpr;
@@ -733,10 +746,6 @@ void main(){
 
   vec3 col=mix(sky,planet,cov)+rim;
 
-  // the sun's glare in the lens: mostly above the horizon
-  vec3 bloom=vec3(0.70,0.85,1.0)*exp(-sd*18.0)*0.9+vec3(0.10,0.25,0.9)*0.06*exp(-sd*5.0); // a tight white core
-  bloom+=vec3(0.30,0.55,1.0)*exp(-abs(sAcross)*160.0)*exp(-abs(sAlong)*1.8)*0.12;
-  col+=bloom*mix(1.0,0.15,cov)*uSunAmt*pulse;
 
   col*=1.0-0.35*smoothstep(0.45,0.85,length((frag/uRes-0.5)*vec2(1.2,1.0))); // darker corners
   col*=uDim;
