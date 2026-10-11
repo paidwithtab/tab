@@ -81,10 +81,7 @@ src/                        # the code, ~2,000 lines
   keys.ts  mandate.ts  store.ts
   rails/{index,ledger,evm,budget}.ts
   evm/{keccak,secp256k1,rlp,tx,rpc,pay}.ts   # hand-written keccak-256 + ECDSA, EIP-1559, ERC-20
-web/index.html              # landing page, self-contained, no build step, no CDN
-web/product.html            # product, developers, providers and docs pages; share web/site.css
-web/developers.html
-web/providers.html
+web/catalog.html            # the catalog app, served at /catalog; the marketing site is a separate, private repo
 web/docs.html
 web/site.css
 web/catalog.html            # catalog app (search, try-it, receipts, wallet, mandate check)
@@ -489,7 +486,7 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 
 | Endpoint | What |
 | --- | --- |
-| `GET /` | the landing page (`web/index.html`) |
+| `GET /` | the landing page if `web/index.html` is present, otherwise the catalog app |
 | `GET /product`, `/developers`, `/providers`, `/docs` | the site's pages (`web/<name>.html`, styled by `web/site.css`) |
 | `GET /catalog` | the catalog app (`web/catalog.html`) |
 | `GET /README.md`, `/SPEC.md`, `/DEPLOY.md` | the three documents at the repo root, as `text/markdown`; the docs page links to them |
@@ -657,44 +654,12 @@ Starter credits are not a wallet product: they live in one gateway's ledger and 
 
 ---
 
-## 19. The public gateway at pay.paidwithtab.com
+## 19. The reference deployment
 
-The reference deployment that `tab init` points at by default. Same box as the catalog; the ledger rail, so no chain and no gas; `--faucet 1.00` so any new owner wallet gets $1.00 once.
-
-| Piece | Where |
-| --- | --- |
-| spec | `examples/spec-public.json`: realm `pay.paidwithtab.com`, nine priced routes: six over keyless public APIs (Jina Reader, Wikipedia, Open-Meteo, Frankfurter) between $0.001 and $0.003, and three over paid providers (Tavily, DeepL, Deepgram) that appear once their key is in `.env` (section 19.3) |
-| seller key | `keys/pay-seller.json` (the spec carries its public key as `recipient`) |
-| state | `pay.db` next to the repo, WAL mode; back it up with the catalog db |
-| service | `~/.config/systemd/user/tab-gateway.service`, a user unit (lingering is on), port 1402 |
-| tunnel | `~/.cloudflared/tab-config.yml` gains `pay.paidwithtab.com -> http://127.0.0.1:1402` and `cloudflared tunnel route dns tab pay.paidwithtab.com` creates the record |
-| catalog | the unit passes `--announce http://127.0.0.1:1403 --origin https://pay.paidwithtab.com`, so the catalog lists it within seconds of start |
-
-Bringing it up after a build (`npm run build`):
-
-```sh
-systemctl --user daemon-reload && systemctl --user enable --now tab-gateway
-sudo systemctl restart cloudflared-tab          # picks up the new ingress rule
-curl -s https://pay.paidwithtab.com/.well-known/tab | head -c 300
-curl -s https://paidwithtab.com/v1/catalog.json | head -c 300
-```
-
-To turn on the Buy button on `/catalog`, run `tab init --dir keys/try --gateway http://127.0.0.1:1402` on the box and add `--try-agent keys/try/agent.json --try-mandate keys/try/mandate.json --try-max-per-call 0.01` to the catalog unit (`examples/tab-catalog.service` has it). That mandate's daily budget is what the public can spend through the site.
-
-### 19.1 The chain gateways: testnet.paidwithtab.com and mainnet.paidwithtab.com
-
-Two more gateways on the same box serve the same nine routes over the evm rail, so a buyer can pay with test USDC on Robinhood testnet or USDG on Robinhood Chain mainnet instead of starter credits.
-
-| Realm | Port | Spec | Unit | Dollar |
-| --- | --- | --- | --- | --- |
-| `testnet.paidwithtab.com` | 1404 | `examples/spec-testnet.json` | `examples/tab-gateway-testnet.service` | test USDC, chain id 46630, open mint |
-| `mainnet.paidwithtab.com` | 1405 | `examples/spec-mainnet.json` | `examples/tab-gateway-mainnet.service` | USDG, chain id 4663 |
-
-Both specs name `keys/mainnet-seller.json` as the recipient (same address on both chains). `scripts/go-live.sh` installs the units, adds the three hostnames to the tunnel ingress and DNS, restarts the tunnel, installs the catalog unit with the try-it mandate, and announces all three gateways to the catalog. Run it once from a normal terminal; it asks for sudo.
-
-`scripts/chain-trial.sh testnet|mainnet` then makes one paid call end to end with the owner and agent keys in `keys/`: mint test dollars (testnet only), fund the agent with gas, approve the allowance, issue a mandate for the realm, fetch a Wikipedia summary for $0.001 and print the receipt. The owner address needs ETH on that chain first: the testnet faucet at `https://faucet.testnet.chain.robinhood.com/` or, on mainnet, a bridge. Mainnet also needs USDG at the owner address, and the owner key should not stay on the server once real money is involved (section 9).
+The gateways behind paidwithtab.com (pay, testnet and mainnet) run exactly as sections 8, 9 and 19.3 describe, from `examples/spec-public.json`, `examples/spec-testnet.json` and `examples/spec-mainnet.json`, with the unit files in `examples/`. The operator's own notes for that box, the go-live and chain trial scripts and the launch plan, live in a private repository and are not part of this project.
 
 ### 19.3 Paid routes and provider keys
+
 
 Three services in the public specs front paid providers. The gateway injects the provider key as an upstream header, so buyers never see it and the spec never holds it. Each service names the variable it needs in `requires`; if that variable is unset or empty when the gateway starts, the service is skipped with a log line instead of being listed broken. Set the key, restart the unit, and the routes appear in discovery and in the catalog within seconds.
 
