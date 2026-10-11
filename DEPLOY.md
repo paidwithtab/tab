@@ -99,7 +99,7 @@ examples/
   spec-evm.json             # same routes on the evm rail (Robinhood Chain testnet)
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh                   # one-command sandbox
-test/e2e.ts                 # 62 in-process checks, temp DB, ~1-2 min
+test/e2e.ts                 # 63 in-process checks, temp DB, ~1-2 min
 test/adversarial.ts         # 24 hostile checks: concurrency, replay, mutation, SSRF, forgery
 test/evm.ts                 # 34 checks: crypto vectors, a mock EVM node, rpc failover, live Robinhood testnet reads
 ```
@@ -112,7 +112,7 @@ test/evm.ts                 # 34 checks: crypto vectors, a mock EVM node, rpc fa
 cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
-npm test                    # 62 passed, 0 failed on the dev box
+npm test                    # 63 passed, 0 failed on the dev box
 npm run test:adversarial    # 24 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery
 npm run test:evm            # 34 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
 ```

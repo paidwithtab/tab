@@ -48,9 +48,9 @@ From `examples/catalog-candidates.md`, header-auth only, cheap per call, no shim
 | translate | DeepL `POST /v2/translate` | $0.03 per 1k chars, flat per call to start |
 | speech to text | Deepgram `POST /v1/listen` | $0.01 per minute, flat per call to start |
 
-- [ ] Provider accounts created, API keys in `/opt/tab/.env` (mode 0600), never in the spec.
+- [x] Provider accounts created, API keys in `~/tab/.env` (mode 0600), never in the spec: Tavily, DeepL, Deepgram live on all three gateways (2026-10-12).
 - [ ] `/opt/tab/spec.json` written from `examples/spec-evm.json` with `realm: pay.paidwithtab.com`, `rail: evm`, chain id 46630, testnet USDC `0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5`, `public_receipts: true`.
-- [ ] Each route has a one-line `description` that reads well in search results (buyers find routes by text).
+- [x] Each route has a one-line `description` that reads well in search results (buyers find routes by text).
 
 ### 2.2 Keys and funding
 
