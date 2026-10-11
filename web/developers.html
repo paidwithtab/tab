@@ -116,6 +116,7 @@ credits     1.00 starter credits from pay.paidwithtab.com</i>
       <p>The client wraps <code>fetch</code>. On a 402 it reads the price, checks it against your own per-call ceiling, signs a payment, and retries exactly once. If the price is over your ceiling, or your veto says no, it throws before anything is sent.</p>
       <ul class="plain">
         <li><code>TabClient</code> keeps the agent key and mandate and exposes <code>fetch</code>.</li>
+        <li><code>tabFetch(url, init, options)</code> is the one-shot form.</li>
         <li><code>receiptOf(response)</code> returns the receipt, or null when the route was free or the call was voided.</li>
         <li><code>PaymentRefused</code> is thrown when the client itself declined to pay.</li>
       </ul>
