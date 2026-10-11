@@ -599,7 +599,7 @@ vec3 cyberSurface(vec3 dayTex,vec3 nightTex,float cloudA,float waterRaw,float wa
   float lum=dot(nightTex,vec3(0.3,0.5,0.2));
   c+=vec3(0.45,0.85,1.0)*smoothstep(0.06,0.45,lum)*0.9*uCity;
   c+=vec3(0.10,0.30,0.70)*cloudA*0.12;
-  return c;
+  return c*0.6;  // a dark world: the detail is there for whoever looks
 }
 
 void main(){
@@ -635,23 +635,23 @@ void main(){
 
   float hH=(r-1.0)*uRadius/H;        // height above the limb, in element heights
   float up=max(hH,0.0);
-  vec3 rim=vec3(0.60,0.82,1.0)*exp(-abs(hH)/0.0032)*(0.28+2.6*sunLimb*uSunAmt*pulse);
+  vec3 rim=vec3(0.55,0.78,1.0)*exp(-abs(hH)/0.0026)*(0.18+2.8*sunLimb*uSunAmt*pulse);
 
   vec3 sky=vec3(0.0);
   if(cov<1.0){
-    sky=mix(vec3(0.003,0.009,0.030),vec3(0.0008,0.002,0.008),smoothstep(0.0,0.6,up));
+    sky=mix(vec3(0.0015,0.004,0.014),vec3(0.0004,0.0008,0.003),smoothstep(0.0,0.5,up));
     vec2 np=frag/H;
     float neb=fbm3(vec3(np*1.6+vec2(uTime*0.003,0.0),uTime*0.008));
-    sky+=vec3(0.003,0.006,0.020)*smoothstep(-0.1,0.7,neb);
-    vec3 atm=vec3(0.16,0.40,1.0)*exp(-up/0.022)*(0.16+1.1*sunLimb*uSunAmt);
-    atm+=vec3(0.025,0.10,0.48)*exp(-up/0.09)*(0.05+0.70*sunBroad*uSunAmt);
-    atm+=vec3(0.005,0.022,0.11)*exp(-up/0.38)*(0.10+0.5*sunBroad*uSunAmt);
+    sky+=vec3(0.001,0.002,0.007)*smoothstep(-0.1,0.7,neb);
+    vec3 atm=vec3(0.12,0.32,0.9)*exp(-up/0.018)*(0.10+1.0*sunLimb*uSunAmt);
+    atm+=vec3(0.015,0.06,0.30)*exp(-up/0.08)*(0.03+0.6*sunBroad*uSunAmt);
+    atm+=vec3(0.003,0.012,0.06)*exp(-up/0.38)*(0.06+0.4*sunBroad*uSunAmt);
     sky+=atm;
     // crepuscular rays fanning up from the sun
     float ang=atan(s.x,s.y);
     float rays=snoise(vec3(ang*7.0,uTime*0.035,3.0))*0.5+0.5;
     rays=pow(rays,4.0)*exp(-sd*3.0)*smoothstep(0.0,0.03,up);
-    sky+=vec3(0.25,0.45,1.0)*rays*0.09*uSunAmt;
+    sky+=vec3(0.25,0.45,1.0)*rays*0.03*uSunAmt;
     // stars, slowly wheeling about the planet and hidden by the glow
     vec2 sp=frag-uCenter;
     sp=vec2(sp.x*uStarRot.x-sp.y*uStarRot.y,sp.x*uStarRot.y+sp.y*uStarRot.x)/uDpr;
@@ -659,7 +659,7 @@ void main(){
            +starLayer(sp+uStarShift*0.6,46.0,0.20,37.0,0.5)
            +starLayer(sp+uStarShift*1.4,190.0,0.32,71.0,1.7);
     float veil=clamp(dot(atm+rim,vec3(0.3,0.5,0.2))*3.5,0.0,1.0);
-    sky+=st*uStars*(1.0-veil);
+    sky+=st*0.5*uStars*(1.0-veil);
   }
 
   vec3 planet=vec3(0.0);
@@ -677,7 +677,7 @@ void main(){
 
     if(uTheme>0.5){
       vec3 surf=cyberSurface(dayTex,nightTex,cloudA,waterRaw,waterFw,geo,geoFw,spread,n,uvE,dx,dy);
-      planet=surf*(1.0-haze*0.5)+vec3(0.06,0.30,1.0)*(0.04+0.7*spread*sunLimb)*haze;
+      planet=surf*(1.0-haze*0.5)+vec3(0.06,0.30,1.0)*(0.03+0.5*spread*sunLimb)*haze;
     }else{
 
     float lit=clamp(ndl*1.6,0.0,1.0);
@@ -724,14 +724,14 @@ void main(){
   vec3 col=mix(sky,planet,cov)+rim;
 
   // the sun's glare in the lens: mostly above the horizon
-  vec3 bloom=vec3(0.80,0.90,1.0)*exp(-sd*12.0)+vec3(0.12,0.30,1.0)*0.12*exp(-sd*4.0);
-  bloom+=vec3(0.30,0.55,1.0)*exp(-abs(sAcross)*160.0)*exp(-abs(sAlong)*1.8)*0.4;
+  vec3 bloom=vec3(0.85,0.92,1.0)*exp(-sd*18.0)*0.9+vec3(0.10,0.25,0.9)*0.06*exp(-sd*5.0); // a tight white core
+  bloom+=vec3(0.30,0.55,1.0)*exp(-abs(sAcross)*160.0)*exp(-abs(sAlong)*1.8)*0.12;
   col+=bloom*mix(1.0,0.15,cov)*uSunAmt*pulse;
 
   col*=1.0-0.35*smoothstep(0.45,0.85,length((frag/uRes-0.5)*vec2(1.2,1.0))); // darker corners
   col*=uDim;
 
-  col=1.0-exp(-col*1.15);
+  col=1.0-exp(-col);
   col=pow(col,vec3(1.0/2.2));
   // fade into the page from the limb towards the element's edge on the planet's side
   float inward=dot(uSun-frag,uSunU)/max(uFadeLen,1.0); // 0 at the sun's limb point, 1 at the far edge
@@ -768,7 +768,7 @@ void main(){
   float d=head-vPos.y;
   float comet=d>=0.0?exp(-d*9.0):exp(d*80.0);
   float ends=smoothstep(0.0,0.04,vPos.y)*smoothstep(1.0,0.96,vPos.y);
-  vec3 col=vec3(0.25,0.65,1.0)*(core*0.4+glow*0.07)+vec3(0.75,0.95,1.0)*comet*(core*1.6+glow*0.4);
+  vec3 col=(vec3(0.25,0.65,1.0)*(core*0.4+glow*0.07)+vec3(0.75,0.95,1.0)*comet*(core*1.6+glow*0.4))*0.6;
   float inward=clamp(dot(uSun-gl_FragCoord.xy,uSunU)/max(uFadeLen,1.0),0.0,1.0);
   outColor=vec4(col*vArc.x*ends*uAmt*uDim*(1.0-smoothstep(0.30,1.0,inward)*uFade),1.0);
 }`;
@@ -1213,11 +1213,11 @@ void main(){
     // A frame is the point on the planet's edge under the sun (ax, ay), the radius, the tilt (48 looks north across
     // the top of the world, 90 is the equator face on, 142 looks up at the south), where the sun sits round it
     // (degrees clockwise from the top), how far the planet fades into the page, its brightness, the sun's glow and
-    // the longitude facing us.
+    // the longitude facing us, and how strong the arcs between cities are.
     // Frames move between edge points rather than centres, so the planet never dips while it shrinks or grows.
     const ball = (x, y, r, tilt, sun, dim, lon) => {
       const b = sun * Math.PI / 180;
-      return { ax: x + Math.sin(b) * r, ay: y - Math.cos(b) * r, r, tilt, sun, fade: 0, dim, glow: 0.7, lon };
+      return { ax: x + Math.sin(b) * r, ay: y - Math.cos(b) * r, r, tilt, sun, fade: 0, dim, glow: 0.7, lon, arcs: 0.8 };
     };
     const frames = (w, h, y) => {
       const phone = w <= 820, m = Math.min(w, h);
@@ -1225,13 +1225,13 @@ void main(){
       const dim = phone ? 0.65 : 1;  // on phones the ball sits right behind the copy, so it's dimmer
       return [
         // under the hero, the horizon where hero.jpg's was (340px above the hero's bottom, 290px on phones)
-        { ax: w / 2, ay: hero.offsetHeight - (phone ? 290 : 340) - y, r: heroR, tilt: 48, sun: 0, fade: 1, dim: 1, glow: 0.45, lon: 10 },
-        ball(w / 2, h * 0.56, phone ? w * 0.46 : m * 0.36, 70, 20, 0.5 * dim, -20),
-        ball(phone ? w / 2 : w * 0.84, h * 0.52, phone ? w * 0.5 : h * 0.62, 92, -70, 0.6 * dim, -45),
-        ball(phone ? w / 2 : w * 0.1, h * 0.5, phone ? w * 0.5 : h * 0.5, 110, -110, 0.45 * dim, -80),
-        ball(w / 2, h * 0.5, phone ? w * 0.36 : m * 0.26, 126, -200, 0.35 * dim, -150),
+        { ax: w / 2, ay: hero.offsetHeight - (phone ? 290 : 340) - y, r: heroR, tilt: 48, sun: 0, fade: 1, dim: 1, glow: 0.6, lon: 10, arcs: 0.3 },
+        ball(w / 2, h * 0.56, phone ? w * 0.46 : m * 0.36, 70, 20, 0.38 * dim, -20),
+        ball(phone ? w / 2 : w * 0.84, h * 0.52, phone ? w * 0.5 : h * 0.62, 92, -70, 0.42 * dim, -45),
+        ball(phone ? w / 2 : w * 0.1, h * 0.5, phone ? w * 0.5 : h * 0.5, 110, -110, 0.34 * dim, -80),
+        ball(w / 2, h * 0.5, phone ? w * 0.36 : m * 0.26, 126, -200, 0.26 * dim, -150),
         // over the closer, the planet's bottom edge a quarter of the way down it (the sun keeps circling the same way)
-        { ax: w / 2, ay: closer.offsetTop + closer.offsetHeight * 0.26 - y, r: closerR, tilt: 142, sun: -180, fade: 0.6, dim: 1, glow: 1, lon: -225 },
+        { ax: w / 2, ay: closer.offsetTop + closer.offsetHeight * 0.26 - y, r: closerR, tilt: 142, sun: -180, fade: 0.6, dim: 1, glow: 0.8, lon: -225, arcs: 0.4 },
       ];
     };
     // the scroll positions where each frame is exact: the top, each section centred, the bottom
@@ -1258,6 +1258,7 @@ void main(){
         const sb = f.sun * Math.PI / 180;
         Object.assign(cam, { x: f.ax - Math.sin(sb) * f.r, y: f.ay + Math.cos(sb) * f.r, r: f.r, tilt: f.tilt, sun: f.sun, fade: f.fade, dim: f.dim });
         o.sun = f.glow;
+        o.arcs = f.arcs;
         o.longitude = f.lon;  // scrolling turns the world, westward: Europe, the Atlantic, the Americas, Australia
         // the hero's words drift up and fade as the planet lifts off
         const p = Math.min(1, sy / (h * 0.8));
