@@ -6,7 +6,7 @@
 npx paidwithtab init
 ```
 
-That writes an owner key, an agent key and a signed mandate to `~/.tab` ($1.00 per day, $0.05 per call) and claims $1.00 of starter credits on the public gateway, `pay.paidwithtab.com`, which fronts real APIs: web page reading, Wikipedia, weather, exchange rates. Then:
+That writes an owner key, an agent key and a signed mandate to `~/.tab` ($1.00 per day, $0.05 per call) and claims $1.00 of starter credits on the public gateway, `pay.paidwithtab.com`, which fronts real APIs: web search, translation, speech to text, web page reading, Wikipedia, weather, exchange rates. Then:
 
 ```sh
 npx paidwithtab fetch "https://pay.paidwithtab.com/weather/forecast?latitude=38.72&longitude=-9.14&current=temperature_2m"
@@ -14,6 +14,30 @@ claude mcp add --scope user tab -- npx -y paidwithtab mcp
 ```
 
 The second line gives Claude Code the five tab tools. Ask it to look something up and it will search [paidwithtab.com/catalog](https://paidwithtab.com/catalog), pay, and show you the receipt. Running `init` again is safe: it keeps your keys and tells you the credits were already claimed.
+
+## What the starter credits buy
+
+| What | Route on `pay.paidwithtab.com` | Price |
+| --- | --- | --- |
+| Web search (Tavily) | `POST /search` | $0.01 |
+| Translation (DeepL) | `POST /translate` | $0.02 |
+| Speech to text (Deepgram) | `POST /speech/listen` | $0.02 |
+| Read a web page as markdown (Jina Reader) | `POST /read` | $0.003 |
+| Wikipedia summary | `GET /wikipedia/api/rest_v1/page/summary/:title` | $0.001 |
+| Wikipedia search | `GET /wikipedia/w/rest.php/v1/search/page?q=` | $0.001 |
+| Weather forecast (Open-Meteo) | `GET /weather/forecast?latitude=&longitude=` | $0.001 |
+| Exchange rates (ECB) | `GET /fx/latest?base=USD` | $0.001 |
+| Rates on a date (ECB) | `GET /fx/:date?base=USD` | $0.001 |
+
+The same nine routes are served for test USDC at `testnet.paidwithtab.com` and for USDG at `mainnet.paidwithtab.com`. The live list is [paidwithtab.com/catalog](https://paidwithtab.com/catalog).
+
+Three paid calls, as pasted:
+
+```sh
+npx paidwithtab fetch -X POST -d '{"query":"HTTP 402 payment required","max_results":3}' https://pay.paidwithtab.com/search
+npx paidwithtab fetch -X POST -d '{"text":["Let agents pay for what they use."],"target_lang":"JA"}' https://pay.paidwithtab.com/translate
+npx paidwithtab fetch -X POST -d '{"url":"https://dpgr.am/spacewalk.wav"}' "https://pay.paidwithtab.com/speech/listen?model=nova-3&smart_format=true"
+```
 
 ## The whole stack on your machine
 
@@ -94,6 +118,6 @@ Somewhere past the mandate's daily budget the calls flip to `402 mandate-exceede
 ## Where to next
 
 - Price your own API and get paid: [sellers.md](sellers.md)
-- Fund a real agent with USDC on Robinhood Chain: [buyers.md](buyers.md)
+- Fund a real agent with USDG on Robinhood Chain: [buyers.md](buyers.md)
 - The wire format and verification rules: [SPEC.md](../SPEC.md)
 - Production deployment, TLS, systemd: [DEPLOY.md](../DEPLOY.md)

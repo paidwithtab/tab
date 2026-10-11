@@ -29,15 +29,19 @@ npx paidwithtab key new --out agent.json
 
 One key file carries two identities: the wallet id used by the protocol, and an address on Robinhood Chain (`npx paidwithtab evm address owner.json`).
 
-## 2. Fund the owner (Robinhood Chain testnet)
+## 2. Fund the owner
 
-1. Get testnet ETH for the owner address from the faucet: https://faucet.testnet.chain.robinhood.com/
-2. Get testnet USDC (`0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5`) to the same address.
+**Testnet first, it is free.** Chain id 46630, test USDC at `0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5`, explorer at explorer.testnet.chain.robinhood.com.
+
+1. Get testnet ETH for the owner address. The official faucet is https://faucet.testnet.chain.robinhood.com/ and needs nothing but the address; third-party faucets (QuickNode, Alchemy) want a small ETH balance and some history on Ethereum mainnet first. If the official site rate-limits you, try it from a phone on mobile data.
+2. The test dollar is open-mint. From a clone of the repo, `npx tsx scripts/evm-mint.ts owner.json 0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5 5.00` mints $5.00 to the owner.
 3. Give the agent a little gas. The agent's account sends the payment transactions, so it needs a sliver of ETH:
 
 ```sh
-npx paidwithtab evm fund --from owner.json --to agent.json --eth 0.005
+npx paidwithtab evm fund --from owner.json --to agent.json --eth 0.002
 ```
+
+**Mainnet, when you mean it.** Chain id 4663. The dollar is USDG at `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, explorer at robinhoodchain.blockscout.com. Send a little ETH for gas and the USDG you intend to spend to the owner address from the Robinhood app, choosing Robinhood Chain as the network, or bridge from Ethereum through the canonical Arbitrum bridge. Add `--rpc https://rpc.mainnet.chain.robinhood.com` to every `evm` command below and use the USDG address as the token. Once real money is at the owner address, keep that key off any server.
 
 No testnet funds yet? Everything below also works on the free `ledger` rail; run the [quickstart](quickstart.md) sandbox instead and come back.
 
@@ -46,7 +50,7 @@ No testnet funds yet? Everything below also works on the free `ledger` rail; run
 ```sh
 npx paidwithtab mandate issue --owner owner.json --agent agent.json \
   --budget 5.00 --window day --max-per-call 0.05 \
-  --allow 'api.example.com' --allow '*.trusted.dev' \
+  --allow 'testnet.paidwithtab.com' --allow 'mainnet.paidwithtab.com' \
   --days 90 --out mandate.json
 ```
 
@@ -62,7 +66,7 @@ npx paidwithtab evm approve --owner owner.json --agent agent.json \
 Two ceilings now protect you: the gateway enforces the mandate, the chain enforces the allowance. Ending it all takes one command:
 
 ```sh
-npx paidwithtab evm revoke --owner owner.json --agent agent.json --token 0x5B6C...26f5
+npx paidwithtab evm revoke --owner owner.json --token 0x5B6C...26f5
 ```
 
 ## 4. Spend
@@ -71,7 +75,7 @@ npx paidwithtab evm revoke --owner owner.json --agent agent.json --token 0x5B6C.
 
 ```sh
 npx paidwithtab fetch --agent agent.json --mandate mandate.json \
-  https://api.example.com/v1/things/42
+  https://testnet.paidwithtab.com/wikipedia/api/rest_v1/page/summary/HTTP_402
 ```
 
 Exit codes: 0 paid and served, 1 the API answered non-2xx (you were not charged), 2 the client refused before paying.
@@ -81,7 +85,7 @@ Exit codes: 0 paid and served, 1 the API answered non-2xx (you were not charged)
 ```sh
 claude mcp add tab \
   -e TAB_AGENT=$PWD/agent.json -e TAB_MANDATE=$PWD/mandate.json \
-  -e TAB_MAX_PER_CALL=0.05 -e TAB_CATALOG=https://catalog.example.com \
+  -e TAB_MAX_PER_CALL=0.05 -e TAB_CATALOG=https://paidwithtab.com \
   -- npx -y paidwithtab mcp
 ```
 
@@ -90,14 +94,14 @@ Claude gets `tab_search` (find routes by keyword and max price), `tab_discover`,
 **From your own code:**
 
 ```ts
-import { TabClient, receiptOf, PaymentRefused } from './src/client.js';
+import { TabClient, receiptOf, PaymentRefused } from 'paidwithtab/client';
 
 const client = new TabClient({
   agent, mandate,
   maxPerCallUsd: '0.05',
   onChallenge: (chal, req) => Number(req.amount) <= 20_000,  // your own veto, micro-USD
 });
-const res = await client.fetch('https://api.example.com/v1/things/42');
+const res = await client.fetch('https://testnet.paidwithtab.com/fx/latest?base=USD');
 const receipt = receiptOf(res);   // null if the route was free or the call was voided
 ```
 
@@ -105,14 +109,14 @@ On a 402 the client checks the price, signs a credential binding that exact requ
 
 ## 5. Trust what happened
 
-Every paid response carries a receipt: amount, resource, payer, and a ref like `evm:0x...` that is the settlement transaction on the [Robinhood Chain explorer](https://explorer.testnet.chain.robinhood.com). Check balances any time:
+Every paid response carries a receipt: amount, resource, payer, and a ref like `evm:0x...` that is the settlement transaction on the Robinhood Chain explorer ([testnet](https://explorer.testnet.chain.robinhood.com), [mainnet](https://robinhoodchain.blockscout.com)). The first mainnet payment through tab is [here](https://robinhoodchain.blockscout.com/tx/0xed2380386cdb99d1597ad544d2cee0798e247ef0d48784b60e78bfc5e2db733d). Check balances any time:
 
 ```sh
 npx paidwithtab evm balance --wallet owner.json \
   --token 0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5 --agent agent.json
 ```
 
-That prints your USDC, your ETH, and exactly how much allowance the agent has left.
+That prints your dollars, your ETH, and exactly how much allowance the agent has left.
 
 ## Running several agents
 
@@ -120,7 +124,7 @@ Issue each agent its own key, its own mandate, and its own allowance from the sa
 
 ```
 research agent    $10/day, max $0.02/call, allow *.data-sellers.com
-coding agent      $25/day, max $0.10/call, allow api.example.com
+coding agent      $25/day, max $0.10/call, allow mainnet.paidwithtab.com
 scraper           $1/day,  max $0.005/call, allow *
 ```
 
