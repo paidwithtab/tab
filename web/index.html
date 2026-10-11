@@ -7,10 +7,16 @@
 <title>tab: let agents pay for what they use</title>
 <meta name="description" content="tab is a payment layer for software agents. They discover services, pay per request, and get work done within limits you control.">
 <style>
+  /* fonts, served from web/ (fonts-license.txt): Inter for the text, Instrument Serif italic for one phrase in
+     each heading, Geist Mono for labels and code */
+  @font-face { font-family:"Inter"; src:url(/inter.woff2) format("woff2"); font-weight:100 900; font-display:swap; }
+  @font-face { font-family:"Instrument Serif"; src:url(/instrument-serif-italic.woff2) format("woff2"); font-style:italic; font-weight:400; font-display:swap; }
+  @font-face { font-family:"Geist Mono"; src:url(/geist-mono.woff2) format("woff2"); font-weight:100 900; font-display:swap; }
   :root {
     --bg:#05080c; --fg:#f2f4f7; --fg2:#8a94a6; --dim:#5b6473; --line:rgba(255,255,255,.09); --accent:#9cc3ff; --ok:#7fd8a6;
-    --sans:-apple-system,"SF Pro Display","SF Pro Text",Inter,"Helvetica Neue",system-ui,Segoe UI,Roboto,sans-serif;
-    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:Inter,-apple-system,"SF Pro Text","Helvetica Neue",system-ui,Segoe UI,Roboto,sans-serif;
+    --mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --serif:"Instrument Serif",Georgia,"Times New Roman",serif;
     --max:1400px;
   }
   * { box-sizing:border-box; margin:0; padding:0; }
@@ -22,12 +28,15 @@
   h1, h2 { font-weight:500; letter-spacing:-.04em; line-height:1.02; text-wrap:balance; }
   h1 { font-size:clamp(44px,7vw,96px); }
   h2 { font-size:clamp(38px,5.6vw,76px); }
+  /* the italic serif phrase in each heading */
+  h1 em, h2 em { font-family:var(--serif); font-style:italic; font-weight:400; letter-spacing:-.01em; font-size:1.1em; line-height:.9; }
   .sub { color:var(--fg2); font-size:clamp(17px,1.5vw,21px); line-height:1.5; max-width:34em; text-wrap:balance; }
   .btn { display:inline-flex; align-items:center; gap:10px; padding:13px 24px; border-radius:999px; font-size:15px; font-weight:500; border:1px solid transparent; transition:background .25s, border-color .25s, color .25s; }
   .btn.primary { background:#fff; color:#05080c; }
   .btn.primary:hover { background:#e6eaf0; }
-  .btn.ghost { color:var(--fg); border-color:rgba(255,255,255,.22); background:transparent; }
-  .btn.ghost:hover { border-color:rgba(255,255,255,.5); }
+  /* the outline button sits on the bright horizon, so it gets a dark frosted fill and a clear edge */
+  .btn.ghost { color:#fff; border-color:rgba(255,255,255,.4); background:rgba(4,7,13,.55); -webkit-backdrop-filter:blur(10px); backdrop-filter:blur(10px); }
+  .btn.ghost:hover { border-color:rgba(255,255,255,.75); background:rgba(4,7,13,.7); }
   .btn svg { width:14px; height:14px; }
   :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
   section { padding:clamp(72px,9vw,128px) 0; }
@@ -61,7 +70,8 @@
   /* the grey copy sits in the sunrise glow; a soft dark halo keeps every line readable */
   .hero .sub { margin:0 auto 52px; text-shadow:0 0 22px rgba(1,3,10,.9), 0 0 6px rgba(1,3,10,.7); }
   .hero .cta { display:flex; gap:14px; justify-content:center; flex-wrap:wrap; }
-  .hero .meta { margin-top:60px; display:flex; justify-content:center; gap:clamp(18px,2.2vw,34px); flex-wrap:wrap; font-family:var(--mono); font-size:13px; letter-spacing:.24em; text-transform:uppercase; color:#4a5262; }
+  .hero .meta { margin-top:60px; display:flex; justify-content:center; gap:clamp(18px,2.2vw,34px); flex-wrap:wrap; font-family:var(--mono); font-size:13px; letter-spacing:.24em; text-transform:uppercase; color:#b4bdcc;
+    text-shadow:0 1px 2px rgba(0,0,0,.9), 0 0 14px rgba(0,0,0,.8); } /* over the globe, so light and shadowed */
 
   /* reveal motion: .r is added by the script, so without JS everything is simply visible */
   .r { opacity:0; transform:translateY(26px); transition:opacity 1.1s ease, transform 1.1s ease; }
@@ -205,7 +215,7 @@
 <header class="hero" id="product">
   <div class="wrap">
     <div class="eyebrow">A more capable internet</div>
-    <h1>Let agents pay for what they use.</h1>
+    <h1>Let agents pay for <em>what they use.</em></h1>
     <p class="sub">tab is a payment layer for software agents.<br>They discover services, pay per request, and get work done<br>within limits you control.</p>
     <div class="cta">
       <a class="btn primary" href="/developers">Get started</a>
@@ -217,7 +227,7 @@
 
 <section id="tab" class="center">
   <div class="wrap">
-    <h2 data-r>Give your agents a tab.</h2>
+    <h2 data-r>Give your agents a <em>tab.</em></h2>
     <div class="tx" data-r data-state="idle" id="tx">
       <div class="side">
         <div class="role">Agent</div>
@@ -244,7 +254,7 @@
 
 <section class="center" id="catalog-ui">
   <div class="wrap">
-    <h2 data-r>They find what they need.</h2>
+    <h2 data-r>They find <em>what they need.</em></h2>
     <div class="screen" data-r aria-label="The tab catalog">
       <div class="bar"><div class="dots"><i></i><i></i><i></i></div><span class="url">tab catalog</span></div>
       <div class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>wikipedia</span><em id="live-count">6 routes</em></div>
@@ -262,7 +272,7 @@
 
 <section class="center" id="control">
   <div class="wrap">
-    <h2 data-r>You’re always in control.</h2>
+    <h2 data-r>You’re always <em>in control.</em></h2>
     <div class="mandate" data-r>
       <div class="big">$0.50<small>per day</small></div>
       <div class="bar"><i></i></div>
@@ -279,7 +289,7 @@
 
 <section id="developers">
   <div class="wrap">
-    <div class="center"><h2 data-r>Built on HTTP.</h2><p class="sub" data-r>A service says what it costs with a 402. The agent pays inline and gets the answer. No accounts, no API keys, no invoices.</p></div>
+    <div class="center"><h2 data-r>Built on <em>HTTP.</em></h2><p class="sub" data-r>A service says what it costs with a 402. The agent pays inline and gets the answer. No accounts, no API keys, no invoices.</p></div>
     <div class="dev">
       <div data-r>
         <h3>The exchange</h3>
@@ -320,7 +330,7 @@
 
 <section class="closer" id="start">
   <div class="wrap">
-    <h2 data-r>Give your agents a tab.</h2>
+    <h2 data-r>Give your agents a <em>tab.</em></h2>
     <a class="btn primary" data-r href="/developers">Get started</a>
   </div>
 </section>
@@ -523,7 +533,7 @@ vec3 cyberSurface(vec3 dayTex,vec3 nightTex,float cloudA,float waterRaw,float wa
   float hx=luma(textureGrad(uDay,uvE+vec2(hs.x,0.0),dx,dy).rgb),hy=luma(textureGrad(uDay,uvE+vec2(0.0,hs.y),dx,dy).rgb);
   // brighter where the ground rises to the south east, so slopes facing the north west catch the light
   float hill=clamp(0.5+(hx+hy-2.0*luma(dayTex))*9.0,0.0,1.0)*uReady.x+0.5*(1.0-uReady.x);
-  vec3 landCol=mix(vec3(0.003,0.016,0.07),vec3(0.10,0.36,0.80),relief*relief)*(0.5+1.0*hill);
+  vec3 landCol=mix(vec3(0.002,0.012,0.06),vec3(0.05,0.28,0.85),relief*relief)*(0.5+1.0*hill);
   float shelf=smoothstep(0.03,0.25,dayTex.b)*uReady.x;
   vec3 seaCol=mix(vec3(0.001,0.004,0.018),vec3(0.012,0.07,0.20),shelf);
   // lit from the sun's side, so it reads as a ball rather than a disc
@@ -594,12 +604,12 @@ vec3 cyberSurface(vec3 dayTex,vec3 nightTex,float cloudA,float waterRaw,float wa
   }
 
   float cd=abs(waterRaw-0.5)/max(waterFw,1e-4); // pixels from the coastline
-  c+=vec3(0.30,0.75,1.0)*((1.0-smoothstep(0.4,1.6,cd))*1.4+exp(-cd*0.35)*0.25)*uReady.w;
+  c+=vec3(0.18,0.60,1.0)*((1.0-smoothstep(0.4,1.6,cd))*1.4+exp(-cd*0.35)*0.25)*uReady.w;
 
   float lum=dot(nightTex,vec3(0.3,0.5,0.2));
   c+=vec3(0.45,0.85,1.0)*smoothstep(0.06,0.45,lum)*0.9*uCity;
   c+=vec3(0.10,0.30,0.70)*cloudA*0.12;
-  return c*0.6;  // a dark world: the detail is there for whoever looks
+  return c*0.5;  // a dark world: the detail is there for whoever looks
 }
 
 void main(){
@@ -635,11 +645,11 @@ void main(){
 
   float hH=(r-1.0)*uRadius/H;        // height above the limb, in element heights
   float up=max(hH,0.0);
-  vec3 rim=vec3(0.55,0.78,1.0)*exp(-abs(hH)/0.0026)*(0.18+2.8*sunLimb*uSunAmt*pulse);
+  vec3 rim=vec3(0.40,0.68,1.0)*exp(-abs(hH)/0.0026)*(0.18+2.8*sunLimb*uSunAmt*pulse);
 
   vec3 sky=vec3(0.0);
   if(cov<1.0){
-    sky=mix(vec3(0.0015,0.004,0.014),vec3(0.0004,0.0008,0.003),smoothstep(0.0,0.5,up));
+    sky=mix(vec3(0.0008,0.0025,0.011),vec3(0.0002,0.0005,0.002),smoothstep(0.0,0.5,up));
     vec2 np=frag/H;
     float neb=fbm3(vec3(np*1.6+vec2(uTime*0.003,0.0),uTime*0.008));
     sky+=vec3(0.001,0.002,0.007)*smoothstep(-0.1,0.7,neb);
@@ -724,14 +734,15 @@ void main(){
   vec3 col=mix(sky,planet,cov)+rim;
 
   // the sun's glare in the lens: mostly above the horizon
-  vec3 bloom=vec3(0.85,0.92,1.0)*exp(-sd*18.0)*0.9+vec3(0.10,0.25,0.9)*0.06*exp(-sd*5.0); // a tight white core
+  vec3 bloom=vec3(0.70,0.85,1.0)*exp(-sd*18.0)*0.9+vec3(0.10,0.25,0.9)*0.06*exp(-sd*5.0); // a tight white core
   bloom+=vec3(0.30,0.55,1.0)*exp(-abs(sAcross)*160.0)*exp(-abs(sAlong)*1.8)*0.12;
   col+=bloom*mix(1.0,0.15,cov)*uSunAmt*pulse;
 
   col*=1.0-0.35*smoothstep(0.45,0.85,length((frag/uRes-0.5)*vec2(1.2,1.0))); // darker corners
   col*=uDim;
 
-  col=1.0-exp(-col);
+  col=1.0-exp(-col*0.85);
+  col=max(mix(vec3(dot(col,vec3(0.2126,0.7152,0.0722))),col,1.3),0.0); // deeper, richer blues
   col=pow(col,vec3(1.0/2.2));
   // fade into the page from the limb towards the element's edge on the planet's side
   float inward=dot(uSun-frag,uSunU)/max(uFadeLen,1.0); // 0 at the sun's limb point, 1 at the far edge
@@ -768,7 +779,7 @@ void main(){
   float d=head-vPos.y;
   float comet=d>=0.0?exp(-d*9.0):exp(d*80.0);
   float ends=smoothstep(0.0,0.04,vPos.y)*smoothstep(1.0,0.96,vPos.y);
-  vec3 col=(vec3(0.25,0.65,1.0)*(core*0.4+glow*0.07)+vec3(0.75,0.95,1.0)*comet*(core*1.6+glow*0.4))*0.6;
+  vec3 col=(vec3(0.18,0.55,1.0)*(core*0.4+glow*0.07)+vec3(0.55,0.85,1.0)*comet*(core*1.6+glow*0.4))*0.6;
   float inward=clamp(dot(uSun-gl_FragCoord.xy,uSunU)/max(uFadeLen,1.0),0.0,1.0);
   outColor=vec4(col*vArc.x*ends*uAmt*uDim*(1.0-smoothstep(0.30,1.0,inward)*uFade),1.0);
 }`;
@@ -1277,13 +1288,14 @@ void main(){
   if (io && !reduce) {
     // headings come in word by word, the facts one after another
     document.querySelectorAll('h2[data-r]').forEach((h) => {
-      const words = h.textContent.trim().split(/\s+/);
+      const words = [...h.childNodes].flatMap((n) => n.textContent.trim().split(/\s+/).filter(Boolean).map((t) => [t, n.nodeName === 'EM']));
       h.textContent = '';
-      words.forEach((word, i) => {
+      words.forEach(([word, italic], i) => {
         const w = document.createElement('span');
         w.className = 'w';
         w.style.setProperty('--i', i);
-        w.textContent = word;
+        if (italic) w.append(Object.assign(document.createElement('em'), { textContent: word }));
+        else w.textContent = word;
         h.append(...(i ? [' ', w] : [w]));
       });
     });

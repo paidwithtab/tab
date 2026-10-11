@@ -120,16 +120,16 @@ function findUi(): string | null {
   return null;
 }
 
-// static files under web/: clean URLs for the pages (/product -> product.html), plus assets and the
-// three markdown documents at the repo root, which the docs page links to
+// static files under web/: clean URLs for the pages (/product -> product.html), plus assets (images and the
+// site's fonts) and the three markdown documents at the repo root, which the docs page links to
 const TYPES: Record<string, string> = {
   html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', png: 'image/png', jpg: 'image/jpeg',
-  md: 'text/markdown; charset=utf-8',
+  woff2: 'font/woff2', md: 'text/markdown; charset=utf-8',
 };
 const DOCS = new Set(['README.md', 'SPEC.md', 'DEPLOY.md']);
 function staticFile(uiDir: string, path: string): [file: string, type: string] | null {
   if (path === '/' || path === '/index.html') return [join(uiDir, 'index.html'), TYPES.html];
-  const m = /^\/([a-z0-9-]+)(?:\.(html|css|png|jpg))?$/.exec(path);
+  const m = /^\/([a-z0-9-]+)(?:\.(html|css|png|jpg|woff2))?$/.exec(path);
   if (m) {
     const ext = m[2] ?? 'html';
     const file = join(uiDir, `${m[1]}.${ext}`);

@@ -1,8 +1,11 @@
 /* shared styles for the inner pages (product, developers, providers, catalog, docs); the landing page carries its own */
+/* fonts, served from web/ (fonts-license.txt), the same as the landing page's */
+@font-face { font-family:"Inter"; src:url(/inter.woff2) format("woff2"); font-weight:100 900; font-display:swap; }
+@font-face { font-family:"Geist Mono"; src:url(/geist-mono.woff2) format("woff2"); font-weight:100 900; font-display:swap; }
 :root {
   --bg:#05080c; --bg2:#070b11; --fg:#f2f4f7; --fg2:#8a94a6; --dim:#5b6473; --line:rgba(255,255,255,.09); --accent:#9cc3ff; --ok:#7fd8a6; --bad:#f28ba8;
-  --sans:-apple-system,"SF Pro Display","SF Pro Text",Inter,"Helvetica Neue",system-ui,Segoe UI,Roboto,sans-serif;
-  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:Inter,-apple-system,"SF Pro Text","Helvetica Neue",system-ui,Segoe UI,Roboto,sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   --max:1400px;
 }
 * { box-sizing:border-box; margin:0; padding:0; }
