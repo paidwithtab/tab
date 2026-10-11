@@ -88,6 +88,21 @@
   html.globe-on .closer { background:none; }
   html.globe-on .closer::before, html.globe-on .closer::after { display:none; }
   html.globe-on .screen, html.globe-on pre { background:rgba(7,11,17,.72); -webkit-backdrop-filter:blur(14px) saturate(130%); backdrop-filter:blur(14px) saturate(130%); }
+  /* text over the globe: brighter secondary text, and a panel behind every block of copy, not just the screens */
+  html.globe-on { --fg2:#bac2ce; --dim:#8d97a7; }
+  html.globe-on .tx, html.globe-on .mandate, html.globe-on .facts > div, html.globe-on .real, html.globe-on .live, html.globe-on .dev > div > p, html.globe-on .sub, html.globe-on .center > .wrap > .sub { background:rgba(7,11,17,.74); -webkit-backdrop-filter:blur(14px) saturate(130%); backdrop-filter:blur(14px) saturate(130%); border-radius:14px; }
+  html.globe-on .tx { padding:clamp(20px,3vw,36px) clamp(18px,3vw,44px); }
+  html.globe-on .mandate { padding:clamp(24px,3vw,36px) clamp(20px,3vw,40px); }
+  html.globe-on .facts > div { padding:20px 22px; }
+  html.globe-on .sub { padding:12px 20px; display:inline-block; }
+  html.globe-on .real { padding:14px 22px; }
+  html.globe-on .live { padding:14px 22px; }
+  html.globe-on .dev > div > p { padding:12px 16px; }
+  html.globe-on .tx .receipt, html.globe-on .tx .for, html.globe-on .tx .status, html.globe-on .tx .svc small { color:var(--fg2); }
+  html.globe-on .tx .state { color:#aab3c2; }
+  html.globe-on .live { color:#aab3c2; font-size:12.5px; letter-spacing:.16em; }
+  html.globe-on .real { color:#d5dae3; font-size:15.5px; }
+  html.globe-on .hero .sub { background:none; -webkit-backdrop-filter:none; backdrop-filter:none; padding:0; display:block; }
 
   /* transaction */
   .tx { margin:clamp(48px,6vw,80px) auto 0; max-width:1200px; display:grid; grid-template-columns:1fr 1.2fr 1fr; gap:clamp(24px,5vw,72px); align-items:center; font-size:15px; text-align:left; }
