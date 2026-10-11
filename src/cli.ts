@@ -2,6 +2,7 @@
 // (pays), gateway/catalog (sells). See DEPLOY.md section 7 for the reference.
 
 import { parseArgs } from 'node:util';
+import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -16,6 +17,11 @@ import { runMcpServer } from './mcp.js';
 import { scalarFromSeed, addressFromSeed, checksumAddress } from './evm/secp256k1.js';
 import { EvmRpc } from './evm/rpc.js';
 import { signTx, erc20 } from './evm/tx.js';
+
+// Node's fetch tries each address of a host for 250 ms before moving to the next (happy eyeballs). From far
+// away, a round trip alone can take that long, so upstreams on another continent fail to connect at all.
+// 2 s per attempt is still fast to fail and connects everywhere.
+setDefaultAutoSelectFamilyAttemptTimeout(2_000);
 
 const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed mandates)
 

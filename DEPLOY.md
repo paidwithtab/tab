@@ -630,6 +630,8 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 
 ---
 
+**An upstream on another continent fails with `upstream-failed` although `curl` reaches it.** Node's fetch gives each address of a host 250 ms to connect before trying the next; a round trip alone can take that long from far away. `tab serve` raises that to 2 s at startup (`setDefaultAutoSelectFamilyAttemptTimeout`), from 0.4.2. On older builds, start node with `--network-family-autoselection-attempt-timeout=2000`.
+
 ## 17. Security checklist before real money
 
 - [ ] Ports 1402/1403/1404 firewalled; only nginx/Caddy exposed, TLS on.
@@ -666,8 +668,18 @@ Three services in the public specs front paid providers. The gateway injects the
 | Route | Provider | Buyer pays | Provider charges you | Key |
 | --- | --- | --- | --- | --- |
 | `POST /search` | Tavily, `api.tavily.com/search` | $0.01 | about $0.008 per search | `TAVILY_API_KEY` |
+| `POST /extract` | Tavily, `api.tavily.com/extract` | $0.01 | per page | `TAVILY_API_KEY` |
 | `POST /translate` | DeepL, `api-free.deepl.com/v2/translate` | $0.02 | free tier 500k chars a month; pro is `api.deepl.com`, change the upstream | `DEEPL_API_KEY` |
 | `POST /speech/listen` | Deepgram, `api.deepgram.com/v1/listen` | $0.02 | about $0.0043 per audio minute | `DEEPGRAM_API_KEY` |
+| `POST /speech/speak` | Deepgram, `api.deepgram.com/v1/speak` | $0.02 | about $0.03 per 1k characters | `DEEPGRAM_API_KEY` |
+| `POST /google/search`, `/news`, `/images` | Serper, `google.serper.dev` | $0.005 | about $0.001 per search | `SERPER_API_KEY` |
+| `POST /exa/search`, `/contents` | Exa, `api.exa.ai` | $0.01 | about $0.007 per search | `EXA_API_KEY` |
+| `POST /scrape/scrape` | Firecrawl, `api.firecrawl.dev/v1` | $0.005 | $0.001 to $0.003 per page | `FIRECRAWL_API_KEY` |
+| `GET /brave/web/search`, `/news/search` | Brave Search, `api.search.brave.com` | $0.005 | per query, free tier available | `BRAVE_API_KEY` |
+| `POST /ocr/text` | Mathpix, `api.mathpix.com/v3` | $0.005 | about $0.002 per image | `MATHPIX_APP_ID`, `MATHPIX_APP_KEY` |
+| `POST /image/fal-ai/flux/schnell` | fal.ai, `fal.run` | $0.05 | about $0.003 per image | `FAL_KEY` |
+
+The last six were written from each provider's documentation and have not been exercised with a real key yet; test one call after setting the key and fix the spec if the provider's shape has moved. Sixteen more services front keyless public APIs (Open-Meteo geocoding, air quality and marine, arXiv, Hacker News, Open Library, Wikidata, Nominatim, Crossref, PubMed, USGS, Stack Exchange, CoinGecko, GitHub, OpenAlex) and were each exercised with a paid call on 2026-10-12. Services that need a User-Agent to be admitted carry one in `upstream_headers`.
 
 Keys live in `~/tab/.env` (mode 600, gitignored; `examples/env.example` is the template). The three gateway units read it through `EnvironmentFile=-%h/tab/.env`, so one file feeds all three rails. The try-it mandate behind the Buy button caps a call at $0.01, so `/search` works from the site and the two $0.02 routes need a buyer's own mandate.
 
