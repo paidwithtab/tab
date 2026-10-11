@@ -62,7 +62,7 @@ From `examples/catalog-candidates.md`, header-auth only, cheap per call, no shim
 
 - [ ] DNS: `pay.paidwithtab.com` points at the box; nginx vhost with TLS proxies to port 1402.
 - [ ] systemd unit for the gateway from DEPLOY.md section 8.4, with `--announce http://127.0.0.1:1403 --origin https://pay.paidwithtab.com`.
-- [ ] `curl https://pay.paidwithtab.com/.well-known/tab` returns the discovery document with every route.
+- [x] `curl https://pay.paidwithtab.com/.well-known/tab` returns the discovery document with every route (2026-10-11; testnet and mainnet hostnames too).
 - [ ] `curl https://paidwithtab.com/v1/catalog.json` lists the gateway; `/v1/search?q=translate` returns the DeepL route.
 - [ ] Ports 1402, 1403 and 1404 are firewalled; only nginx is reachable.
 
@@ -70,11 +70,11 @@ From `examples/catalog-candidates.md`, header-auth only, cheap per call, no shim
 
 On a laptop, not the server, using the published package:
 
-- [ ] `tab key new --out agent.json`, fund it with `tab evm fund --eth 0.005`.
-- [ ] `tab mandate issue --owner owner.json --agent agent.json --budget 1.00 --max-per-call 0.05 --days 7`.
-- [ ] `tab evm approve --owner owner.json --agent agent.json --amount 1.00 --token <testnet USDC>`.
-- [ ] `tab fetch --agent agent.json --mandate mandate.json -X POST -d '{...}' https://pay.paidwithtab.com/...` returns 2xx and a receipt with `ref: evm:<tx hash>`.
-- [ ] The tx is visible on `explorer.testnet.chain.robinhood.com` and the receipt appears at `https://paidwithtab.com/v1/receipts`.
+- [x] `tab key new --out agent.json`, fund it with `tab evm fund --eth 0.005`. Done 2026-10-11 by `scripts/chain-trial.sh testnet` (0.002 ETH).
+- [x] `tab mandate issue --owner owner.json --agent agent.json --budget 1.00 --max-per-call 0.05 --days 7`.
+- [x] `tab evm approve --owner owner.json --agent agent.json --amount 1.00 --token <testnet USDC>`.
+- [x] `tab fetch` against `https://testnet.paidwithtab.com/...` returned 200 and a receipt with `ref: evm:0xe4c669a0...` on 2026-10-11, the first paid call settled on Robinhood Chain testnet.
+- [x] The tx is visible on `explorer.testnet.chain.robinhood.com` and the receipt appears at `https://paidwithtab.com/v1/receipts`.
 - [ ] Time the whole thing from a blank laptop and write down every step that confused you. That list is Phase 4.
 
 ### 2.5 Try-it on the site
@@ -118,10 +118,10 @@ Instead of asking every buyer to fund a chain account before their first call, t
 - [x] `tab fetch` and `tab mcp` default to `~/.tab`; `tab mcp` defaults the catalog to paidwithtab.com.
 - [x] `examples/spec-public.json`: six routes over keyless APIs (Jina Reader, Wikipedia summary and search, Open-Meteo forecast, Frankfurter latest and by date), verified paid end to end against the live upstreams.
 - [x] Tests: 59 e2e (8 new), 24 adversarial, all green. README, docs and DEPLOY.md section 19 rewritten around `npx paidwithtab init`.
-- [ ] Deploy on the box: `bash scripts/go-live.sh` (units, tunnel ingress, DNS, catalog with the Buy button, announce). Prepared 2026-10-11; needs the operator's sudo.
+- [x] Deploy on the box: `bash scripts/go-live.sh` (units, tunnel ingress, DNS, catalog with the Buy button, announce). Prepared 2026-10-11; needs the operator's sudo.
 - [x] Chain gateways prepared: `examples/spec-testnet.json`, `examples/spec-mainnet.json`, their units, and `scripts/chain-trial.sh` for the first paid call on each chain. All owner, agent and seller balances were zero on both chains on 2026-10-11.
 - [x] `npm publish` (needs `npm login`). Published 2026-10-11 as 0.4.0.
-- [ ] Enable the catalog's Buy button with a try-it mandate on the public gateway.
+- [x] Enable the catalog's Buy button with a try-it mandate on the public gateway. Live 2026-10-11.
 
 ## Phase 4: make the first run survivable (one week)
 
@@ -161,7 +161,7 @@ From the roadmap, and deliberately parked until there are paying users: x402 com
 
 ## Definition of done
 
-- [ ] `npx paidwithtab` installs.
+- [x] `npx paidwithtab` installs.
 - [ ] `paidwithtab.com/catalog` lists at least four real routes behind `pay.paidwithtab.com`.
 - [ ] A new user on a blank laptop completes a testnet paid call in under ten minutes following only the README.
 - [ ] One mainnet payment settled and visible on the explorer.
