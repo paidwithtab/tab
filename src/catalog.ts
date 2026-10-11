@@ -128,7 +128,11 @@ const TYPES: Record<string, string> = {
 };
 const DOCS = new Set(['README.md', 'SPEC.md', 'DEPLOY.md']);
 function staticFile(uiDir: string, path: string): [file: string, type: string] | null {
-  if (path === '/' || path === '/index.html') return [join(uiDir, 'index.html'), TYPES.html];
+  if (path === '/' || path === '/index.html') {
+    // the landing page when the operator ships one; otherwise the catalog app is the front door
+    const landing = join(uiDir, 'index.html');
+    return [existsSync(landing) ? landing : join(uiDir, 'catalog.html'), TYPES.html];
+  }
   const m = /^\/([a-z0-9-]+)(?:\.(html|css|png|jpg|woff2))?$/.exec(path);
   if (m) {
     const ext = m[2] ?? 'html';

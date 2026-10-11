@@ -24,3 +24,15 @@ social/
 # local scratch images
 /image*.png
 /22e9dddd-6cbb-41f8-bfde-e544025eac88.png
+
+# the marketing site (landing, product, developers, providers, maps, fonts) is a private repo, symlinked into web/ on the box
+web/index.html
+web/product.html
+web/developers.html
+web/providers.html
+web/hero.jpg
+web/earth-day.jpg
+web/earth-night.jpg
+web/earth-water.png
+web/*.woff2
+web/fonts-license.txt
