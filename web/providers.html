@@ -112,14 +112,14 @@
     <div>
       <h2>How you get paid.</h2>
       <p>Every gateway settles on one rail. Start on the sandbox ledger while you integrate, then switch the spec to real value.</p>
-      <p>On Robinhood Chain, payments are USDC transfers from the owner's wallet to yours, one per request, broadcast only after you answered. The gateway holds no payment key. Receipts carry the transaction hash, and the explorer link shows in the catalog.</p>
+      <p>On Robinhood Chain, payments are USDG transfers from the owner's wallet to yours, one per request, broadcast only after you answered. The gateway holds no payment key. Receipts carry the transaction hash, and the explorer link shows in the catalog.</p>
       <dl class="kv">
         <dt>Sandbox</dt><dd><code>"rail": "ledger"</code>, or omit. Balances live in the gateway's SQLite file.</dd>
         <dt>Real value</dt><dd><code>"rail": "evm"</code> with the block on the right.</dd>
         <dt>Chain</dt><dd>Robinhood Chain testnet, chain id 46630.</dd>
       </dl>
     </div>
-<pre><i>// add to spec.json for USDC on Robinhood Chain</i>
+<pre><i>// add to spec.json for USDG on Robinhood Chain mainnet (test USDC on testnet)</i>
 "rail": "evm",
 "evm": {
   "rpc":       "https://rpc.testnet.chain.robinhood.com",

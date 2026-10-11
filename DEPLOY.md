@@ -101,7 +101,7 @@ examples/
   demo.sh                   # one-command sandbox
 test/e2e.ts                 # 59 in-process checks, temp DB, ~1-2 min
 test/adversarial.ts         # 24 hostile checks: concurrency, replay, mutation, SSRF, forgery
-test/evm.ts                 # 31 checks: crypto vectors, a mock EVM node, live Robinhood testnet reads
+test/evm.ts                 # 34 checks: crypto vectors, a mock EVM node, rpc failover, live Robinhood testnet reads
 ```
 
 ---
@@ -114,7 +114,7 @@ npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 59 passed, 0 failed on the dev box
 npm run test:adversarial    # 24 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery
-npm run test:evm            # 31 passed, 0 failed: keccak/secp256k1 vectors, mock chain, live testnet reads
+npm run test:evm            # 34 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
 ```
 
 These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes two read-only calls to the public Robinhood testnet RPC and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
@@ -432,6 +432,8 @@ Everything in section 8 applies. Robinhood Chain is an Arbitrum-stack L2; the ra
 | testnet | 46630 | `https://rpc.testnet.chain.robinhood.com` | `https://explorer.testnet.chain.robinhood.com` | `0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5` |
 | mainnet | 4663 | `https://rpc.mainnet.chain.robinhood.com` | `https://robinhoodchain.blockscout.com` | the dollar on mainnet is **USDG** (Paxos), `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, 6 decimals; bridged USDC arrives as USDG |
 
+`evm.rpc` may be a comma-separated list. The gateway tries the endpoints in order, moves on when one refuses (connection error, timeout, HTTP 403, 429 or 5xx) and stays on the one that answered. Chain answers such as reverts and insufficient funds are never retried elsewhere. The public specs list the official endpoint first and three public mirrors (dRPC, PublicNode, thirdweb) behind it.
+
 For production use a provider endpoint (Alchemy/QuickNode/dRPC support Robinhood Chain) instead of the public RPC. Beware lookalike explorer domains (rh-scan and similar); the two above are the official ones. Testnet ETH comes from `https://faucet.testnet.chain.robinhood.com/`.
 
 **Keys.** A tab key file already contains everything: its 32-byte seed doubles as a secp256k1 scalar, so `tab evm address keys/owner.json` prints the owner's 0x address. Mandates issued by `tab mandate issue` automatically embed that address as `evm_owner` (the owner's signed attestation of which EVM account its mandates spend).
@@ -474,7 +476,7 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 - The wallet endpoint (`/.well-known/tab/wallet/<id>`) takes a 0x address on this rail.
 - Only type-2 transactions, empty access lists, 6-decimal tokens in draft 0.2.
 
-`npm run test:evm` runs 31 checks: keccak-256 and RFC 6979 vectors, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
+`npm run test:evm` runs 34 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
 
 ---
 
@@ -687,3 +689,7 @@ Two more gateways on the same box serve the same six routes over the evm rail, s
 Both specs name `keys/mainnet-seller.json` as the recipient (same address on both chains). `scripts/go-live.sh` installs the units, adds the three hostnames to the tunnel ingress and DNS, restarts the tunnel, installs the catalog unit with the try-it mandate, and announces all three gateways to the catalog. Run it once from a normal terminal; it asks for sudo.
 
 `scripts/chain-trial.sh testnet|mainnet` then makes one paid call end to end with the owner and agent keys in `keys/`: mint test dollars (testnet only), fund the agent with gas, approve the allowance, issue a mandate for the realm, fetch a Wikipedia summary for $0.001 and print the receipt. The owner address needs ETH on that chain first: the testnet faucet at `https://faucet.testnet.chain.robinhood.com/` or, on mainnet, a bridge. Mainnet also needs USDG at the owner address, and the owner key should not stay on the server once real money is involved (section 9).
+
+### 19.2 Backups
+
+`bash scripts/backup.sh` copies every `*.db` with SQLite's online backup API and every file in `keys/` into `~/tab-backups/tab-<stamp>.tar.gz` (mode 600), then extracts the archive to a temp directory and runs `pragma integrity_check` on each database before reporting success. It keeps the last 30 archives. `bash scripts/backup.sh --verify-only <archive>` repeats the restore test on an old archive. Run it daily from cron, and copy the archives off the box; a backup that lives only on the machine it protects is not a backup.
