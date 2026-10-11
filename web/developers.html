@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Developers · tab</title>
-<meta name="description" content="Give your agent a tab: a key, a signed limit, and one command. Use the CLI, the client library, or the MCP server in Claude Code.">
+<meta name="description" content="One command gives your agent a wallet with starter credits and nine real services to buy from: web search, translation, speech to text, page reading, Wikipedia, weather and exchange rates. Then real money in USDG on Robinhood Chain.">
 <link rel="stylesheet" href="/site.css">
 </head>
 <body>
@@ -19,80 +19,60 @@
       <li><a href="/catalog">Catalog</a></li>
       <li><a href="/docs">Docs</a></li>
     </ul>
-    <a class="btn ghost" href="/docs#quickstart">Get started</a>
+    <a class="btn ghost" href="#start">Get started</a>
   </div>
 </nav>
 
 <header class="head">
   <div class="wrap">
     <div class="eyebrow">Developers</div>
-    <h1>Give your agent a tab.</h1>
-    <p class="sub">Two key files, one signed limit, and a fetch that knows how to pay. Works from the command line, from your own code, or inside Claude Code.</p>
+    <h1>Your agent can buy things in five minutes.</h1>
+    <p class="sub">One command creates a wallet, signs a spending limit and loads a dollar of starter credits. Your agent can then pay for web search, translation, speech to text and more, per request, with a receipt for every call. When you want real money, the same keys work with USDG on Robinhood Chain.</p>
   </div>
 </header>
 
-<section class="block" id="quick-start">
+<section class="block" id="start">
   <div class="wrap split">
     <div>
-      <h2>One command, starter credits.</h2>
-      <p>tab needs Node 22.13 or newer and nothing else. <code>init</code> writes an owner key, an agent key and a signed mandate to <code>~/.tab</code>, then claims $1.00 of starter credits on the public gateway, which fronts real APIs.</p>
+      <h2>Start here.</h2>
+      <p>tab needs Node 22.13 or newer and nothing else. <code>init</code> writes an owner key, an agent key and a signed limit of $1.00 a day to <code>~/.tab</code>, then claims $1.00 of starter credits from the public gateway at pay.paidwithtab.com.</p>
+      <p>The second line is a real paid request. It costs $0.001 of those credits and returns today's exchange rates from the European Central Bank. The third line gives the same wallet to Claude Code.</p>
+      <p>Starter credits are sandbox money that only pay.paidwithtab.com accepts. Everything else about the call is real: the price, the limit check, the upstream API, the receipt.</p>
+    </div>
 <pre><b>$ npx paidwithtab init</b>
-<b>$ npx paidwithtab fetch https://pay.paidwithtab.com/fx/latest?base=USD</b>
-<em>✓ paid $0.001 · 200 OK</em></pre>
-      <p>Prefer the whole stack on your machine? The demo script starts a priced demo API, a gateway and a catalog with sandbox money.</p>
-<pre><b>$ git clone https://github.com/paidwithtab/tab &amp;&amp; cd tab &amp;&amp; npm install</b>
-<b>$ npm run demo</b>   <i># keys, sandbox money, demo API :4101, gateway :1402, catalog :1403</i></pre>
-    </div>
-    <div>
-<pre><i># 1. a key for the owner of the money, and one for the agent</i>
-<b>$ tab key new --out keys/owner.json</b>
-<b>$ tab key new --out keys/agent.json</b>
+<i>owner key   ~/.tab/owner.json (new)
+agent key   ~/.tab/agent.json (new)
+mandate     ~/.tab/mandate.json: 1.00/day, 0.05 per call, 90 days
+credits     1.00 starter credits from pay.paidwithtab.com</i>
 
-<i># 2. the owner signs a limit for that agent, once</i>
-<b>$ tab mandate issue --owner keys/owner.json --agent keys/agent.json \
-    --budget 25 --window day --max-per-call 0.05 --days 30 \
-    --out keys/mandate.json</b>
+<b>$ npx paidwithtab fetch "https://pay.paidwithtab.com/fx/latest?base=USD&amp;symbols=EUR,JPY"</b>
+<em>paid 0.001 (ledger:hBdV9yRwXKy_-wJJ)</em>
+{"amount":1.0,"base":"USD","date":"2026-10-09","rates":{"EUR":0.89,"JPY":152.3}}
 
-<i># 3. sandbox money on a gateway's ledger (development only)</i>
-<b>$ tab mint --wallet keys/owner.json --amount 25 --db tab.db</b>
-
-<i># 4. pay for a request</i>
-<b>$ tab fetch --agent keys/agent.json --mandate keys/mandate.json \
-    http://127.0.0.1:1402/quote</b>
-<em>✓ paid $0.01 · 200 OK</em></pre>
-    </div>
+<b>$ claude mcp add --scope user tab -- npx -y paidwithtab mcp</b></pre>
   </div>
 </section>
 
-<section class="block" id="code">
-  <div class="wrap split">
-    <div>
-      <h2>From your own code.</h2>
-      <p>The client wraps <code>fetch</code>. On a 402 it reads the price, checks it against your own per-call ceiling, signs a payment, and retries exactly once.</p>
-      <p>If the price is over your ceiling, or your veto says no, it throws before anything is sent. The gateway never sees a credential you did not agree to.</p>
-      <ul class="plain">
-        <li><code>TabClient</code> keeps the agent key and mandate and exposes <code>fetch</code>.</li>
-        <li><code>tabFetch(url, init, options)</code> is the one-shot form.</li>
-        <li><code>receiptOf(response)</code> returns the receipt, or null when the route was free or the call was voided.</li>
-        <li><code>PaymentRefused</code> is thrown when the client itself declined to pay.</li>
-      </ul>
-    </div>
-<pre><b>import</b> { TabClient, receiptOf, PaymentRefused } <b>from</b> 'tab/client';
-
-<b>const</b> client = <b>new</b> TabClient({
-  agent, mandate,
-  maxPerCallUsd: '0.05',                       <i>// your own ceiling, on top of the limit</i>
-  onChallenge: (challenge, req) =&gt; req.amountUsd !== '0.05', <i>// optional veto</i>
-});
-
-<b>try</b> {
-  <b>const</b> res = <b>await</b> client.fetch('https://api.lingua.example/v1/translate', {
-    method: 'POST', body: JSON.stringify({ text: 'Hello, world', to: 'ja' }),
-  });
-  <b>const</b> receipt = receiptOf(res);            <i>// { amount, resource, rail, ref, … } or null</i>
-} <b>catch</b> (e) {
-  <b>if</b> (e <b>instanceof</b> PaymentRefused) console.log('declined:', e.reason);
-}</pre>
+<section class="block" id="buy">
+  <div class="wrap">
+    <h2>What your agent can buy today.</h2>
+    <p class="sub">These routes are live on pay.paidwithtab.com right now, and the same nine are served for test USDC at testnet.paidwithtab.com and for USDG at mainnet.paidwithtab.com. The <a href="/catalog">catalog</a> is the live list; this table is what it held when this page was written.</p>
+    <div class="tablewrap"><table>
+      <tr><th>What</th><th>Route</th><th>Price</th><th>Behind it</th></tr>
+      <tr><td>Web search</td><td class="mono">POST /search</td><td class="mono">$0.010</td><td>Tavily: ranked results with content snippets, built for agents</td></tr>
+      <tr><td>Translation</td><td class="mono">POST /translate</td><td class="mono">$0.020</td><td>DeepL: 30+ languages, returns the detected source language</td></tr>
+      <tr><td>Speech to text</td><td class="mono">POST /speech/listen</td><td class="mono">$0.020</td><td>Deepgram: send an audio file or a URL, get a transcript</td></tr>
+      <tr><td>Read a web page</td><td class="mono">POST /read</td><td class="mono">$0.003</td><td>Jina Reader: any URL as clean markdown</td></tr>
+      <tr><td>Wikipedia summary</td><td class="mono">GET /wikipedia/api/rest_v1/page/summary/:title</td><td class="mono">$0.001</td><td>English Wikipedia</td></tr>
+      <tr><td>Wikipedia search</td><td class="mono">GET /wikipedia/w/rest.php/v1/search/page?q=</td><td class="mono">$0.001</td><td>English Wikipedia</td></tr>
+      <tr><td>Weather forecast</td><td class="mono">GET /weather/forecast?latitude=&amp;longitude=</td><td class="mono">$0.001</td><td>Open-Meteo</td></tr>
+      <tr><td>Exchange rates</td><td class="mono">GET /fx/latest?base=USD</td><td class="mono">$0.001</td><td>European Central Bank via Frankfurter</td></tr>
+      <tr><td>Rates on a date</td><td class="mono">GET /fx/:date?base=USD</td><td class="mono">$0.001</td><td>European Central Bank via Frankfurter</td></tr>
+    </table></div>
+<pre><i># three real calls, as pasted, on starter credits</i>
+<b>$ npx paidwithtab fetch -X POST -d '{"query":"HTTP 402 payment required","max_results":3}' https://pay.paidwithtab.com/search</b>
+<b>$ npx paidwithtab fetch -X POST -d '{"text":["Let agents pay for what they use."],"target_lang":"JA"}' https://pay.paidwithtab.com/translate</b>
+<b>$ npx paidwithtab fetch -X POST -d '{"url":"https://dpgr.am/spacewalk.wav"}' "https://pay.paidwithtab.com/speech/listen?model=nova-3&amp;smart_format=true"</b></pre>
   </div>
 </section>
 
@@ -100,18 +80,18 @@
   <div class="wrap split">
     <div>
       <h2>Inside Claude Code.</h2>
-      <p><code>tab mcp</code> is a Model Context Protocol server that runs where Claude Code runs. It needs the agent key, the mandate, and network access to the gateway and catalog. Claude never sees the owner key.</p>
-      <p>It exposes five tools:</p>
+      <p><code>tab mcp</code> is a Model Context Protocol server that runs where Claude Code runs. After <code>init</code>, one line registers it for every project. Claude gets five tools and can never spend past the limit you signed. It never sees the owner key.</p>
       <dl class="kv">
-        <dt><code>tab_limits</code></dt><dd>What this agent may spend, and what is left.</dd>
-        <dt><code>tab_search</code></dt><dd>Search the catalog by keywords and an optional price ceiling.</dd>
-        <dt><code>tab_discover</code></dt><dd>Read a gateway's own service list.</dd>
-        <dt><code>tab_fetch</code></dt><dd>Make a paid request.</dd>
+        <dt><code>tab_search</code></dt><dd>Search the catalog by keywords, with an optional price ceiling.</dd>
+        <dt><code>tab_fetch</code></dt><dd>Make a paid request and get the result plus the receipt.</dd>
+        <dt><code>tab_limits</code></dt><dd>What this agent may spend, and what is left today.</dd>
         <dt><code>tab_balance</code></dt><dd>Available balance on a gateway.</dd>
+        <dt><code>tab_discover</code></dt><dd>Read a gateway's own service list.</dd>
       </dl>
+      <p>Then ask for something: "search the web for the latest on HTTP 402 through tab", or "look up the weather in Lisbon through tab". Claude finds the route, pays, and shows you the receipt.</p>
     </div>
     <div>
-<pre><i># after npx paidwithtab init, once, for every project</i>
+<pre><i># once, for every project, after npx paidwithtab init</i>
 <b>$ claude mcp add --scope user tab -- npx -y paidwithtab mcp</b>
 
 <i># or pin your own keys and catalog in .mcp.json</i>
@@ -129,16 +109,81 @@
   </div>
 </section>
 
+<section class="block" id="code">
+  <div class="wrap split">
+    <div>
+      <h2>From your own code.</h2>
+      <p>The client wraps <code>fetch</code>. On a 402 it reads the price, checks it against your own per-call ceiling, signs a payment, and retries exactly once. If the price is over your ceiling, or your veto says no, it throws before anything is sent.</p>
+      <ul class="plain">
+        <li><code>TabClient</code> keeps the agent key and mandate and exposes <code>fetch</code>.</li>
+        <li><code>receiptOf(response)</code> returns the receipt, or null when the route was free or the call was voided.</li>
+        <li><code>PaymentRefused</code> is thrown when the client itself declined to pay.</li>
+      </ul>
+    </div>
+<pre><b>import</b> { TabClient, receiptOf, PaymentRefused } <b>from</b> 'paidwithtab/client';
+
+<b>const</b> client = <b>new</b> TabClient({
+  agent, mandate,                               <i>// from ~/.tab, or your own files</i>
+  maxPerCallUsd: '0.05',                        <i>// your own ceiling, on top of the limit</i>
+});
+
+<b>try</b> {
+  <b>const</b> res = <b>await</b> client.fetch('https://pay.paidwithtab.com/search', {
+    method: 'POST',
+    body: JSON.stringify({ query: 'HTTP 402 payment required', max_results: 3 }),
+  });
+  <b>const</b> { results } = <b>await</b> res.json();
+  <b>const</b> receipt = receiptOf(res);             <i>// { amount: '10000', rail: 'ledger', ref, … }</i>
+} <b>catch</b> (e) {
+  <b>if</b> (e <b>instanceof</b> PaymentRefused) console.log('declined:', e.reason);
+}</pre>
+  </div>
+</section>
+
+<section class="block" id="real-money">
+  <div class="wrap split">
+    <div>
+      <h2>Real money, when you want it.</h2>
+      <p>The same two key files work on chain. The owner key derives an Ethereum address; so does the agent key. On Robinhood Chain the owner approves the agent to spend up to a limit, and each paid request is one transfer from the owner's wallet to the seller's, broadcast only after the service answered. The gateway never holds your funds.</p>
+      <p>Try it free first. testnet.paidwithtab.com serves the same nine routes for test USDC, which is open mint. mainnet.paidwithtab.com takes USDG, the dollar on Robinhood Chain mainnet. The first mainnet payment through tab settled on October 11, 2026: <a href="https://robinhoodchain.blockscout.com/tx/0xed2380386cdb99d1597ad544d2cee0798e247ef0d48784b60e78bfc5e2db733d" rel="noopener">see the transfer</a>.</p>
+      <dl class="kv">
+        <dt>Testnet</dt><dd>Chain id 46630. The owner address needs test ETH from a faucet; the script mints the test dollars.</dd>
+        <dt>Mainnet</dt><dd>Chain id 4663. The owner address needs a little ETH for gas and USDG to spend. Send both from the Robinhood app on the Robinhood Chain network.</dd>
+      </dl>
+    </div>
+<pre><i># the owner's address, to fund</i>
+<b>$ tab evm address ~/.tab/owner.json</b>
+
+<i># give the agent gas, approve it to spend, sign a limit for the mainnet realm</i>
+<b>$ tab evm fund --from ~/.tab/owner.json --to ~/.tab/agent.json --eth 0.0005 \
+    --rpc https://rpc.mainnet.chain.robinhood.com</b>
+<b>$ tab evm approve --owner ~/.tab/owner.json --agent ~/.tab/agent.json --amount 5.00 \
+    --token 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 --rpc https://rpc.mainnet.chain.robinhood.com</b>
+<b>$ tab mandate issue --owner ~/.tab/owner.json --agent ~/.tab/agent.json \
+    --budget 1.00 --window day --max-per-call 0.05 --allow mainnet.paidwithtab.com \
+    --days 30 --out ~/.tab/mandate-mainnet.json</b>
+
+<i># pay in USDG</i>
+<b>$ tab fetch --agent ~/.tab/agent.json --mandate ~/.tab/mandate-mainnet.json \
+    -X POST -d '{"query":"robinhood chain"}' https://mainnet.paidwithtab.com/search</b>
+<em>paid 0.01 (evm:0x…)</em>
+
+<i># the kill switch</i>
+<b>$ tab evm revoke --owner ~/.tab/owner.json --token 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 \
+    --rpc https://rpc.mainnet.chain.robinhood.com</b></pre>
+  </div>
+</section>
+
 <section class="block" id="limits">
   <div class="wrap split">
     <div>
       <h2>What a limit says.</h2>
       <p>A mandate is a small signed object. The owner signs it once; the agent carries it with every payment; the gateway enforces it on every request. It is not secret, but it grants spending, so treat it like a key.</p>
-      <p>A second, client-side ceiling lives with the agent (<code>--max-per-call</code> or <code>maxPerCallUsd</code>) and is checked before any request is signed.</p>
+      <p>A second, client-side ceiling lives with the agent (<code>--max-per-call</code> or <code>maxPerCallUsd</code>) and is checked before any request is signed. <code>init</code> issues $1.00 a day, $0.05 a call, for 90 days; issue your own with any numbers you like.</p>
     </div>
     <div class="tablewrap"><table>
       <tr><th>Term</th><th>Flag</th><th>Meaning</th></tr>
-      <tr><td>Budget</td><td class="mono">--budget 25</td><td>Total the agent may spend in the window, in USD.</td></tr>
+      <tr><td>Budget</td><td class="mono">--budget 1.00</td><td>Total the agent may spend in the window, in USD.</td></tr>
       <tr><td>Window</td><td class="mono">--window total|day</td><td>Whether the budget is for the mandate's lifetime or per UTC day.</td></tr>
       <tr><td>Per request</td><td class="mono">--max-per-call 0.05</td><td>Ceiling on any single request.</td></tr>
       <tr><td>Services</td><td class="mono">--allow realm</td><td>Which gateways may be paid, by realm name, with globs. Repeatable.</td></tr>
@@ -158,7 +203,7 @@
       <tr><td class="mono">mandate-exceeded</td><td>The per-request cap or the window budget would be exceeded.</td></tr>
       <tr><td class="mono">mandate-denied</td><td>This gateway's realm is not in the mandate's allow list.</td></tr>
       <tr><td class="mono">mandate-invalid</td><td>The mandate is malformed, badly signed, or expired.</td></tr>
-      <tr><td class="mono">insufficient-funds</td><td>The owner's balance or allowance cannot cover the price.</td></tr>
+      <tr><td class="mono">insufficient-funds</td><td>The owner's balance or allowance cannot cover the price, or the agent has no gas.</td></tr>
       <tr><td class="mono">payment-expired</td><td>The challenge was too old. Retry to get a fresh one.</td></tr>
       <tr><td class="mono">verification-failed</td><td>The signature or the signed request does not match what arrived.</td></tr>
       <tr><td class="mono">upstream-failed</td><td>502. The service did not answer. Nothing charged.</td></tr>
@@ -170,10 +215,11 @@
   <div class="wrap">
     <h2>Go deeper.</h2>
     <ul class="links" style="margin-top:22px">
+      <li><a href="/catalog">Live catalog and receipts</a></li>
       <li><a href="/deployment#7-cli-reference">CLI reference</a></li>
-      <li><a href="/protocol">Protocol overview: challenge, credential, receipt</a></li>
-      <li><a href="/protocol#5-rails">Sandbox ledger and USDC on Robinhood Chain</a></li>
-      <li><a href="/catalog">Live catalog</a></li>
+      <li><a href="/protocol">Protocol: challenge, credential, receipt</a></li>
+      <li><a href="/protocol#5-rails">Rails: the sandbox ledger and USDG on Robinhood Chain</a></li>
+      <li><a href="https://github.com/paidwithtab/tab" rel="noopener">Source on GitHub, MIT</a></li>
     </ul>
   </div>
 </section>
