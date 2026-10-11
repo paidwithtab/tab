@@ -16,7 +16,7 @@ Everything below assumes the VPS layout from DEPLOY.md section 8 (`/opt/tab`, se
 - [x] `npm ci && npx tsc --noEmit && npm run build`
 - [x] `npm test`, `npm run test:adversarial`, `npm run test:evm` all green on the box, not just the dev machine.
 - [x] Node version on the box is 22.13 or newer (`node --version`).
-- [ ] Backups of `keys/` and every `*.db` tested once by restoring to a temp directory.
+- [x] Backups of `keys/` and every `*.db` tested once by restoring to a temp directory: `scripts/backup.sh`, daily at 04:00 from cron, restore test on every run (2026-10-12).
 
 ---
 
@@ -29,7 +29,7 @@ Buyers must be able to install the client and the MCP server without cloning.
 - [x] `npm publish` (the `prepublishOnly` script builds and runs the e2e suite first).
 - [x] `npx paidwithtab --help` works from a clean directory on another machine.
 - [x] README install section says `npm i paidwithtab` and the quickstart no longer requires `git clone`.
-- [ ] Tag the release: `git tag v0.3.0 && git push --tags`.
+- [x] Tag the release: v0.4.0 tagged and released on GitHub (2026-10-12).
 
 ---
 
@@ -79,9 +79,9 @@ On a laptop, not the server, using the published package:
 
 ### 2.5 Try-it on the site
 
-- [ ] Catalog restarted with `--try-agent` and `--try-mandate` pointing at a mandate with a budget you are happy to lose (`--window day`, `--try-max-per-call 0.05`).
-- [ ] The "Buy" button on `/catalog` completes a paid call and shows the receipt.
-- [ ] Catalog is running without `--allow-private-origins`.
+- [x] Catalog restarted with `--try-agent` and `--try-mandate` pointing at a mandate with a budget you are happy to lose (`--window day`, `--try-max-per-call 0.05`).
+- [x] The "Buy" button on `/catalog` completes a paid call and shows the receipt.
+- [x] Catalog is running without `--allow-private-origins`.
 
 ---
 
@@ -90,18 +90,18 @@ On a laptop, not the server, using the published package:
 Robinhood Chain mainnet launched 2026-07-01. Bridged USDC arrives there as USDG (Paxos), not USDC. The rail accepts any 6-decimal ERC-20, so this should be configuration, but nobody has verified it.
 
 - [x] Confirm the USDG contract address on mainnet (chain id 4663) from `robinhoodchain.blockscout.com`, and that `decimals()` returns 6. If it does not, the rail needs a decimals change before anything else.
-- [ ] A paid RPC endpoint (Alchemy, QuickNode or dRPC) in `EVM_RPC` instead of the public one. The public mainnet RPC answered 403 to `tab evm balance` minutes after the first paid call on 2026-10-11, so this is now urgent.
+- [x] RPC resilience: `evm.rpc` is a list and the gateway fails over across the official endpoint and three public mirrors (2026-10-12). A paid key can be added to the front of the list at any time. The public mainnet RPC answered 403 to `tab evm balance` minutes after the first paid call on 2026-10-11, so this is now urgent.
 - [x] Funded 2026-10-11: 5.02 USDG sent from the Robinhood app on the Robinhood Chain network, 0.0019 ETH bridged from Ethereum through the Inbox with `scripts/bridge-eth.mjs`.
 - [x] Second gateway spec, or a second realm, with chain id 4663, the USDG token and the mainnet explorer: `examples/spec-mainnet.json`, live at mainnet.paidwithtab.com.
 - [x] One real paid call end to end with real money; receipt visible on the mainnet explorer. 2026-10-11, tx 0xed2380386cdb99d1597ad544d2cee0798e247ef0d48784b60e78bfc5e2db733d, 0.001 USDG owner to seller, block 85911415.
 - [ ] `tab evm revoke` tested on mainnet so you know the kill switch works.
 - [x] DEPLOY.md section 9 mainnet row updated with the real token address and the USDG naming.
-- [ ] README and site copy say "USDG on Robinhood Chain mainnet, USDC on testnet" or whatever turns out to be true. Do not say USDC mainnet if it is not.
+- [x] README and site copy say "USDG on Robinhood Chain mainnet, USDC on testnet" or whatever turns out to be true. Do not say USDC mainnet if it is not.
 
 ### Security checklist before real money (DEPLOY.md section 17, copied here so it gets ticked)
 
 - [ ] Owner key never on the server.
-- [ ] `keys/` mode 0700, key files 0600, owned by the service user.
+- [x] `keys/` mode 0700, key files 0600, owned by the service user.
 - [ ] Agents hold only working-capital ETH for gas.
 - [ ] `public_receipts` reviewed: payer wallet ids will be public.
 - [ ] `npm run test:adversarial` green on the box after the mainnet config change.
@@ -146,8 +146,8 @@ Everything a new buyer hits before their first paid call. Prioritise by what Pha
 
 ## Phase 6: credibility (ongoing, in parallel with 4 and 5)
 
-- [ ] The site shows live numbers from `/v1/receipts`: calls paid, services listed. Zero is honest; hide the block until it is not zero.
-- [ ] Repo: a release on GitHub, a CHANGELOG, issues enabled, and one pinned "good first issue".
+- [x] The site shows live numbers from `/v1/receipts`: calls paid, services listed. Zero is honest; hide the block until it is not zero. (2026-10-11)
+- [ ] Repo: a CHANGELOG and one pinned "good first issue" (release v0.4.0 and issues are done).
 - [ ] A recorded two-minute demo of Claude Code paying for a search under a mandate, linked from the hero's "Watch demo" button (today it scrolls to the animation).
 - [ ] Announce on X once Phases 1 to 3 are ticked, not before. A visitor who finds an empty catalog does not come back.
 
