@@ -94,6 +94,9 @@ web/hero.jpg                # landing page hero background, served at /hero.jpg;
 web/earth-day.jpg           # globe maps for the landing page (NASA Blue Marble, Black Marble and a land/water
 web/earth-night.jpg         #   mask, public domain), served at /earth-day.jpg, /earth-night.jpg, /earth-water.png
 web/earth-water.png
+web/inter.woff2             # the site's fonts (Inter, Instrument Serif italic for heading accents, Geist Mono),
+web/instrument-serif-italic.woff2  #   SIL OFL 1.1, served at /<name>.woff2; notices in web/fonts-license.txt
+web/geist-mono.woff2
 examples/
   spec.json                 # ledger-rail spec (two services, five priced routes)
   spec-evm.json             # same routes on the evm rail (Robinhood Chain testnet)
@@ -493,6 +496,7 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 | `GET /logo.png` | the wordmark used by every page |
 | `GET /hero.jpg` | the landing page hero background |
 | `GET /earth-day.jpg`, `/earth-night.jpg`, `/earth-water.png` | the maps the landing page globe is drawn from |
+| `GET /inter.woff2`, `/instrument-serif-italic.woff2`, `/geist-mono.woff2` | the site's fonts, as `font/woff2` |
 | `GET /v1/catalog.json` | every known gateway with services and routes |
 | `GET /v1/search?q=&max_price=` | route search, route-level text matches outrank service-level, cheapest first; results carry the full URL to call |
 | `POST /v1/announce {origin}` | fetch and verify `<origin>/.well-known/tab`, store it |
@@ -503,7 +507,7 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 | `GET /v1/try` | is the try-it agent configured, and its limits |
 | `POST /v1/try {url, method, body}` | pay for a catalogued route with the try-it agent, return status, receipt and body |
 
-The front end is static files under `web/` with no build step and no external scripts or fonts: the landing page at `/` (about 1340 lines, self-contained; most of it is the WebGL2 globe fixed behind the page, which the scroll carries from the hero's horizon round the sections to the closer, and which takes over from `hero.jpg` once its three maps have loaded), four pages at `/product`, `/developers`, `/providers` and `/docs` that share `web/site.css`, and the catalog app at `/catalog` (265 lines). The catalog app links `evm:` receipts to the gateway's own explorer (`rail_info.explorer`, defaulting to `explorer.testnet.chain.robinhood.com`); that is the only outbound URL in either file. Serve them from the catalog process or copy them anywhere static and point the app at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
+The front end is static files under `web/` with no build step and no external scripts or fonts: the landing page at `/` (about 1360 lines, self-contained; most of it is the WebGL2 globe fixed behind the page, which the scroll carries from the hero's horizon round the sections to the closer, and which takes over from `hero.jpg` once its three maps have loaded), four pages at `/product`, `/developers`, `/providers` and `/docs` that share `web/site.css`, and the catalog app at `/catalog` (265 lines). The catalog app links `evm:` receipts to the gateway's own explorer (`rail_info.explorer`, defaulting to `explorer.testnet.chain.robinhood.com`); that is the only outbound URL in either file. Serve them from the catalog process or copy them anywhere static and point the app at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
 
 ---
 
