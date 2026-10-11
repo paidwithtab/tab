@@ -6,9 +6,23 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Catalog · tab</title>
 <meta name="description" content="Priced routes agents can pay for, the gateways that serve them, and live receipts.">
+<meta name="theme-color" content="#05080c">
 <link rel="stylesheet" href="/site.css">
 <style>
-  .app { display:grid; gap:clamp(48px,6vw,80px); padding-bottom:20px; }
+  .app { display:grid; gap:clamp(48px,6vw,80px); padding-top:clamp(48px,6vw,80px); padding-bottom:clamp(64px,8vw,112px); }
+  .app > section, .app .two > section { min-width:0; }
+  /* the search field lives in the header; the chips under it fill it in */
+  .searchbar { position:relative; max-width:760px; margin-top:36px; }
+  .searchbar svg { position:absolute; left:20px; top:50%; transform:translateY(-50%); width:18px; height:18px; stroke:var(--fg2); fill:none; stroke-width:1.8; stroke-linecap:round; pointer-events:none; }
+  .searchbar input { padding:18px 20px 18px 52px; border-radius:14px; font-size:16px; background:rgba(7,11,17,.85); border-color:var(--line2); box-shadow:0 30px 80px -40px rgba(0,0,0,.9); }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:14px; max-width:760px; }
+  .chips button { font:12px var(--mono); padding:6px 12px; border-radius:999px; border:1px solid var(--line); background:none; color:var(--fg2); cursor:pointer; transition:color .2s, border-color .2s; }
+  .chips button:hover { color:var(--fg); border-color:var(--line2); }
+  .chips .count { margin-left:auto; font:11px var(--mono); letter-spacing:.16em; text-transform:uppercase; color:var(--dim); }
+  .chips .count::before { content:""; display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--ok); box-shadow:0 0 10px var(--ok); margin-right:9px; vertical-align:1px; }
+  .chips .count:empty { display:none; }
+  .panel { border:1px solid var(--line); border-radius:16px; padding:26px; background:linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,.012)); }
+  .uc { transition:border-color .3s; } .uc:hover { border-color:var(--line2); }
   .app section h2 { font-size:clamp(22px,2.4vw,30px); margin-bottom:6px; }
   .app section .sub { font-size:15px; margin-bottom:22px; }
   input, textarea, select { width:100%; padding:13px 16px; border-radius:10px; border:1px solid var(--line); background:var(--bg2); color:var(--fg); font:inherit; font-size:15px; }
@@ -35,8 +49,8 @@
   .row3 { display:grid; gap:12px; grid-template-columns:1fr 1fr auto; align-items:start; }
   .row .btn, .row3 .btn { padding:12px 20px; }
   @media (max-width:700px) { .row3 { grid-template-columns:1fr; } }
-  .two { display:grid; grid-template-columns:1fr 1fr; gap:clamp(32px,5vw,72px); }
-  @media (max-width:900px) { .two { grid-template-columns:1fr; } }
+  .two { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:clamp(24px,3vw,40px); align-items:start; }
+  @media (max-width:900px) { .two { grid-template-columns:minmax(0,1fr); } }
 </style>
 </head>
 <body>
@@ -51,19 +65,53 @@
       <li><a href="/catalog" aria-current="page">Catalog</a></li>
       <li><a href="/docs">Docs</a></li>
     </ul>
-    <a class="btn ghost" href="/developers">Get started</a>
+    <div class="end">
+      <a class="btn ghost" href="/developers">Get started</a>
+      <details class="menu">
+        <summary aria-label="Menu"><svg viewBox="0 0 24 24"><path d="M4 8h16M4 16h16"/></svg></summary>
+        <ul>
+      <li><a href="/product">Product</a></li>
+      <li><a href="/developers">Developers</a></li>
+      <li><a href="/providers">Providers</a></li>
+      <li><a href="/catalog" aria-current="page">Catalog</a></li>
+      <li><a href="/docs">Docs</a></li>
+        </ul>
+      </details>
+    </div>
   </div>
 </nav>
 
 <header class="head">
   <div class="wrap">
     <div class="eyebrow">Catalog</div>
-    <h1>What agents can do with tab.</h1>
-    <p class="sub">tab is built for pay-per-request services: search, scraping, transcription, images, data, and more. Below are the kinds of services agents can pay for. Live listings appear further down as providers announce gateways.</p>
+    <h1>What agents can do <em>with tab.</em></h1>
+    <p class="sub">tab is built for pay-per-request services: search, scraping, transcription, images, data, and more. Search the routes that are payable right now, or browse the kinds of services agents can pay for.</p>
+    <div class="searchbar"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="q" placeholder="Search live routes: translate, weather, wikipedia" autocomplete="off" aria-label="Search live routes"></div>
+    <div class="chips" id="chips"><button type="button" data-q="">all</button><button type="button" data-q="search">search</button><button type="button" data-q="translate">translate</button><button type="button" data-q="speech">speech</button><button type="button" data-q="wikipedia">wikipedia</button><button type="button" data-q="weather">weather</button><button type="button" data-q="fx">exchange rates</button><span class="count" id="cat-count"></span></div>
   </div>
 </header>
 
 <main class="wrap app">
+  <section id="search">
+    <h2>Live listings</h2>
+    <p class="sub">Routes announced by real gateways, payable now. Search by name, path or description; an empty search lists everything.</p>
+    <div class="tablewrap framed"><table id="results"><tbody></tbody></table></div>
+  </section>
+
+  <div class="two">
+    <section id="gateways-section">
+      <h2>Gateways</h2>
+      <p class="sub">Where the routes are served, and whether each gateway is reachable.</p>
+      <div class="tablewrap framed"><table id="gateways"><tbody></tbody></table></div>
+    </section>
+
+    <section id="receipts-section">
+      <h2>Live receipts</h2>
+      <p class="sub">Payments as they happen, from gateways that publish them.</p>
+      <div class="tablewrap framed"><table id="receipts"><tbody></tbody></table></div>
+    </section>
+  </div>
+
   <section id="usecases">
     <h2>Capabilities</h2>
     <p class="sub">These are the kinds of paid services tab is built for, with example providers in each category. They are illustrative, not live listings yet. Representative prices; a gateway sets its own.</p>
@@ -82,29 +130,8 @@
     </div>
   </section>
 
-  <section id="search">
-    <h2>Live listings</h2>
-    <p class="sub">Routes announced by real gateways, payable now. Search by name, path or description; an empty search lists everything.</p>
-    <input id="q" placeholder="try: translate, quote, echo …" autocomplete="off">
-    <div class="tablewrap"><table id="results"><tbody></tbody></table></div>
-  </section>
-
   <div class="two">
-    <section id="gateways-section">
-      <h2>Gateways</h2>
-      <p class="sub">Where the routes are served, and whether each gateway is reachable.</p>
-      <div class="tablewrap"><table id="gateways"><tbody></tbody></table></div>
-    </section>
-
-    <section id="receipts-section">
-      <h2>Live receipts</h2>
-      <p class="sub">Payments as they happen, from gateways that publish them.</p>
-      <div class="tablewrap"><table id="receipts"><tbody></tbody></table></div>
-    </section>
-  </div>
-
-  <div class="two">
-    <section id="wallet">
+    <section id="wallet" class="panel">
       <h2>Check a wallet</h2>
       <p class="sub">The available balance for a wallet on one gateway's rail.</p>
       <div class="row3">
@@ -115,7 +142,7 @@
       <pre id="w-out" hidden></pre>
     </section>
 
-    <section id="verify">
+    <section id="verify" class="panel">
       <h2>Verify a mandate</h2>
       <p class="sub">Paste a mandate to check its signature and read its terms. Mandates are not secret, but they grant spending.</p>
       <textarea id="m-json" placeholder='{ "ver": "tab/0", "owner": "…", "agent": "…", … }'></textarea>
@@ -128,18 +155,19 @@
   </div>
 </main>
 
-<footer>
+<footer class="big">
   <div class="wrap">
-    <a class="logo" href="/"><img src="/logo.png" alt="tab" width="52" height="22"></a>
-    <ul>
-      <li><a href="/docs">Docs</a></li>
-      <li><a href="/catalog">Catalog</a></li>
-      <li><a href="/v1/catalog.json">Status</a></li>
-      <li><a href="https://github.com/paidwithtab/tab" rel="noopener">GitHub</a></li>
-      <li><a href="https://x.com/paidwithtab" rel="noopener">X</a></li>
-      <li><a href="https://github.com/paidwithtab/tab/issues">Contact</a></li>
-    </ul>
+    <div class="fbrand">
+      <a class="logo" href="/"><img src="/logo.png" alt="tab" width="52" height="22"></a>
+      <p>A payment layer for software agents. They discover services, pay per request, and stay within limits you sign.</p>
+    </div>
+    <div class="fcols">
+      <div><h4>Product</h4><a href="/product">Overview</a><a href="/catalog">Catalog</a><a href="/catalog#receipts-section">Live receipts</a><a href="/v1/catalog.json">Status</a></div>
+      <div><h4>Build</h4><a href="/developers">Developers</a><a href="/providers">Providers</a><a href="/docs">Docs</a><a href="/protocol">Protocol</a><a href="/deployment">Deployment</a></div>
+      <div><h4>Project</h4><a href="https://github.com/paidwithtab/tab" rel="noopener">GitHub</a><a href="https://x.com/paidwithtab" rel="noopener">X</a><a href="https://github.com/paidwithtab/tab/issues">Contact</a></div>
+    </div>
   </div>
+  <div class="wrap fine"><span>Open source, MIT licensed</span><span>Built on HTTP 402</span></div>
 </footer>
 <script>
 const $ = (s) => document.querySelector(s);
@@ -170,12 +198,13 @@ async function search() {
   const data = await getJSON('/v1/search?q=' + encodeURIComponent(q));
   const rows = (data.results ?? []).map((r, i) => `
     <tr>
-      <td><span class="mono">${esc(r.method)}</span> <span class="mono">${esc(r.path)}</span><br>
+      <td><span class="m${r.method === 'GET' ? ' get' : ''}">${esc(r.method)}</span><span class="mono">${esc(r.path)}</span><br>
           <span class="dim">${esc(r.description || r.service)} · ${esc(r.realm)} · ${esc(r.rail)}</span></td>
       <td class="price">${r.price === '0' ? 'free' : '$' + esc(r.price)}</td>
       <td>${tryInfo.enabled || r.price === '0' ? `<button data-i="${i}">Buy</button>` : ''}</td>
     </tr>`).join('');
-  $('#results tbody').innerHTML = `<tr><th>route</th><th>price</th><th></th></tr>` + rows;
+  $('#results tbody').innerHTML = `<tr><th>route</th><th>price</th><th></th></tr>` +
+    (rows || `<tr><td colspan="3" class="dim">${q ? `no live route matches “${esc(q)}”. Clear the search to list everything.` : 'no gateways have announced routes here yet.'}</td></tr>`);
   $('#results').dataset.routes = JSON.stringify(data.results ?? []);
 }
 
@@ -220,6 +249,9 @@ async function loadGateways() {
     .map((g) => `<option value="${esc(g.origin)}">${esc(g.origin)} (${esc(g.realm ?? '?')})</option>`).join('')
     || '<option value="">no gateways announced yet</option>';
   if (current) sel.value = current;
+  const up = knownGateways.filter((g) => g.ok);
+  const routes = up.reduce((n, g) => n + (g.services || []).reduce((k, sv) => k + (sv.routes || []).length, 0), 0);
+  $('#cat-count').textContent = routes ? `${routes} routes on ${up.length} gateway${up.length === 1 ? '' : 's'}` : '';
 }
 
 async function loadReceipts() {
@@ -271,6 +303,10 @@ $('#q').addEventListener('input', () => { clearTimeout(window.__t); window.__t =
 $('#results').addEventListener('click', (e) => {
   if (e.target.matches('button[data-i]')) tryRoute(Number(e.target.dataset.i));
 });
+$('#chips').addEventListener('click', (e) => {
+  if (!e.target.matches('button[data-q]')) return;
+  $('#q').value = e.target.dataset.q; search();
+});
 $('#w-go').addEventListener('click', lookupWallet);
 $('#m-go').addEventListener('click', verifyMandate);
 
@@ -281,5 +317,6 @@ $('#m-go').addEventListener('click', verifyMandate);
   setInterval(loadGateways, 30000);
 })();
 </script>
+<script>document.querySelectorAll('.menu a').forEach((a) => a.addEventListener('click', () => a.closest('details').removeAttribute('open')));</script>
 </body>
 </html>
