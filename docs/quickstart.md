@@ -133,5 +133,6 @@ Somewhere past the mandate's daily budget the calls flip to `402 mandate-exceede
 
 - Price your own API and get paid: [sellers.md](sellers.md)
 - Fund a real agent with USDG on Robinhood Chain: [buyers.md](buyers.md)
+- Configure a particular agent: Claude Code, Cursor, Codex, your own code, Python: [agents.md](agents.md)
 - The wire format and verification rules: [SPEC.md](../SPEC.md)
 - Production deployment, TLS, systemd: [DEPLOY.md](../DEPLOY.md)

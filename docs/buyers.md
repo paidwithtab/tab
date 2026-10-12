@@ -89,7 +89,7 @@ claude mcp add tab \
   -- npx -y paidwithtab mcp
 ```
 
-Claude gets `tab_search` (find routes by keyword and max price), `tab_discover`, `tab_fetch`, `tab_balance`, and `tab_limits`. `TAB_MAX_PER_CALL` is a second, client-side cap on top of the mandate; the model cannot raise either one.
+Claude gets `tab_search` (find routes by keyword and max price), `tab_discover`, `tab_fetch`, `tab_balance`, and `tab_limits`. `TAB_MAX_PER_CALL` is a second, client-side cap on top of the mandate; the model cannot raise either one. The same server works in Cursor, Codex, Windsurf and Claude Desktop; [agents.md](agents.md) has the JSON for each, plus framework tools and Python.
 
 **From your own code:**
 
@@ -128,4 +128,4 @@ coding agent      $25/day, max $0.10/call, allow mainnet.paidwithtab.com
 scraper           $1/day,  max $0.005/call, allow *
 ```
 
-Budgets are per mandate, so one agent exhausting its tab never touches another's.
+Budgets are per mandate, so one agent exhausting its tab never touches another's. [agents.md](agents.md) covers wiring each of those agents up and where their keys should live.
