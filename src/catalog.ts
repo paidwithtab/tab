@@ -2,7 +2,7 @@
 // optional "try it" agent that pays for catalogued routes, and the front end.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, createReadStream } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lookup } from 'node:dns/promises';
@@ -120,11 +120,11 @@ function findUi(): string | null {
   return null;
 }
 
-// static files under web/: clean URLs for the pages (/product -> product.html), plus assets (images and the
-// site's fonts) and the three markdown documents at the repo root, which the docs page links to
+// static files under web/: clean URLs for the pages (/product -> product.html), plus assets (images, the demo video and
+// the site's fonts) and the three markdown documents at the repo root, which the docs page links to
 const TYPES: Record<string, string> = {
   html: 'text/html; charset=utf-8', css: 'text/css; charset=utf-8', png: 'image/png', jpg: 'image/jpeg',
-  woff2: 'font/woff2', md: 'text/markdown; charset=utf-8',
+  woff2: 'font/woff2', mp4: 'video/mp4', md: 'text/markdown; charset=utf-8',
 };
 const DOCS = new Set(['README.md', 'SPEC.md', 'DEPLOY.md']);
 function staticFile(uiDir: string, path: string): [file: string, type: string] | null {
@@ -133,7 +133,7 @@ function staticFile(uiDir: string, path: string): [file: string, type: string] |
     const landing = join(uiDir, 'index.html');
     return [existsSync(landing) ? landing : join(uiDir, 'catalog.html'), TYPES.html];
   }
-  const m = /^\/([a-z0-9-]+)(?:\.(html|css|png|jpg|woff2))?$/.exec(path);
+  const m = /^\/([a-z0-9-]+)(?:\.(html|css|png|jpg|woff2|mp4))?$/.exec(path);
   if (m) {
     const ext = m[2] ?? 'html';
     const file = join(uiDir, `${m[1]}.${ext}`);
@@ -266,7 +266,29 @@ export function createCatalog(opts: CatalogOptions): Server {
       const page = method === 'GET' && !path.startsWith('/v1/') ? (uiPath ? staticFile(uiPath, path) : null) : null;
       if (page) {
         const [file, type] = page;
-        res.writeHead(200, { 'content-type': type, 'cache-control': 'public, max-age=300' });
+        const headers: Record<string, string> = { 'content-type': type, 'cache-control': 'public, max-age=300' };
+        if (type.startsWith('video/')) {
+          // video players ask for byte ranges (Safari refuses to play without them), so the demo is streamed
+          const size = statSync(file).size;
+          const range = /^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range ?? ''));
+          headers['accept-ranges'] = 'bytes';
+          if (range && (range[1] || range[2])) {
+            const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]));
+            const end = range[1] && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+            if (start >= size || start > end) {
+              res.writeHead(416, { 'content-range': `bytes */${size}` });
+              res.end();
+              return;
+            }
+            res.writeHead(206, { ...headers, 'content-range': `bytes ${start}-${end}/${size}`, 'content-length': String(end - start + 1) });
+            createReadStream(file, { start, end }).pipe(res);
+            return;
+          }
+          res.writeHead(200, { ...headers, 'content-length': String(size) });
+          createReadStream(file).pipe(res);
+          return;
+        }
+        res.writeHead(200, headers);
         res.end(readFileSync(file));
         return;
       }
