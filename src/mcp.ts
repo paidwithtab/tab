@@ -3,10 +3,18 @@
 // tab_discover, tab_fetch, tab_balance. Runs where Claude Code runs.
 
 import { createInterface } from 'node:readline';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { microToUsd } from './protocol.js';
 import type { Mandate } from './mandate.js';
 import type { KeyPair } from './keys.js';
 import { TabClient, PaymentRefused, receiptOf } from './client.js';
+
+// the package version, read from package.json two levels up from dist/src so the server reports what was installed
+const PKG_VERSION: string = (() => {
+  try { return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')).version; } catch { return '0'; }
+})();
 
 export interface McpOptions {
   agent: KeyPair;
@@ -189,7 +197,7 @@ export function runMcpServer(opts: McpOptions): void {
       reply(id, {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'tab', version: '0.4.0' },
+        serverInfo: { name: 'tab', version: PKG_VERSION },
       });
     } else if (method === 'notifications/initialized' || String(method ?? '').startsWith('notifications/')) {
       // notifications need no reply

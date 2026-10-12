@@ -66,7 +66,7 @@ npx paidwithtab evm approve --owner owner.json --agent agent.json \
 Two ceilings now protect you: the gateway enforces the mandate, the chain enforces the allowance. Ending it all takes one command:
 
 ```sh
-npx paidwithtab evm revoke --owner owner.json --token 0x5B6C...26f5
+npx paidwithtab evm revoke --owner owner.json --agent agent.json --token 0x5B6C...26f5
 ```
 
 ## 4. Spend

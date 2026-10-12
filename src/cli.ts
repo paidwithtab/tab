@@ -39,7 +39,7 @@ const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed man
                     [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
   tab evm address <key.json>                                          key file -> 0x address
   tab evm approve --owner key.json --agent <key.json|0x> --amount 1.00 --token <0x> [--rpc url]
-  tab evm revoke  --owner key.json --token <0x> [--rpc url]
+  tab evm revoke  --owner key.json --agent <key.json|0x> --token <0x> [--rpc url]
   tab evm balance --wallet <key.json|0x> --token <0x> [--agent <key.json|0x>] [--rpc url]
   tab evm fund    --from key.json --to <key.json|0x> --eth 0.005 [--rpc url]  gas for the agent
   tab fetch [--agent key.json --mandate mandate.json] [--max-per-call 0.05] [-X POST] [-d body] <url>
