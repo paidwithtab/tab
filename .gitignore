@@ -36,3 +36,8 @@ web/earth-night.jpg
 web/earth-water.png
 web/*.woff2
 web/fonts-license.txt
+web/demo.mp4
+web/demo-poster.jpg
+
+# local demo recordings, not part of the package
+demo/
