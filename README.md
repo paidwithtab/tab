@@ -289,6 +289,8 @@ tab also exposes five MCP tools, so compatible agents can discover and purchase 
 
 **[Read the buyer documentation](docs/buyers.md)**
 
+Hooking tab into a particular agent, with the MCP JSON for Cursor, Codex, Windsurf and Claude Desktop, framework tools, Python by subprocess, and where keys live in production: **[docs/agents.md](docs/agents.md)**
+
 ## Settlement
 
 tab settles in USDG on Robinhood Chain mainnet and test USDC on its testnet, following a delivery first model. The gateway does not settle a payment until the upstream service has responded successfully.
@@ -412,6 +414,7 @@ MIT. See [LICENSE](LICENSE).
   <sub>
     <a href="SPEC.md">Protocol</a> ·
     <a href="docs/buyers.md">Buyers</a> ·
+    <a href="docs/agents.md">Agents</a> ·
     <a href="docs/sellers.md">Sellers</a> ·
     <a href="DEPLOY.md">Deploy</a> ·
     <a href="SECURITY.md">Security</a> ·
