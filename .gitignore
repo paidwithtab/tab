@@ -42,3 +42,5 @@ web/demo-poster.jpg
 # local demo recordings, not part of the package
 demo/
 demo-spec.json
+# the token gateway specs are not credentials
+!examples/spec-token*.json
