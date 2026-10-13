@@ -93,4 +93,14 @@ Your upstream receives three extra headers on paid calls: `Tab-Payer` (the agent
 
 ## Pricing notes
 
+**Pricing in your own token.** A gateway settles in one ERC-20, and it can be yours. Put its symbol in `currency` and its contract and decimals under `evm`:
+
+```json
+{ "rail": "evm", "currency": "TTT",
+  "evm": { "chain_id": 46630, "token": "0x8f6fe411e76b79d6eb6521872340c37c3210ee47", "decimals": 18, "recipient": "0x…your payout…" } }
+```
+
+Prices are then amounts of the token, every 402 and receipt names it, the catalog shows `0.5 TTT` instead of `$0.50`, and buyers must opt in with `--currency TTT` before their client will pay. The gateway checks `decimals` against the contract at start. To take dollars and your token for the same routes, run two gateways from two specs that differ only in realm, currency and token, and announce both; the catalog lists each route twice with its price on each.
+
+
 Prices are USD strings with up to six decimals, so $0.000001 routes are legal. Since buyers' mandates carry per-call caps (commonly $0.05), pricing at or under common caps means agents can buy without their owners ever raising a limit. Cheap and honest beats clever: the catalog sorts by price.

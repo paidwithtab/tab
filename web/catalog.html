@@ -173,6 +173,9 @@
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const usd = (micro) => '$' + (Number(micro) / 1e6).toFixed(Number(micro) % 10000 ? 4 : 2);
+// a gateway that charges in its own token says so; its prices are shown in that token, never as dollars
+const money = (micro, currency) => (currency && currency !== 'USD') ? usd(micro).slice(1) + ' ' + currency : usd(micro);
+const priceOf = (r) => r.price === '0' ? 'free' : (r.currency && r.currency !== 'USD') ? esc(r.price) + ' ' + esc(r.currency) : '$' + esc(r.price);
 let tryInfo = { enabled: false };
 let knownGateways = [];
 
@@ -200,7 +203,7 @@ async function search() {
     <tr>
       <td><span class="m${r.method === 'GET' ? ' get' : ''}">${esc(r.method)}</span><span class="mono">${esc(r.path)}</span><br>
           <span class="dim">${esc(r.description || r.service)} · ${esc(r.realm)} · ${esc(r.rail)}</span></td>
-      <td class="price">${r.price === '0' ? 'free' : '$' + esc(r.price)}</td>
+      <td class="price">${priceOf(r)}</td>
       <td>${tryInfo.enabled || r.price === '0' ? `<button data-i="${i}">Buy</button>` : ''}</td>
     </tr>`).join('');
   $('#results tbody').innerHTML = `<tr><th>route</th><th>price</th><th></th></tr>` +
@@ -225,7 +228,7 @@ async function tryRoute(i) {
     pre.innerHTML = '<td colspan="3"><pre></pre></td>';
     btn.closest('tr').after(pre);
   }
-  const paid = out.receipt ? `paid ${usd(out.receipt.amount)} · ref ${out.receipt.ref}\n` : '';
+  const paid = out.receipt ? `paid ${money(out.receipt.amount, out.receipt.currency)} · ref ${out.receipt.ref}\n` : '';
   pre.querySelector('pre').textContent =
     (out.error ? out.error : `HTTP ${out.status}\n${paid}${out.body ?? ''}`);
   loadReceipts();
@@ -260,7 +263,7 @@ async function loadReceipts() {
     <tr>
       <td class="dim">${esc((r.at ?? '').replace('T', ' ').slice(0, 19))}</td>
       <td class="mono">${esc(r.resource)}</td>
-      <td class="price">${usd(r.amount)}</td>
+      <td class="price">${money(r.amount, r.currency)}</td>
       <td>${refLink(r.ref, r.origin ?? r.gateway)}</td>
     </tr>`).join('');
   $('#receipts tbody').innerHTML =

@@ -118,6 +118,37 @@ npx paidwithtab evm balance --wallet owner.json \
 
 That prints your dollars, your ETH, and exactly how much allowance the agent has left.
 
+## Paying in a gateway's own token
+
+Some gateways charge in a token instead of dollars. The discovery document, every 402 and every receipt say so in `currency`, and the catalog shows such prices as `0.001 TTT` rather than `$0.001`. tab's own reference deployment runs one at `token-testnet.paidwithtab.com`: the same routes as the testnet gateway, priced in TTT, an open-mint test token with 18 decimals on Robinhood Chain testnet (`0x8f6fe411e76b79d6eb6521872340c37c3210ee47`).
+
+The flow is the dollar flow with three differences. Mint or buy the token instead of USDC; the mint script reads the token's decimals, so amounts are whole tokens:
+
+```sh
+npx tsx scripts/evm-mint.ts owner.json 0x8f6fe411e76b79d6eb6521872340c37c3210ee47 5.00
+npx paidwithtab evm approve --owner owner.json --agent agent.json --amount 2.00 --token 0x8f6fe411e76b79d6eb6521872340c37c3210ee47
+```
+
+Issue that agent a mandate of its own, because a mandate's budget and cap are amounts of whatever the gateway charges in: `--budget 2.00` means two tokens on this realm and two dollars on a dollar realm. Keep the two apart with `--allow`:
+
+```sh
+npx paidwithtab mandate issue --owner owner.json --agent agent.json \
+  --budget 2.00 --window day --max-per-call 0.05 --allow token-testnet.paidwithtab.com --days 30 --out mandate-ttt.json
+```
+
+And tell the client which currency it may pay in. By default it pays in USD and refuses anything else before signing, so a stray token-priced route can never spend a dollar mandate:
+
+```sh
+npx paidwithtab fetch --agent agent.json --mandate mandate-ttt.json --currency TTT \
+  https://token-testnet.paidwithtab.com/wikipedia/api/rest_v1/page/summary/HTTP_402
+```
+
+```
+paid 0.001 TTT (evm:0x1b3ee3a1…)
+```
+
+In code that is `new TabClient({ agent, mandate, currency: 'TTT' })`; for the MCP server set `TAB_CURRENCY=TTT`, and `tab_search` then returns only routes in that currency when given a price ceiling.
+
 ## Running several agents
 
 Issue each agent its own key, its own mandate, and its own allowance from the same owner account:

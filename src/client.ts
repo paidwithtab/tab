@@ -28,8 +28,9 @@ export class PaymentRefused extends Error {
 }
 
 export interface ChallengeRequest {
-  amount: string; // micro-USD
-  amountUsd: string;
+  amount: string; // micro units of `currency`
+  amountUsd: string; // the amount as a decimal string ("0.01"), whatever the currency
+  currency: string; // "USD", or the token a gateway charges in
   resource: string;
   realm: string;
   rail: string;
@@ -40,6 +41,12 @@ export interface TabClientOptions {
   mandate: Mandate;
   /** Client-side per-call ceiling in USD, independent of the mandate. */
   maxPerCallUsd?: string;
+  /**
+   * The currency this client will pay in; default "USD". A gateway that charges
+   * in its own token says so in the challenge, and a mandate's numbers mean that
+   * token there, so the client refuses any other currency unless told to accept it.
+   */
+  currency?: string;
   /** Optional veto; amounts in micro-USD. Return false to refuse. */
   onChallenge?: (challenge: Challenge, request: ChallengeRequest) => boolean | Promise<boolean>;
   fetch?: typeof fetch;
@@ -47,9 +54,11 @@ export interface TabClientOptions {
 
 export class TabClient {
   private maxPerCallMicro: number | null;
+  private accepts: string;
 
   constructor(private opts: TabClientOptions) {
     this.maxPerCallMicro = opts.maxPerCallUsd != null ? usdToMicro(opts.maxPerCallUsd) : null;
+    this.accepts = opts.currency ?? 'USD';
     if (opts.mandate.agent !== opts.agent.publicKey) {
       throw new Error('mandate is not for this agent key');
     }
@@ -63,13 +72,21 @@ export class TabClient {
     if (!chal) return first;
 
     const amount = Number(chal.amount);
+    const currency = typeof chal.currency === 'string' ? chal.currency : 'USD';
     const request: ChallengeRequest = {
       amount: chal.amount,
       amountUsd: microToUsd(amount),
+      currency,
       resource: chal.resource,
       realm: chal.realm,
       rail: chal.rail,
     };
+    if (currency !== this.accepts) {
+      throw new PaymentRefused(
+        `gateway charges in ${currency}; this client pays in ${this.accepts} (set currency to accept it)`,
+        chal,
+      );
+    }
     if (this.maxPerCallMicro !== null && amount > this.maxPerCallMicro) {
       throw new PaymentRefused(
         `price ${request.amountUsd} exceeds the client cap ${microToUsd(this.maxPerCallMicro)}`,

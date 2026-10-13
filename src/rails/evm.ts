@@ -1,11 +1,11 @@
-// The evm rail: USDC (or any 6-decimal ERC-20) on an EVM chain — built for
+// The evm rail: any ERC-20 (USDG, USDC, or a gateway's own token) on an EVM chain — built for
 // Robinhood Chain, an Arbitrum-stack L2. The owner approved the agent as
 // ERC-20 spender once; per payment the agent signs a type-2 transferFrom
 // transaction; the gateway verifies it field-for-field against the challenge
 // and broadcasts only after the upstream answered 2xx. The agent's account
 // pays gas (EVM has no native fee-payer co-signing), so it needs a little ETH.
 
-import { PayError, type Challenge } from '../protocol.js';
+import { PayError, assertDecimals, baseUnitsToMicro, type Challenge } from '../protocol.js';
 import type { HoldRow } from '../store.js';
 import type { Rail, ReserveContext } from './index.js';
 import { EvmRpc, EvmRevert } from '../evm/rpc.js';
@@ -15,8 +15,8 @@ import { buildPaymentTx } from '../evm/pay.js';
 export interface EvmRailConfig {
   rpc: string;
   chain_id: number; // Robinhood Chain: 46630 testnet, 4663 mainnet
-  token: string; // ERC-20 (USDC) contract address
-  decimals: number;
+  token: string; // ERC-20 contract address
+  decimals: number; // 0 to 18; checked against the contract's decimals() at first use
   recipient: string; // seller payout address, 0x hex
   explorer?: string; // e.g. https://explorer.testnet.chain.robinhood.com
 }
@@ -29,7 +29,7 @@ export class EvmRail implements Rail {
   private chainChecked = false;
 
   constructor(private cfg: EvmRailConfig) {
-    if (cfg.decimals !== 6) throw new Error('draft 0 supports only 6-decimal tokens');
+    assertDecimals(cfg.decimals);
     if (!isAddress(cfg.token)) throw new Error(`evm.token is not an address: ${cfg.token}`);
     if (!isAddress(cfg.recipient)) throw new Error(`evm.recipient is not an address: ${cfg.recipient}`);
     if (!Number.isInteger(cfg.chain_id) || cfg.chain_id <= 0) throw new Error('evm.chain_id is required');
@@ -51,6 +51,10 @@ export class EvmRail implements Rail {
       const actual = await this.rpc.chainId();
       if (actual !== BigInt(this.cfg.chain_id)) {
         throw new Error(`RPC is chain ${actual}, spec says ${this.cfg.chain_id}`);
+      }
+      const onChain = await this.rpc.erc20Decimals(this.cfg.token);
+      if (onChain !== this.cfg.decimals) {
+        throw new Error(`token ${this.cfg.token} has ${onChain} decimals, spec says ${this.cfg.decimals}`);
       }
       this.chainChecked = true;
     }
@@ -138,12 +142,13 @@ export class EvmRail implements Rail {
     // nothing was broadcast; nothing to undo on-chain
   }
 
-  /** Balance of an 0x address in token base units (micro for 6 decimals). */
+  /** Balance of an 0x address in micro units of the token, whatever its decimals. */
   async balance(wallet: string): Promise<number> {
     if (!isAddress(wallet)) {
       throw new Error('the evm rail looks up 0x addresses (tab evm address <key> prints yours)');
     }
-    return Number(await this.rpc.erc20BalanceOf(this.cfg.token, wallet.toLowerCase()));
+    const base = await this.rpc.erc20BalanceOf(this.cfg.token, wallet.toLowerCase());
+    return Number(baseUnitsToMicro(base, this.cfg.decimals));
   }
 
   /** Pending nonce for an agent account — served via the gateway so clients need no RPC. */

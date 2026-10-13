@@ -88,8 +88,9 @@ interface CatalogRoute {
   method: string;
   path: string;
   url: string;
-  price: string; // USD
+  price: string; // in `currency`
   price_micro: number;
+  currency: string; // "USD", or the token the gateway charges in
   description: string;
 }
 
@@ -170,6 +171,7 @@ function routesOf(row: GatewayRow): CatalogRoute[] {
         url: row.origin.replace(/\/$/, '') + String(s.prefix ?? '') + String(r.path ?? ''),
         price: String(r.price),
         price_micro: priceMicro,
+        currency: typeof doc.currency === 'string' ? doc.currency : 'USD',
         description: String(r.description ?? ''),
       });
     }
@@ -314,11 +316,13 @@ export function createCatalog(opts: CatalogOptions): Server {
         const q = (u.searchParams.get('q') ?? '').trim().toLowerCase();
         const maxPrice = u.searchParams.get('max_price');
         const maxMicro = maxPrice ? usdToMicro(maxPrice) : null;
+        // a price ceiling only means something in one currency: USD unless the caller says otherwise
+        const currency = u.searchParams.get('currency') || 'USD';
         const terms = q ? q.split(/\s+/) : [];
         const results: Array<CatalogRoute & { score: number }> = [];
         for (const row of store.all()) {
           for (const route of routesOf(row)) {
-            if (maxMicro !== null && route.price_micro > maxMicro) continue;
+            if (maxMicro !== null && (route.currency !== currency || route.price_micro > maxMicro)) continue;
             const routeText = `${route.method} ${route.path} ${route.description}`.toLowerCase();
             const serviceText = `${route.service} ${route.service_description} ${route.realm}`.toLowerCase();
             let score = 0;

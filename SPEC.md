@@ -1,6 +1,6 @@
 # The tab protocol, draft 0.3
 
-How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail for Robinhood Chain and the `evm_owner` mandate field, draft 0.3 made `evm` the sole settlement rail).
+How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail for Robinhood Chain and the `evm_owner` mandate field, draft 0.3 made `evm` the sole settlement rail, draft 0.4 let a gateway charge in a token of any decimals and name it in `currency`).
 
 ## 1. Model and terms
 
@@ -13,7 +13,7 @@ How an agent pays a gateway for one HTTP request, under a spending grant its own
 | **rail** | how money settles: `ledger` (gateway SQLite sandbox) or `evm` (ERC-20 stablecoin on Robinhood Chain) |
 | **resource** | `"METHOD /path"`: the priced thing being bought |
 
-All protocol objects are JSON. All amounts are **micro-USD** integers carried as decimal strings (`"10000"` = $0.01). Prices in gateway specs are USD strings with up to six decimals. On the evm rail, one micro-USD equals one base unit of a 6-decimal token (USDC).
+All protocol objects are JSON. All amounts are integers of **micro units** of the gateway's currency, carried as decimal strings (`"10000"` = 0.01). The currency is USD unless the gateway's discovery document, every challenge and every receipt say otherwise in `currency`: a gateway that settles in its own token names the token's symbol there (2 to 10 upper-case letters or digits) and its prices are amounts of that token. Prices in gateway specs are decimal strings with up to six places. On the evm rail the token may have any number of decimals from 0 to 18; the on-chain amount is the micro amount scaled to the token's decimals (times 10^(d-6), or divided by 10^(6-d) for tokens with fewer than six, in which case every price must be whole in the token's base unit). Mandate budgets and caps are micro units too, so a mandate's numbers mean dollars on a USD gateway and tokens on a token gateway; issue one mandate per currency.
 
 **Canonical JSON**, used for everything that is signed or hashed: object keys sorted lexicographically at every depth, no insignificant whitespace, `undefined` members dropped, arrays kept in order.
 
@@ -61,16 +61,17 @@ WWW-Authenticate: Tab challenge="<base64url(challenge JSON)>"
   "realm": "apis.example.com",
   "rail": "ledger" | "evm",
   "amount": "10000",
-  "currency": "USD",
+  "currency": "USD",             // or the gateway's token symbol, e.g. "TTT"
   "recipient": "<wallet id>",
   "resource": "GET /v1/things/42",
   "expires_at": "…ISO 8601…",
-  "evm": { "chain_id": 46630, "token": "0x…", "decimals": 6, "recipient": "0x…",
+  "evm": { "chain_id": 46630, "token": "0x…", "decimals": 6,   // the token's decimals, 0 to 18
+           "recipient": "0x…",
            "max_fee_per_gas": "0x…", "max_priority_fee_per_gas": "0x…", "gas_limit": 250000 }
 }
 ```
 
-`id` is `HMAC-SHA256(secret, canonical(challenge minus id))` with a per-database secret the gateway generates once. The gateway therefore keeps **no state per challenge**: any edited challenge fails the HMAC before anything else is looked at. `expires_at` is ~120 s ahead. The `evm` member exists only on that rail; `evm.recipient` is the seller's payout address and the fee fields are what the agent's transaction must use verbatim.
+`id` is `HMAC-SHA256(secret, canonical(challenge minus id))` with a per-database secret the gateway generates once. The gateway therefore keeps **no state per challenge**: any edited challenge fails the HMAC before anything else is looked at. `expires_at` is ~120 s ahead. The `evm` member exists only on that rail; `evm.recipient` is the seller's payout address and the fee fields are what the agent's transaction must use verbatim. A client pays in one currency, USD unless configured otherwise, and MUST refuse a challenge in any other currency before signing anything: the mandate's numbers would otherwise be spent in a unit the owner never priced. The gateway verifies `decimals` against the token contract's `decimals()` before issuing its first challenge.
 
 ### 3.2 Credential
 
@@ -142,7 +143,7 @@ Identity: a tab key file's 32-byte private seed doubles as a secp256k1 scalar (`
 
 Setup, once: the owner calls ERC-20 `approve(agentAddress, amount)` on the token (`tab evm approve`). The allowance decrements with every `transferFrom` and `approve(agent, 0)` revokes it instantly (`tab evm revoke`). The agent's account also needs a little ETH: EVM has no native fee-payer co-signing, so the transaction sender, the agent, pays gas (`tab evm fund` moves some over; bound per call by `gas_limit × max_fee_per_gas`, which the agent signs).
 
-Per payment the agent builds an EIP-1559 transaction from the challenge (to = token, value 0, calldata `transferFrom(evm_owner, challenge.evm.recipient, amount)`, fees and gas limit verbatim from the challenge), choosing only the nonce, which it reads from the gateway (`GET /.well-known/tab/evm/nonce/<0xaddress>`), so clients still need no RPC of their own. The gateway parses the transaction, recovers the sender, checks every field, enforces raw-tx-hash uniqueness, dry-runs the transfer, forwards upstream, and broadcasts only on 2xx. Receipt `ref` is `evm:<tx hash>`; `rail_info.explorer` (e.g. explorer.testnet.chain.robinhood.com) tells front ends where a ref can be viewed.
+Per payment the agent builds an EIP-1559 transaction from the challenge (to = token, value 0, calldata `transferFrom(evm_owner, challenge.evm.recipient, amount × 10^(decimals − 6))` with `decimals` from the challenge, fees and gas limit verbatim from the challenge), choosing only the nonce, which it reads from the gateway (`GET /.well-known/tab/evm/nonce/<0xaddress>`), so clients still need no RPC of their own. The gateway parses the transaction, recovers the sender, checks every field, enforces raw-tx-hash uniqueness, dry-runs the transfer, forwards upstream, and broadcasts only on 2xx. Receipt `ref` is `evm:<tx hash>`; `rail_info.explorer` (e.g. explorer.testnet.chain.robinhood.com) tells front ends where a ref can be viewed.
 
 ## 6. Discovery
 

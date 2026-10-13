@@ -1,9 +1,10 @@
 // One-off helper: mint from an open-mint testnet ERC-20 (e.g. Robinhood testnet
-// USDC), using tab's own evm primitives. Testnet only.
-//   npx tsx scripts/evm-mint.ts <key.json> <token 0x> <amountUsd> [rpc]
+// USDC, or tab's test token), using tab's own evm primitives. Testnet only.
+// The amount is in whole tokens; the script reads the token's decimals.
+//   npx tsx scripts/evm-mint.ts <key.json> <token 0x> <amount> [rpc]
 
 import { loadKey, pubBytes } from '../src/keys.js';
-import { usdToMicro } from '../src/protocol.js';
+import { usdToMicro, microToBaseUnits } from '../src/protocol.js';
 import { addressFromSeed } from '../src/evm/secp256k1.js';
 import { scalarFromSeed } from '../src/evm/secp256k1.js';
 import { EvmRpc } from '../src/evm/rpc.js';
@@ -25,7 +26,8 @@ async function main() {
   const seed = new Uint8Array(Buffer.from(key.privateKey, 'base64url'));
   const addr = addressFromSeed(seed);
   const scalar = scalarFromSeed(seed);
-  const amount = BigInt(usdToMicro(amountUsd)); // 6-decimal base units
+  const decimals = await rpc.erc20Decimals(token.toLowerCase());
+  const amount = microToBaseUnits(BigInt(usdToMicro(amountUsd)), decimals);
 
   // mint(address,uint256)
   const data =
@@ -51,7 +53,7 @@ async function main() {
   console.log('tx:', sent);
   await rpc.waitForReceipt(sent);
   const bal = await rpc.erc20BalanceOf(token, addr);
-  console.log('done. balance now:', Number(bal) / 1e6);
+  console.log('done. balance now:', Number(bal) / 10 ** decimals);
 }
 
 main().catch((e) => { console.error(e.message || e); process.exit(1); });

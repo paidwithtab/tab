@@ -8,7 +8,9 @@ import {
   VERSION,
   encodeChallengeHeader,
   encodeReceiptHeader,
+  isCurrency,
   makeChallenge,
+  microToBaseUnits,
   microToUsd,
   parseCredentialHeader,
   problemBody,
@@ -53,6 +55,8 @@ export interface Spec {
   realm: string;
   recipient: string;
   rail?: 'ledger' | 'evm';
+  /** What prices are denominated in: "USD" (default) or the symbol of the token the evm rail settles in. */
+  currency?: string;
   evm?: { rpc: string; chain_id: number; token: string; decimals: number; recipient: string; explorer?: string };
   public_receipts?: boolean;
   services: ServiceSpec[];
@@ -84,6 +88,8 @@ export function loadSpec(path: string): Spec {
   const spec = parsed as Spec;
   if (!spec.realm) throw new Error('spec.realm is required');
   if (!spec.recipient) throw new Error('spec.recipient is required');
+  if (spec.currency === undefined) spec.currency = 'USD';
+  if (!isCurrency(spec.currency)) throw new Error(`spec.currency must be 2 to 10 upper-case letters or digits, got ${JSON.stringify(spec.currency)}`);
   if (!Array.isArray(spec.services) || spec.services.length === 0) {
     throw new Error('spec.services is required');
   }
@@ -98,7 +104,11 @@ export function loadSpec(path: string): Spec {
   if (spec.services.length === 0) throw new Error(`every service was skipped for missing environment variables: ${skipped.join('; ')}`);
   for (const s of spec.services) {
     if (typeof s.prefix !== 'string' || !s.upstream) throw new Error(`service ${s.name}: prefix and upstream are required`);
-    for (const r of s.routes) usdToMicro(r.price); // validate prices early
+    for (const r of s.routes) {
+      const micro = usdToMicro(r.price); // validate prices early
+      // a token with fewer than 6 decimals cannot carry every micro amount
+      if (spec.rail === 'evm' && spec.evm && micro > 0) microToBaseUnits(BigInt(micro), spec.evm.decimals);
+    }
   }
   return spec;
 }
@@ -193,6 +203,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     realm: spec.realm,
     rail: rail.name,
     rail_info: rail.info(),
+    currency: spec.currency,
     recipient: spec.recipient,
     faucet: faucetMicro > 0 ? microToUsd(faucetMicro) : undefined,
     services: spec.services.map((s) => ({
@@ -214,6 +225,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       realm: spec.realm,
       rail: rail.name,
       amount: String(priceMicro),
+      currency: spec.currency,
       recipient: spec.recipient,
       resource,
       expires_at: new Date(Date.now() + ttlMs).toISOString(),
@@ -556,7 +568,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           realm: spec.realm,
           resource,
           amount: String(priceMicro),
-          currency: 'USD',
+          currency: spec.currency ?? 'USD',
           rail: rail.name,
           payer: hold.payer,
           owner: hold.owner,

@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/spec-draft%200.3-1f6feb?style=flat-square" alt="Spec draft 0.3">
   <img src="https://img.shields.io/badge/wire-tab%2F0-1f6feb?style=flat-square" alt="Wire protocol tab/0">
   <img src="https://img.shields.io/badge/node-22.13%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 22.13+">
-  <img src="https://img.shields.io/badge/checks-121-2da44e?style=flat-square" alt="121 automated checks">
+  <img src="https://img.shields.io/badge/checks-128-2da44e?style=flat-square" alt="128 automated checks">
   <img src="https://img.shields.io/badge/settlement-USDG-2775ca?style=flat-square" alt="USDG settlement">
   <img src="https://img.shields.io/badge/license-MIT-24292f?style=flat-square" alt="MIT license">
 </p>
@@ -215,7 +215,7 @@ Any HTTP API becomes payable with a small JSON specification. Leave out `rail` t
     "rpc": "https://rpc.testnet.chain.robinhood.com",
     "chain_id": 46630,
     "token": "0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5",
-    "decimals": 6,
+    "decimals": 6,                     // the token's decimals, 0 to 18; USDG and USDC have 6
     "recipient": "<your 0x payout address>"
   },
   "upstream": "http://127.0.0.1:8080",
@@ -293,7 +293,7 @@ Hooking tab into a particular agent, with the MCP JSON for Cursor, Codex, Windsu
 
 ## Settlement
 
-tab settles in USDG on Robinhood Chain mainnet and test USDC on its testnet, following a delivery first model. The gateway does not settle a payment until the upstream service has responded successfully.
+tab settles in USDG on Robinhood Chain mainnet and test USDC on its testnet, or in any ERC-20 a gateway chooses to charge in (its prices, challenges and receipts then name that token in `currency`), following a delivery first model. The gateway does not settle a payment until the upstream service has responded successfully.
 
 ```text
 authorize
@@ -332,13 +332,13 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 121 automated checks across protocol behavior, adversarial conditions, and EVM settlement.
+tab currently runs 128 automated checks across protocol behavior, adversarial conditions, and EVM settlement.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
 | `npm test` | 63 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init` |
 | `npm run test:adversarial` | 24 | Concurrency, replay, mutation, SSRF, persistence |
-| `npm run test:evm` | 34 | Cryptography, EVM transactions, Robinhood Chain |
+| `npm run test:evm` | 41 | Cryptography, EVM transactions, Robinhood Chain |
 
 > The concurrency suite fires 150 simultaneous $0.01 requests at a $1.00 mandate. Exactly 100 settle.
 
