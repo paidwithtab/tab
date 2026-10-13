@@ -1,0 +1,640 @@
+{
+ "realm": "token.paidwithtab.com",
+ "recipient": "SWKeJfKEl49rqteapC98hn4-OjbXP-cUax6emcjw3ds",
+ "rail": "evm",
+ "currency": "TOKEN",
+ "evm": {
+  "rpc": "https://rpc.mainnet.chain.robinhood.com,https://robinhood-mainnet.drpc.org,https://robinhood-rpc.publicnode.com,https://4663.rpc.thirdweb.com",
+  "chain_id": 4663,
+  "token": "0x0000000000000000000000000000000000000000",
+  "decimals": 18,
+  "recipient": "0xcce49b5F24b08195Bc121810C9df2484c92aa1F3",
+  "explorer": "https://robinhoodchain.blockscout.com"
+ },
+ "public_receipts": true,
+ "services": [
+  {
+   "name": "reader",
+   "prefix": "/read",
+   "upstream": "https://r.jina.ai",
+   "upstream_headers": {
+    "Accept": "application/json"
+   },
+   "description": "Read any web page as clean text or markdown (Jina Reader)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/",
+     "price": "0.003",
+     "description": "Read a web page. JSON body {\"url\": \"https://...\"}; returns title, description and content as markdown"
+    }
+   ]
+  },
+  {
+   "name": "wikipedia",
+   "prefix": "/wikipedia",
+   "upstream": "https://en.wikipedia.org",
+   "upstream_headers": {
+    "User-Agent": "tab-gateway/0.4 (https://paidwithtab.com)"
+   },
+   "description": "English Wikipedia: article summaries and search",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/api/rest_v1/page/summary/:title",
+     "price": "0.001",
+     "description": "Summary of a Wikipedia article by title, e.g. /api/rest_v1/page/summary/Lisbon"
+    },
+    {
+     "method": "GET",
+     "path": "/w/rest.php/v1/search/page",
+     "price": "0.001",
+     "description": "Search Wikipedia articles: ?q=<terms>&limit=5"
+    }
+   ]
+  },
+  {
+   "name": "weather",
+   "prefix": "/weather",
+   "upstream": "https://api.open-meteo.com/v1",
+   "description": "Weather forecasts for any coordinates (Open-Meteo)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/forecast",
+     "price": "0.001",
+     "description": "Forecast for coordinates: ?latitude=38.72&longitude=-9.14&current=temperature_2m,wind_speed_10m&daily=temperature_2m_max,precipitation_sum&timezone=auto (Lisbon is 38.72,-9.14; London 51.51,-0.13; New York 40.71,-74.01)"
+    }
+   ],
+   "upstream_headers": {
+    "User-Agent": "tab gateway (paidwithtab.com; https://github.com/paidwithtab/tab)"
+   }
+  },
+  {
+   "name": "fx",
+   "prefix": "/fx",
+   "upstream": "https://api.frankfurter.dev/v1",
+   "description": "Currency exchange rates from the European Central Bank (Frankfurter)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/latest",
+     "price": "0.001",
+     "description": "Latest rates: ?base=USD&symbols=EUR,GBP,JPY"
+    },
+    {
+     "method": "GET",
+     "path": "/:date",
+     "price": "0.001",
+     "description": "Rates on a date: /2024-01-31?base=USD&symbols=EUR"
+    },
+    {
+     "method": "GET",
+     "path": "/currencies",
+     "price": "0.001",
+     "description": "The currencies the rates cover, code to name"
+    }
+   ]
+  },
+  {
+   "name": "search",
+   "prefix": "/search",
+   "upstream": "https://api.tavily.com/search",
+   "upstream_headers": {
+    "Authorization": "Bearer ${TAVILY_API_KEY}"
+   },
+   "requires": [
+    "TAVILY_API_KEY"
+   ],
+   "description": "Web search built for agents: ranked results with content snippets and an optional answer (Tavily)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/",
+     "price": "0.01",
+     "description": "Search the web. JSON body {\"query\": \"...\", \"max_results\": 5}; returns results with url, title, content and score"
+    }
+   ]
+  },
+  {
+   "name": "translate",
+   "prefix": "/translate",
+   "upstream": "https://api-free.deepl.com/v2/translate",
+   "upstream_headers": {
+    "Authorization": "DeepL-Auth-Key ${DEEPL_API_KEY}"
+   },
+   "requires": [
+    "DEEPL_API_KEY"
+   ],
+   "description": "Translation between 30+ languages (DeepL)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/",
+     "price": "0.02",
+     "description": "Translate text. JSON body {\"text\": [\"Hello, world\"], \"target_lang\": \"JA\"}; returns translations with the detected source language"
+    }
+   ]
+  },
+  {
+   "name": "speech",
+   "prefix": "/speech",
+   "upstream": "https://api.deepgram.com/v1",
+   "upstream_headers": {
+    "Authorization": "Token ${DEEPGRAM_API_KEY}"
+   },
+   "requires": [
+    "DEEPGRAM_API_KEY"
+   ],
+   "description": "Speech to text and text to speech (Deepgram)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/listen",
+     "price": "0.02",
+     "description": "Transcribe audio. Send the file as the body with its content type (audio/wav, audio/mpeg, ...) or JSON {\"url\": \"https://...\"}; query ?model=nova-3&smart_format=true"
+    },
+    {
+     "method": "POST",
+     "path": "/speak",
+     "price": "0.02",
+     "description": "Text to speech. JSON body {\"text\": \"...\"}; query ?model=aura-2-thalia-en; returns audio/mpeg"
+    }
+   ]
+  },
+  {
+   "name": "geocode",
+   "prefix": "/geocode",
+   "upstream": "https://geocoding-api.open-meteo.com/v1",
+   "description": "Place names to coordinates, worldwide (Open-Meteo geocoding)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/search",
+     "price": "0.001",
+     "description": "Find places by name: ?name=Lisbon&count=5&language=en; returns latitude, longitude, country, timezone"
+    }
+   ],
+   "upstream_headers": {
+    "User-Agent": "tab gateway (paidwithtab.com; https://github.com/paidwithtab/tab)"
+   }
+  },
+  {
+   "name": "airquality",
+   "prefix": "/airquality",
+   "upstream": "https://air-quality-api.open-meteo.com/v1",
+   "description": "Air quality for any coordinates: PM2.5, PM10, ozone, pollen, European and US AQI (Open-Meteo)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/air-quality",
+     "price": "0.001",
+     "description": "Current and hourly air quality: ?latitude=38.72&longitude=-9.14&current=pm2_5,european_aqi"
+    }
+   ],
+   "upstream_headers": {
+    "User-Agent": "tab gateway (paidwithtab.com; https://github.com/paidwithtab/tab)"
+   }
+  },
+  {
+   "name": "marine",
+   "prefix": "/marine",
+   "upstream": "https://marine-api.open-meteo.com/v1",
+   "description": "Marine forecasts: wave height, swell, sea temperature (Open-Meteo)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/marine",
+     "price": "0.001",
+     "description": "Marine conditions: ?latitude=38.7&longitude=-9.5&current=wave_height,sea_surface_temperature"
+    }
+   ],
+   "upstream_headers": {
+    "User-Agent": "tab gateway (paidwithtab.com; https://github.com/paidwithtab/tab)"
+   }
+  },
+  {
+   "name": "arxiv",
+   "prefix": "/arxiv",
+   "upstream": "https://export.arxiv.org/api",
+   "description": "Search arXiv preprints: physics, maths, computer science, more (returns Atom XML)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/query",
+     "price": "0.002",
+     "description": "Search papers: ?search_query=all:transformers&max_results=5&sortBy=submittedDate"
+    }
+   ]
+  },
+  {
+   "name": "hn",
+   "prefix": "/hn",
+   "upstream": "https://hn.algolia.com/api/v1",
+   "description": "Hacker News search and items (Algolia)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/search",
+     "price": "0.001",
+     "description": "Search stories and comments by relevance: ?query=http%20402&tags=story&hitsPerPage=10"
+    },
+    {
+     "method": "GET",
+     "path": "/search_by_date",
+     "price": "0.001",
+     "description": "Newest first: ?query=agents&tags=story"
+    },
+    {
+     "method": "GET",
+     "path": "/items/:id",
+     "price": "0.001",
+     "description": "One story or comment with its full thread, by id"
+    }
+   ]
+  },
+  {
+   "name": "books",
+   "prefix": "/books",
+   "upstream": "https://openlibrary.org",
+   "description": "Books and authors from Open Library",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/search.json",
+     "price": "0.001",
+     "description": "Search books: ?q=pragmatic+programmer&limit=5&fields=title,author_name,first_publish_year,isbn"
+    },
+    {
+     "method": "GET",
+     "path": "/search/authors.json",
+     "price": "0.001",
+     "description": "Search authors: ?q=tolkien"
+    }
+   ]
+  },
+  {
+   "name": "wikidata",
+   "prefix": "/wikidata",
+   "upstream": "https://www.wikidata.org/w",
+   "description": "Wikidata: entity search and structured facts about anything",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/api.php",
+     "price": "0.001",
+     "description": "The Wikidata API. Search: ?action=wbsearchentities&search=Lisbon&language=en&format=json. Facts: ?action=wbgetentities&ids=Q597&props=claims|labels&languages=en&format=json"
+    }
+   ]
+  },
+  {
+   "name": "osm",
+   "prefix": "/osm",
+   "upstream": "https://nominatim.openstreetmap.org",
+   "upstream_headers": {
+    "User-Agent": "tab gateway (paidwithtab.com; https://github.com/paidwithtab/tab)"
+   },
+   "description": "Geocoding and reverse geocoding from OpenStreetMap (Nominatim). Low volume only",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/search",
+     "price": "0.002",
+     "description": "Address or place to coordinates: ?q=Rua+Augusta,+Lisbon&format=json&limit=3"
+    },
+    {
+     "method": "GET",
+     "path": "/reverse",
+     "price": "0.002",
+     "description": "Coordinates to address: ?lat=38.71&lon=-9.14&format=json"
+    }
+   ]
+  },
+  {
+   "name": "crossref",
+   "prefix": "/crossref",
+   "upstream": "https://api.crossref.org",
+   "upstream_headers": {
+    "User-Agent": "tab gateway (paidwithtab.com; https://github.com/paidwithtab/tab)"
+   },
+   "description": "Scholarly metadata for 150 million works, by DOI or text (Crossref)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/works",
+     "price": "0.002",
+     "description": "Search works: ?query=attention+is+all+you+need&rows=5&select=DOI,title,author,issued"
+    }
+   ]
+  },
+  {
+   "name": "pubmed",
+   "prefix": "/pubmed",
+   "upstream": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils",
+   "description": "PubMed: biomedical literature search and summaries (NCBI E-utilities)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/esearch.fcgi",
+     "price": "0.002",
+     "description": "Search: ?db=pubmed&term=aspirin+heart&retmode=json&retmax=10"
+    },
+    {
+     "method": "GET",
+     "path": "/esummary.fcgi",
+     "price": "0.002",
+     "description": "Summaries for ids: ?db=pubmed&id=123,456&retmode=json"
+    },
+    {
+     "method": "GET",
+     "path": "/efetch.fcgi",
+     "price": "0.002",
+     "description": "Full records: ?db=pubmed&id=123&rettype=abstract&retmode=xml"
+    }
+   ]
+  },
+  {
+   "name": "quakes",
+   "prefix": "/quakes",
+   "upstream": "https://earthquake.usgs.gov/fdsnws/event/1",
+   "description": "Earthquakes worldwide, real time (USGS)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/query",
+     "price": "0.001",
+     "description": "Search events: ?format=geojson&minmagnitude=5&limit=10&starttime=2026-10-01"
+    }
+   ]
+  },
+  {
+   "name": "stackexchange",
+   "prefix": "/stackexchange",
+   "upstream": "https://api.stackexchange.com/2.3",
+   "description": "Stack Overflow and the Stack Exchange network: questions and answers",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/search",
+     "price": "0.001",
+     "description": "Search questions by title: ?intitle=http%20402&site=stackoverflow&pagesize=5&order=desc&sort=relevance"
+    },
+    {
+     "method": "GET",
+     "path": "/search/advanced",
+     "price": "0.001",
+     "description": "Full text search: ?q=payment+required&site=stackoverflow&pagesize=5"
+    },
+    {
+     "method": "GET",
+     "path": "/questions/:ids",
+     "price": "0.001",
+     "description": "Questions by id, comma separated, with ?site=stackoverflow&filter=withbody"
+    }
+   ]
+  },
+  {
+   "name": "crypto",
+   "prefix": "/crypto",
+   "upstream": "https://api.coingecko.com/api/v3",
+   "description": "Crypto prices and market data (CoinGecko public API)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/simple/price",
+     "price": "0.001",
+     "description": "Spot prices: ?ids=bitcoin,ethereum&vs_currencies=usd"
+    },
+    {
+     "method": "GET",
+     "path": "/coins/markets",
+     "price": "0.001",
+     "description": "Market table: ?vs_currency=usd&order=market_cap_desc&per_page=20&page=1"
+    },
+    {
+     "method": "GET",
+     "path": "/search",
+     "price": "0.001",
+     "description": "Find a coin by name or symbol: ?query=solana"
+    }
+   ]
+  },
+  {
+   "name": "github",
+   "prefix": "/github",
+   "upstream": "https://api.github.com",
+   "upstream_headers": {
+    "User-Agent": "tab gateway (paidwithtab.com; https://github.com/paidwithtab/tab)",
+    "Accept": "application/vnd.github+json"
+   },
+   "description": "GitHub public data: repository search and metadata (unauthenticated, rate limited)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/search/repositories",
+     "price": "0.002",
+     "description": "Search repositories: ?q=http+402+payment&sort=stars&per_page=5"
+    },
+    {
+     "method": "GET",
+     "path": "/repos/:owner/:repo",
+     "price": "0.001",
+     "description": "One repository: stars, description, license, default branch"
+    }
+   ]
+  },
+  {
+   "name": "openalex",
+   "prefix": "/openalex",
+   "upstream": "https://api.openalex.org",
+   "description": "OpenAlex: 250 million scholarly works, authors and institutions",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/works",
+     "price": "0.002",
+     "description": "Search works: ?search=http+402&per-page=5&select=id,title,publication_year,doi"
+    },
+    {
+     "method": "GET",
+     "path": "/authors",
+     "price": "0.001",
+     "description": "Search authors: ?search=hinton&per-page=5"
+    },
+    {
+     "method": "GET",
+     "path": "/institutions",
+     "price": "0.001",
+     "description": "Search institutions: ?search=lisbon&per-page=5"
+    }
+   ]
+  },
+  {
+   "name": "extract",
+   "prefix": "/extract",
+   "upstream": "https://api.tavily.com/extract",
+   "upstream_headers": {
+    "Authorization": "Bearer ${TAVILY_API_KEY}"
+   },
+   "requires": [
+    "TAVILY_API_KEY"
+   ],
+   "description": "Extract the content of one or more URLs, cleaned for agents (Tavily)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/",
+     "price": "0.01",
+     "description": "JSON body {\"urls\": [\"https://...\"]}; returns raw_content per url"
+    }
+   ]
+  },
+  {
+   "name": "google",
+   "prefix": "/google",
+   "upstream": "https://google.serper.dev",
+   "upstream_headers": {
+    "X-API-KEY": "${SERPER_API_KEY}"
+   },
+   "requires": [
+    "SERPER_API_KEY"
+   ],
+   "description": "Google results: web, news and images (Serper)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/search",
+     "price": "0.005",
+     "description": "Google web search. JSON body {\"q\": \"...\", \"num\": 10}"
+    },
+    {
+     "method": "POST",
+     "path": "/news",
+     "price": "0.005",
+     "description": "Google News. JSON body {\"q\": \"...\"}"
+    },
+    {
+     "method": "POST",
+     "path": "/images",
+     "price": "0.005",
+     "description": "Google Images. JSON body {\"q\": \"...\"}"
+    }
+   ]
+  },
+  {
+   "name": "exa",
+   "prefix": "/exa",
+   "upstream": "https://api.exa.ai",
+   "upstream_headers": {
+    "x-api-key": "${EXA_API_KEY}"
+   },
+   "requires": [
+    "EXA_API_KEY"
+   ],
+   "description": "Semantic web search with page contents (Exa)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/search",
+     "price": "0.01",
+     "description": "Neural search. JSON body {\"query\": \"...\", \"numResults\": 5, \"contents\": {\"text\": true}}"
+    },
+    {
+     "method": "POST",
+     "path": "/contents",
+     "price": "0.01",
+     "description": "Contents for known urls. JSON body {\"urls\": [\"https://...\"], \"text\": true}"
+    }
+   ]
+  },
+  {
+   "name": "scrape",
+   "prefix": "/scrape",
+   "upstream": "https://api.firecrawl.dev/v1",
+   "upstream_headers": {
+    "Authorization": "Bearer ${FIRECRAWL_API_KEY}"
+   },
+   "requires": [
+    "FIRECRAWL_API_KEY"
+   ],
+   "description": "Scrape JavaScript-heavy pages to markdown, with screenshots and structured extraction (Firecrawl)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/scrape",
+     "price": "0.005",
+     "description": "JSON body {\"url\": \"https://...\", \"formats\": [\"markdown\"]}"
+    }
+   ]
+  },
+  {
+   "name": "brave",
+   "prefix": "/brave",
+   "upstream": "https://api.search.brave.com/res/v1",
+   "upstream_headers": {
+    "X-Subscription-Token": "${BRAVE_API_KEY}",
+    "Accept": "application/json"
+   },
+   "requires": [
+    "BRAVE_API_KEY"
+   ],
+   "description": "Brave Search: independent web and news index",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/web/search",
+     "price": "0.005",
+     "description": "Web search: ?q=http+402&count=10"
+    },
+    {
+     "method": "GET",
+     "path": "/news/search",
+     "price": "0.005",
+     "description": "News search: ?q=robinhood+chain&count=10"
+    }
+   ]
+  },
+  {
+   "name": "ocr",
+   "prefix": "/ocr",
+   "upstream": "https://api.mathpix.com/v3",
+   "upstream_headers": {
+    "app_id": "${MATHPIX_APP_ID}",
+    "app_key": "${MATHPIX_APP_KEY}"
+   },
+   "requires": [
+    "MATHPIX_APP_ID",
+    "MATHPIX_APP_KEY"
+   ],
+   "description": "OCR for images and PDFs, including maths and tables (Mathpix)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/text",
+     "price": "0.005",
+     "description": "JSON body {\"src\": \"https://...image.png\", \"formats\": [\"text\"]}; returns the recognised text"
+    }
+   ]
+  },
+  {
+   "name": "image",
+   "prefix": "/image",
+   "upstream": "https://fal.run",
+   "upstream_headers": {
+    "Authorization": "Key ${FAL_KEY}"
+   },
+   "requires": [
+    "FAL_KEY"
+   ],
+   "description": "Image generation with Flux (fal.ai)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/fal-ai/flux/schnell",
+     "price": "0.05",
+     "description": "JSON body {\"prompt\": \"...\", \"image_size\": \"landscape_4_3\"}; returns image urls"
+    }
+   ]
+  }
+ ]
+}
