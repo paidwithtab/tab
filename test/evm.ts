@@ -4,7 +4,7 @@
 //   npm run test:evm
 
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -12,11 +12,12 @@ import { promisify } from 'node:util';
 import { createHash, randomBytes } from 'node:crypto';
 
 import { newKeyPair, saveKey } from '../src/keys.js';
-import { signCredential, encodeCredentialHeader, parseChallengeHeader } from '../src/protocol.js';
+import { signCredential, encodeCredentialHeader, parseChallengeHeader, microToBaseUnits, baseUnitsToMicro } from '../src/protocol.js';
 import { issueMandate } from '../src/mandate.js';
 import { Store } from '../src/store.js';
-import { createGateway, type Spec } from '../src/gateway.js';
-import { TabClient, receiptOf } from '../src/client.js';
+import { createGateway, loadSpec, type Spec } from '../src/gateway.js';
+import { TabClient, PaymentRefused, receiptOf } from '../src/client.js';
+import { EvmRail } from '../src/rails/evm.js';
 import { keccak256Hex } from '../src/evm/keccak.js';
 import {
   scalarFromSeed, publicKey, publicKeyOwnMath, pubToAddress, addressFromSeed,
@@ -61,6 +62,8 @@ const CHAIN_ID = 46630n; // Robinhood Chain testnet
 const TOKEN = '0x5b6c7caf7f99f99154fd8375ec935fcf03f326f5'; // shape of the real testnet USDC
 
 class MockChain {
+  /** The one ERC-20 this node hosts, and its decimals (testnet USDC by default). */
+  constructor(readonly token: string = TOKEN, readonly decimals: bigint = 6n) {}
   eth = new Map<string, bigint>();
   bal = new Map<string, bigint>();
   allowance = new Map<string, bigint>();
@@ -76,7 +79,7 @@ class MockChain {
     const addr = (i: number) => bytesToHex(word(i).slice(12));
     const uint = (i: number) => BigInt(bytesToHex(word(i)));
     const ret = (n: bigint) => '0x' + n.toString(16).padStart(64, '0');
-    if (sel === bytesToHex(selector('decimals()'))) return { ok: true, result: ret(6n) };
+    if (sel === bytesToHex(selector('decimals()'))) return { ok: true, result: ret(this.decimals) };
     if (sel === bytesToHex(selector('balanceOf(address)'))) return { ok: true, result: ret(this.bal.get(addr(0)) ?? 0n) };
     if (sel === bytesToHex(selector('allowance(address,address)'))) {
       return { ok: true, result: ret(this.allowance.get(this.key(addr(0), addr(1))) ?? 0n) };
@@ -101,7 +104,7 @@ class MockChain {
 
   /** eth_call: run read-only against a copy of state. */
   call(from: string | undefined, to: string, data: Uint8Array): { ok: boolean; result: string; error?: string } {
-    if (to !== TOKEN) return { ok: false, result: '0x', error: 'no contract' };
+    if (to !== this.token) return { ok: false, result: '0x', error: 'no contract' };
     const snapshot = { bal: new Map(this.bal), allowance: new Map(this.allowance) };
     const out = this.execToken(from ?? '0x' + '0'.repeat(40), data);
     this.bal = snapshot.bal;
@@ -120,7 +123,7 @@ class MockChain {
     this.nonce.set(tx.from, current + 1n);
     this.eth.set(tx.from, this.eth.get(tx.from)! - gasCost - tx.value);
     let status: '0x1' | '0x0' = '0x1';
-    if (tx.data.length > 0 && tx.to === TOKEN) {
+    if (tx.data.length > 0 && tx.to === this.token) {
       status = this.execToken(tx.from, tx.data).ok ? '0x1' : '0x0';
     } else if (tx.value > 0n) {
       this.eth.set(tx.to, (this.eth.get(tx.to) ?? 0n) + tx.value);
@@ -409,7 +412,83 @@ async function main(): Promise<void> {
   check('receipts carry evm refs', recs.receipts.length >= 3
     && recs.receipts.every((r: any) => r.ref.startsWith('evm:0x')));
 
-  // -- 7. the real Robinhood Chain testnet, read-only ------------------------
+  // -- 7. a gateway that charges in its own 18-decimal token -----------------
+
+  check('micro units scale exactly to any token decimals', microToBaseUnits(10_000n, 18) === 10n ** 16n
+    && microToBaseUnits(10_000n, 6) === 10_000n && microToBaseUnits(10_000n, 2) === 1n
+    && baseUnitsToMicro(10n ** 16n, 18) === 10_000n && baseUnitsToMicro(1n, 2) === 10_000n
+    && (() => { try { microToBaseUnits(10_001n, 2); return false; } catch { return true; } })()
+    && (() => { try { microToBaseUnits(1n, 19); return false; } catch { return true; } })());
+
+  const TTT = '0x' + 'ab'.repeat(20);
+  const chainT = new MockChain(TTT, 18n);
+  chainT.eth.set(ownerAddr, 10n ** 18n);
+  chainT.eth.set(agentAddr, 10n ** 16n);
+  chainT.bal.set(ownerAddr, 100n * 10n ** 18n); // 100 TTT
+  const nodeT = chainT.serve();
+  const RPC_T = `http://127.0.0.1:${await listen(nodeT)}`;
+
+  await cli('evm', 'approve', '--owner', join(scratch, 'owner.json'), '--agent', join(scratch, 'agent.json'),
+    '--amount', '0.03', '--token', TTT, '--rpc', RPC_T);
+  const balT = JSON.parse(await cli('evm', 'balance', '--wallet', join(scratch, 'owner.json'), '--token', TTT,
+    '--agent', join(scratch, 'agent.json'), '--rpc', RPC_T));
+  check('tab evm approve and balance read the token\'s decimals', chainT.allowance.get(`${ownerAddr}|${agentAddr}`) === 3n * 10n ** 16n
+    && balT.decimals === 18 && balT.amount === '100.00' && balT.allowance === '0.03');
+
+  const specT: Spec = {
+    realm: 'token.local', recipient: seller.publicKey, rail: 'evm', currency: 'TTT',
+    evm: { rpc: RPC_T, chain_id: Number(CHAIN_ID), token: TTT, decimals: 18, recipient: sellerAddr },
+    public_receipts: true,
+    services: [{ name: 'demo', prefix: '', upstream: `http://127.0.0.1:${upPort}`,
+      routes: [{ method: 'GET', path: '/quote', price: '0.01', description: 'a quote, in TTT' }] }],
+  };
+  const storeT = new Store(join(scratch, 'tab-ttt.db'));
+  const gatewayT = createGateway(specT, { store: storeT });
+  const GWT = `http://127.0.0.1:${await listen(gatewayT)}`;
+
+  const discT = await (await fetch(`${GWT}/.well-known/tab`)).json() as any;
+  const chalT = parseChallengeHeader((await fetch(`${GWT}/quote`)).headers.get('www-authenticate'))!;
+  check('discovery and the 402 name the currency and the token decimals', discT.currency === 'TTT'
+    && discT.rail_info.decimals === 18 && chalT.currency === 'TTT' && chalT.amount === '10000' && chalT.evm?.decimals === 18);
+
+  const mandateT = issueMandate(owner, {
+    agent: agent.publicKey, budgetUsd: '1.00', window: 'day', maxPerCallUsd: '0.05',
+    allow: ['token.local'], days: 30, evmOwner: ownerAddr,
+  });
+  {
+    const before = chainT.broadcasts;
+    let refused = '';
+    try { await new TabClient({ agent, mandate: mandateT }).fetch(`${GWT}/quote`); } catch (e) { if (e instanceof PaymentRefused) refused = e.reason; }
+    check('a client that pays in USD refuses a token-priced gateway before signing', /charges in TTT/.test(refused)
+      && chainT.broadcasts === before);
+  }
+  const clientT = new TabClient({ agent, mandate: mandateT, currency: 'TTT' });
+  const paidT = await clientT.fetch(`${GWT}/quote`);
+  const receiptT = receiptOf(paidT);
+  check('a client told to pay in TTT settles 0.01 TTT as 10^16 base units', paidT.status === 200
+    && receiptT?.currency === 'TTT' && receiptT.amount === '10000'
+    && chainT.bal.get(sellerAddr) === 10n ** 16n && chainT.allowance.get(`${ownerAddr}|${agentAddr}`) === 2n * 10n ** 16n);
+  const walletT = await (await fetch(`${GWT}/.well-known/tab/wallet/${ownerAddr}`)).json() as any;
+  const recsT = await (await fetch(`${GWT}/.well-known/tab/receipts`)).json() as any;
+  check('balances and receipts come back in micro units of the token', walletT.micro === 100_000_000 - 10_000
+    && walletT.available === '99.99' && recsT.receipts[0].currency === 'TTT');
+
+  {
+    let err = '';
+    try { await new EvmRail({ rpc: RPC_T, chain_id: Number(CHAIN_ID), token: TTT, decimals: 6, recipient: sellerAddr }).challengeExtras(); } catch (e) { err = (e as Error).message; }
+    const badSpec = join(scratch, 'two-decimals.json');
+    writeFileSync(badSpec, JSON.stringify({ ...specT, evm: { ...specT.evm, decimals: 2 },
+      services: [{ name: 'd', prefix: '', upstream: 'http://127.0.0.1:1', routes: [{ method: 'GET', path: '/x', price: '0.001' }] }] }));
+    let loadErr = '';
+    try { loadSpec(badSpec); } catch (e) { loadErr = (e as Error).message; }
+    check('a spec whose decimals disagree with the contract, or whose prices a token cannot carry, is refused',
+      /has 18 decimals, spec says 6/.test(err) && /not representable with 2 decimals/.test(loadErr));
+  }
+  gatewayT.close();
+  nodeT.close();
+  storeT.close();
+
+  // -- 8. the real Robinhood Chain testnet, read-only ------------------------
 
   {
     const LIVE_RPC = process.env.EVM_RPC || 'https://rpc.testnet.chain.robinhood.com';

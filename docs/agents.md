@@ -63,6 +63,7 @@ claude mcp add --scope user tab \
 | `TAB_MANDATE` | `~/.tab/mandate.json` | The mandate the agent carries |
 | `TAB_MAX_PER_CALL` | none | A second per-call ceiling, checked by the client before signing |
 | `TAB_CATALOG` | `https://paidwithtab.com` | Where `tab_search` looks for routes |
+| `TAB_CURRENCY` | `USD` | The one currency the agent may pay in. A gateway that charges in its own token names it in every 402; anything else is refused before signing |
 | `TAB_HOME` | `~/.tab` | Where `init`, `fetch` and `mcp` look for the default files |
 
 Claude gets five tools: `tab_search` (find routes by keyword and maximum price), `tab_discover` (read a gateway's own price list), `tab_fetch` (pay and return the response plus the receipt), `tab_balance`, and `tab_limits` (what the mandate allows). The model can read the limits but cannot raise any of them.
@@ -111,6 +112,7 @@ const client = new TabClient({
   agent: JSON.parse(readFileSync(`${home}/agent.json`, 'utf8')),
   mandate: JSON.parse(readFileSync(`${home}/mandate.json`, 'utf8')),
   maxPerCallUsd: '0.02',
+  // currency: 'TTT',  // only if the agent should pay a gateway that charges in that token; default USD
   // your own veto, called with the price in micro-USD before anything is signed
   onChallenge: (challenge, req) => Number(req.amount) <= 20_000,
 });

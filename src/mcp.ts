@@ -6,7 +6,7 @@ import { createInterface } from 'node:readline';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { microToUsd } from './protocol.js';
+import { microToUsd, formatAmount } from './protocol.js';
 import type { Mandate } from './mandate.js';
 import type { KeyPair } from './keys.js';
 import { TabClient, PaymentRefused, receiptOf } from './client.js';
@@ -20,6 +20,7 @@ export interface McpOptions {
   agent: KeyPair;
   mandate: Mandate;
   maxPerCallUsd?: string;
+  currency?: string; // what this agent pays in; default USD
   catalog?: string; // catalog origin
 }
 
@@ -35,12 +36,12 @@ const TOOLS = [
   {
     name: 'tab_search',
     description:
-      'Search the tab catalog for paid API routes by keyword. Returns callable URLs with prices in USD, cheapest first.',
+      'Search the tab catalog for paid API routes by keyword. Returns callable URLs with prices, cheapest first. Each result names its currency: USD, or the token a gateway charges in; this agent can only pay in the currency tab_limits reports.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'keywords to search route names and descriptions' },
-        max_price: { type: 'string', description: 'optional price ceiling in USD, e.g. "0.01"' },
+        max_price: { type: 'string', description: 'optional price ceiling in this agent\'s currency, e.g. "0.01"; routes priced in other currencies are left out' },
       },
       required: ['query'],
     },
@@ -88,7 +89,9 @@ export function runMcpServer(opts: McpOptions): void {
     agent: opts.agent,
     mandate: opts.mandate,
     maxPerCallUsd: opts.maxPerCallUsd,
+    currency: opts.currency,
   });
+  const currency = opts.currency ?? 'USD';
 
   const write = (msg: unknown) => process.stdout.write(JSON.stringify(msg) + '\n');
   const reply = (id: unknown, result: unknown) => write({ jsonrpc: '2.0', id, result });
@@ -110,6 +113,7 @@ export function runMcpServer(opts: McpOptions): void {
           mandate_max_per_call_usd:
             opts.mandate.max_per_call === null ? null : microToUsd(Number(opts.mandate.max_per_call)),
           client_max_per_call_usd: opts.maxPerCallUsd ?? null,
+          currency,
           allow: opts.mandate.allow,
           expires_at: opts.mandate.expires_at,
           catalog: opts.catalog ?? null,
@@ -119,6 +123,7 @@ export function runMcpServer(opts: McpOptions): void {
         const u = new URL(opts.catalog.replace(/\/$/, '') + '/v1/search');
         u.searchParams.set('q', String(args.query ?? ''));
         if (args.max_price) u.searchParams.set('max_price', String(args.max_price));
+        u.searchParams.set('currency', currency);
         const r = await fetch(u, { signal: AbortSignal.timeout(10_000) });
         return text(await r.json());
       }
@@ -140,7 +145,8 @@ export function runMcpServer(opts: McpOptions): void {
           const receipt = receiptOf(r);
           return text({
             status: r.status,
-            paid_usd: receipt ? microToUsd(Number(receipt.amount)) : null,
+            paid: receipt ? formatAmount(Number(receipt.amount), receipt.currency) : null,
+            paid_usd: receipt && (receipt.currency ?? 'USD') === 'USD' ? microToUsd(Number(receipt.amount)) : null,
             receipt,
             body: bodyText.slice(0, 50_000),
           });

@@ -21,7 +21,7 @@ Three roles, one binary:
 Money moves over a **rail**. Two ship:
 
 - `ledger`: balances in the gateway's own SQLite file. Free, instant, sandbox money created with `tab mint`.
-- `evm`: USDC or any 6-decimal ERC-20, built for **Robinhood Chain** (Arbitrum-stack L2; chain id 46630 testnet, 4663 mainnet), no custom contract. The owner `approve`s the agent as ERC-20 spender once; the agent signs a type-2 `transferFrom` transaction (its account pays gas); the gateway verifies it field-for-field and broadcasts only after the upstream answered 2xx. Section 9.
+- `evm`: USDG, USDC or any ERC-20 with 0 to 18 decimals, including a gateway's own token (section 9, "charging in your own token"), built for **Robinhood Chain** (Arbitrum-stack L2; chain id 46630 testnet, 4663 mainnet), no custom contract. The owner `approve`s the agent as ERC-20 spender once; the agent signs a type-2 `transferFrom` transaction (its account pays gas); the gateway verifies it field-for-field and broadcasts only after the upstream answered 2xx. Section 9.
 
 There is also a **catalog** service (search + web front end) and an **MCP server** so Claude Code can spend under a mandate.
 
@@ -101,7 +101,7 @@ examples/
   demo.sh                   # one-command sandbox
 test/e2e.ts                 # 63 in-process checks, temp DB, ~1-2 min
 test/adversarial.ts         # 24 hostile checks: concurrency, replay, mutation, SSRF, forgery
-test/evm.ts                 # 34 checks: crypto vectors, a mock EVM node, rpc failover, live Robinhood testnet reads
+test/evm.ts                 # 41 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway, live Robinhood testnet reads
 ```
 
 ---
@@ -447,12 +447,13 @@ For production use a provider endpoint (Alchemy/QuickNode/dRPC support Robinhood
   "rail": "evm",
   "evm": { "rpc": "${EVM_RPC}", "chain_id": 46630, "token": "${TOKEN}", "decimals": 6,
            "recipient": "${SELLER_EVM}", "explorer": "https://explorer.testnet.chain.robinhood.com" },
+  "currency": "USD",
   "public_receipts": true,
   "services": [ ... ]
 }
 ```
 
-`evm.recipient` is the seller's payout address; USDC lands there. The gateway holds **no key at all**: the agent's account is the transaction sender and pays gas.
+`evm.recipient` is the seller's payout address; the token lands there. `evm.decimals` must match the contract's `decimals()`; the gateway checks before its first challenge and refuses to serve if they differ. `currency` is what prices are denominated in, `USD` unless the token is not a dollar (below). The gateway holds **no key at all**: the agent's account is the transaction sender and pays gas.
 
 **Funding, once.**
 
@@ -474,9 +475,22 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 - The agent pays gas, bounded per call by `gas_limit × max_fee_per_gas` from the challenge it signed. Keep ~0.005 ETH on an active agent; `tab evm balance` shows the ETH balance too.
 - A signed-but-voided payment stays broadcastable until the agent's nonce moves. The seller could broadcast it without serving, a one-priced-call trust bound; see SPEC.md §9.
 - The wallet endpoint (`/.well-known/tab/wallet/<id>`) takes a 0x address on this rail.
-- Only type-2 transactions, empty access lists, 6-decimal tokens in draft 0.2.
+- Only type-2 transactions and empty access lists. Tokens may have 0 to 18 decimals since draft 0.4; the wire amount stays in micro units and is scaled to the token on chain.
 
-`npm run test:evm` runs 34 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
+`npm run test:evm` runs 41 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, the same flow against an 18-decimal token priced in its own currency (scaling, the client's currency refusal, decimals checked against the contract), and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
+
+**Charging in your own token.** A gateway settles in one ERC-20, and it need not be a dollar. Set `currency` to the token's symbol and `evm.token` and `evm.decimals` to the contract; prices are then amounts of that token (`"price": "0.5"` is half a token), and every challenge, receipt and catalog listing names the currency so nothing is mistaken for dollars. The reference deployment runs one such gateway next to the dollar ones, with the same routes:
+
+```json
+{
+  "realm": "token-testnet.paidwithtab.com",
+  "rail": "evm",
+  "currency": "TTT",
+  "evm": { "chain_id": 46630, "token": "0x8f6fe411e76b79d6eb6521872340c37c3210ee47", "decimals": 18, "...": "..." }
+}
+```
+
+`examples/spec-token-testnet.json` and `examples/tab-gateway-token-testnet.service` are that gateway (port 1406, TTT, an open-mint test token with 18 decimals on Robinhood Chain testnet; `scripts/evm-mint.ts` mints it). `examples/spec-token.json` and `examples/tab-gateway-token.service` are the mainnet pair with the token fields left to fill in. What buyers see: `tab fetch` and the MCP server pay in USD unless `--currency TTT` or `TAB_CURRENCY=TTT` says otherwise, and refuse a token-priced challenge before signing anything; a mandate's budget and cap are in the gateway's currency, so issue one mandate per currency, each with its own `--allow` realm. `tab evm approve`, `balance` and the mint script read the contract's decimals, so amounts are always whole tokens on the command line.
 
 ---
 

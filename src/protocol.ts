@@ -43,6 +43,43 @@ export function usdToMicro(usd: string): number {
   return micro;
 }
 
+/** Currency codes a gateway may charge in: USD (the default) or a token symbol, 2 to 10 upper-case letters or digits. */
+export function isCurrency(code: unknown): code is string {
+  return typeof code === 'string' && /^[A-Z0-9]{2,10}$/.test(code);
+}
+
+/** "$0.01" for USD, "0.01 TTT" for anything else. */
+export function formatAmount(micro: number, currency = 'USD'): string {
+  const n = microToUsd(micro);
+  return currency === 'USD' ? `$${n}` : `${n} ${currency}`;
+}
+
+/** Token decimals the evm rail accepts. */
+export function assertDecimals(decimals: unknown): asserts decimals is number {
+  if (!Number.isInteger(decimals) || (decimals as number) < 0 || (decimals as number) > 18) {
+    throw new Error(`token decimals must be an integer from 0 to 18, got ${JSON.stringify(decimals)}`);
+  }
+}
+
+/**
+ * Wire amounts are micro units (6 decimals) of the gateway's currency. On chain
+ * a token has its own decimals; these convert exactly or throw. Tokens with fewer
+ * than 6 decimals can only carry prices that are whole in their own base unit.
+ */
+export function microToBaseUnits(micro: bigint, decimals: number): bigint {
+  assertDecimals(decimals);
+  if (decimals >= 6) return micro * 10n ** BigInt(decimals - 6);
+  const div = 10n ** BigInt(6 - decimals);
+  if (micro % div !== 0n) throw new Error(`amount ${micro} micro is not representable with ${decimals} decimals`);
+  return micro / div;
+}
+
+export function baseUnitsToMicro(base: bigint, decimals: number): bigint {
+  assertDecimals(decimals);
+  if (decimals >= 6) return base / 10n ** BigInt(decimals - 6);
+  return base * 10n ** BigInt(6 - decimals);
+}
+
 export function microToUsd(micro: number): string {
   const sign = micro < 0 ? '-' : '';
   const n = Math.abs(micro);
@@ -59,8 +96,8 @@ export type RailName = 'ledger' | 'evm';
 
 export interface EvmChallengeInfo {
   chain_id: number; // Robinhood Chain: 46630 testnet, 4663 mainnet
-  token: string; // ERC-20 (USDC) contract, 0x hex
-  decimals: number;
+  token: string; // ERC-20 contract, 0x hex
+  decimals: number; // the token's decimals; on-chain amount = micro units scaled to them
   recipient: string; // seller payout address, 0x hex
   max_fee_per_gas: string; // 0x hex wei
   max_priority_fee_per_gas: string; // 0x hex wei
@@ -72,8 +109,8 @@ export interface Challenge {
   id: string; // HMAC-SHA256 over the canonical challenge minus id, base64url
   realm: string;
   rail: RailName;
-  amount: string; // micro-USD, decimal string
-  currency: 'USD';
+  amount: string; // micro units of `currency`, decimal string
+  currency: string; // "USD", or a token symbol on a gateway that charges in its own token
   recipient: string; // wallet id (base64url public key)
   resource: string; // "METHOD /path"
   expires_at: string; // ISO 8601
@@ -86,7 +123,7 @@ export function challengeId(secret: Uint8Array, chal: Omit<Challenge, 'id'>): st
 
 export function makeChallenge(
   secret: Uint8Array,
-  fields: Omit<Challenge, 'id' | 'ver' | 'currency'>,
+  fields: Omit<Challenge, 'id' | 'ver' | 'currency'> & { currency?: string },
 ): Challenge {
   const body: Omit<Challenge, 'id'> = { ver: VERSION, currency: 'USD', ...fields };
   return { ...body, id: challengeId(secret, body) };
@@ -227,8 +264,8 @@ export interface Receipt {
   id: string; // hold id
   realm: string;
   resource: string;
-  amount: string; // micro-USD
-  currency: 'USD';
+  amount: string; // micro units of `currency`
+  currency: string;
   rail: RailName;
   payer: string; // agent wallet id
   owner: string; // owner wallet id (whose funds moved)

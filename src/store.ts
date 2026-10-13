@@ -49,7 +49,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS receipts (
         id TEXT PRIMARY KEY, realm TEXT NOT NULL, resource TEXT NOT NULL,
         amount INTEGER NOT NULL, rail TEXT NOT NULL, payer TEXT NOT NULL,
-        owner TEXT NOT NULL, recipient TEXT NOT NULL, ref TEXT NOT NULL, at TEXT NOT NULL
+        owner TEXT NOT NULL, recipient TEXT NOT NULL, ref TEXT NOT NULL, at TEXT NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD'
       );
       CREATE TABLE IF NOT EXISTS mandate_spend (
         mandate_id TEXT NOT NULL, window_key TEXT NOT NULL, spent INTEGER NOT NULL,
@@ -62,6 +63,12 @@ export class Store {
     try {
       this.db.exec('ALTER TABLE holds ADD COLUMN tx_hash TEXT');
       this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS holds_tx_hash ON holds (tx_hash) WHERE tx_hash IS NOT NULL AND state != 'voided'");
+    } catch {
+      /* column already exists */
+    }
+    // databases created before gateways could charge in their own token lack the currency column
+    try {
+      this.db.exec("ALTER TABLE receipts ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'");
     } catch {
       /* column already exists */
     }
@@ -208,9 +215,9 @@ export class Store {
   addReceipt(r: Receipt): void {
     this.db
       .prepare(
-        'INSERT INTO receipts (id, realm, resource, amount, rail, payer, owner, recipient, ref, at) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO receipts (id, realm, resource, amount, currency, rail, payer, owner, recipient, ref, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
       )
-      .run(r.id, r.realm, r.resource, Number(r.amount), r.rail, r.payer, r.owner, r.recipient, r.ref, r.at);
+      .run(r.id, r.realm, r.resource, Number(r.amount), r.currency ?? 'USD', r.rail, r.payer, r.owner, r.recipient, r.ref, r.at);
   }
 
   receipts(limit: number): Receipt[] {
@@ -219,7 +226,7 @@ export class Store {
       .all(Math.max(1, Math.min(limit, 200))) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
       id: String(r.id), realm: String(r.realm), resource: String(r.resource),
-      amount: String(r.amount), currency: 'USD' as const,
+      amount: String(r.amount), currency: String(r.currency ?? 'USD'),
       rail: r.rail as Receipt['rail'], payer: String(r.payer), owner: String(r.owner),
       recipient: String(r.recipient), ref: String(r.ref), at: String(r.at),
     }));

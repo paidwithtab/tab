@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { newKeyPair, saveKey, loadKey, resolvePublicKey, type KeyPair } from './keys.js';
 import { issueMandate, loadMandate, saveMandate, verifyMandate } from './mandate.js';
-import { usdToMicro, microToUsd } from './protocol.js';
+import { usdToMicro, microToUsd, formatAmount, microToBaseUnits, baseUnitsToMicro } from './protocol.js';
 import { Store, CatalogStore } from './store.js';
 import { loadSpec, createGateway, announce } from './gateway.js';
 import { createCatalog } from './catalog.js';
@@ -42,10 +42,11 @@ const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed man
   tab evm revoke  --owner key.json --agent <key.json|0x> --token <0x> [--rpc url]
   tab evm balance --wallet <key.json|0x> --token <0x> [--agent <key.json|0x>] [--rpc url]
   tab evm fund    --from key.json --to <key.json|0x> --eth 0.005 [--rpc url]  gas for the agent
-  tab fetch [--agent key.json --mandate mandate.json] [--max-per-call 0.05] [-X POST] [-d body] <url>
-  tab mcp   (env: TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CATALOG])
+  tab fetch [--agent key.json --mandate mandate.json] [--max-per-call 0.05] [--currency USD] [-X POST] [-d body] <url>
+  tab mcp   (env: TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CURRENCY], [TAB_CATALOG])
 
-  fetch and mcp default to the agent and mandate that tab init wrote in ~/.tab.
+  fetch and mcp default to the agent and mandate that tab init wrote in ~/.tab, and pay in USD
+  unless --currency or TAB_CURRENCY names the token a gateway charges in.
 `;
 
 export const PUBLIC_GATEWAY = 'https://pay.paidwithtab.com';
@@ -248,6 +249,7 @@ async function main(): Promise<void> {
           agent: { type: 'string' },
           mandate: { type: 'string' },
           'max-per-call': { type: 'string' },
+          currency: { type: 'string' },
           method: { type: 'string', short: 'X' },
           data: { type: 'string', short: 'd' },
         },
@@ -261,6 +263,7 @@ async function main(): Promise<void> {
         agent: loadKey(files.agent),
         mandate: loadMandate(files.mandate),
         maxPerCallUsd: values['max-per-call'] as string | undefined,
+        currency: values.currency as string | undefined,
       });
       const method = ((values.method as string) ?? (values.data != null ? 'POST' : 'GET')).toUpperCase();
       try {
@@ -271,7 +274,7 @@ async function main(): Promise<void> {
         });
         const body = await res.text();
         const receipt = receiptOf(res);
-        if (receipt) log(`paid ${microToUsd(Number(receipt.amount))} (${receipt.ref})`);
+        if (receipt) log(`paid ${formatAmount(Number(receipt.amount), receipt.currency)} (${receipt.ref})`);
         process.stdout.write(body.endsWith('\n') || body === '' ? body : body + '\n');
         process.exit(res.ok ? 0 : 1);
       } catch (err) {
@@ -294,6 +297,7 @@ async function main(): Promise<void> {
         agent,
         mandate,
         maxPerCallUsd: process.env.TAB_MAX_PER_CALL,
+        currency: process.env.TAB_CURRENCY || undefined,
         catalog: process.env.TAB_CATALOG || PUBLIC_CATALOG,
       });
       return;
@@ -469,16 +473,18 @@ async function evmCommand(rest: string[]): Promise<void> {
       const rpc = new EvmRpc(values.rpc as string);
       const addr = evmAddressOf(values.wallet as string);
       const token = (values.token as string).toLowerCase();
+      const decimals = await rpc.erc20Decimals(token);
       const out: Record<string, unknown> = {
         wallet: checksumAddress(addr),
         token: checksumAddress(token),
-        amount: microToUsd(Number(await rpc.erc20BalanceOf(token, addr))),
+        decimals,
+        amount: microToUsd(Number(baseUnitsToMicro(await rpc.erc20BalanceOf(token, addr), decimals))),
         eth: (Number(await rpc.balance(addr)) / 1e18).toFixed(6),
       };
       if (values.agent) {
         const spender = evmAddressOf(values.agent as string);
         out.allowance_to = checksumAddress(spender);
-        out.allowance = microToUsd(Number(await rpc.erc20Allowance(token, addr, spender)));
+        out.allowance = microToUsd(Number(baseUnitsToMicro(await rpc.erc20Allowance(token, addr, spender), decimals)));
       }
       console.log(JSON.stringify(out, null, 2));
       return;
@@ -498,7 +504,7 @@ async function evmCommand(rest: string[]): Promise<void> {
       const owner = loadKey(values.owner as string);
       const spender = evmAddressOf(values.agent as string);
       const token = (values.token as string).toLowerCase();
-      const amount = BigInt(usdToMicro(values.amount as string));
+      const amount = microToBaseUnits(BigInt(usdToMicro(values.amount as string)), await rpc.erc20Decimals(token));
       const hash = await evmSend(rpc, owner, token, 0n, erc20.approve(spender, amount));
       console.log(`approved ${checksumAddress(spender)} to spend ${values.amount} (${hash})`);
       return;

@@ -1,0 +1,16 @@
+# User-level systemd unit for the token gateway at token-testnet.paidwithtab.com (evm rail, the TTT test token on Robinhood Chain testnet): the same routes as testnet.paidwithtab.com, priced in TTT.
+# Install: cp examples/tab-gateway-token-testnet.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now tab-gateway-token-testnet
+[Unit]
+Description=tab token gateway (token-testnet.paidwithtab.com, evm rail, TTT test token on Robinhood Chain testnet)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/tab
+EnvironmentFile=-%h/tab/.env
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js serve --spec %h/tab/examples/spec-token-testnet.json --db %h/tab/token-testnet.db --port 1406 --announce http://127.0.0.1:1403 --origin https://token-testnet.paidwithtab.com
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -2,7 +2,7 @@
 // agent to sign it, the gateway to know exactly what to expect. Type-2 tx,
 // transferFrom(owner -> seller payout) with the agent as approved spender.
 
-import type { Challenge } from '../protocol.js';
+import { microToBaseUnits, type Challenge } from '../protocol.js';
 import type { KeyPair } from '../keys.js';
 import { scalarFromSeed } from './secp256k1.js';
 import { erc20, signTx, hexToBig, bytesToHex, type Eip1559Tx } from './tx.js';
@@ -18,8 +18,12 @@ export function buildPaymentTx(chal: Challenge, evmOwner: string, nonce: bigint)
     gasLimit: BigInt(info.gas_limit),
     to: info.token.toLowerCase(),
     value: 0n,
-    // micro-USD == base units for 6-decimal tokens
-    data: erc20.transferFrom(evmOwner.toLowerCase(), info.recipient.toLowerCase(), BigInt(chal.amount)),
+    // wire amounts are micro units; the token may have any decimals
+    data: erc20.transferFrom(
+      evmOwner.toLowerCase(),
+      info.recipient.toLowerCase(),
+      microToBaseUnits(BigInt(chal.amount), info.decimals),
+    ),
   };
 }
 
