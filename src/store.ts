@@ -180,6 +180,14 @@ export class Store {
     return true;
   }
 
+  /** Every window's counter for one mandate, for attributing spend to the job it was issued for. */
+  spentAll(mandateId: string): Array<{ window_key: string; spent: number }> {
+    const rows = this.db
+      .prepare('SELECT window_key, spent FROM mandate_spend WHERE mandate_id = ? ORDER BY window_key')
+      .all(mandateId) as Array<{ window_key: string; spent: number }>;
+    return rows.map((r) => ({ window_key: String(r.window_key), spent: Number(r.spent) }));
+  }
+
   refundSpend(mandateId: string, windowKey: string, micro: number): void {
     this.db
       .prepare(
@@ -220,10 +228,15 @@ export class Store {
       .run(r.id, r.realm, r.resource, Number(r.amount), r.currency ?? 'USD', r.rail, r.payer, r.owner, r.recipient, r.ref, r.at);
   }
 
-  receipts(limit: number): Receipt[] {
+  receipts(limit: number, filter: { payer?: string; since?: string } = {}): Receipt[] {
+    const where: string[] = [];
+    const args: Array<string | number> = [];
+    if (filter.payer) { where.push('payer = ?'); args.push(filter.payer); }
+    if (filter.since) { where.push('at >= ?'); args.push(filter.since); }
+    args.push(Math.max(1, Math.min(limit, 200)));
     const rows = this.db
-      .prepare('SELECT * FROM receipts ORDER BY at DESC, rowid DESC LIMIT ?')
-      .all(Math.max(1, Math.min(limit, 200))) as Array<Record<string, unknown>>;
+      .prepare(`SELECT * FROM receipts${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY at DESC, rowid DESC LIMIT ?`)
+      .all(...args) as Array<Record<string, unknown>>;
     return rows.map((r) => ({
       id: String(r.id), realm: String(r.realm), resource: String(r.resource),
       amount: String(r.amount), currency: String(r.currency ?? 'USD'),

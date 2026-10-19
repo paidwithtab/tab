@@ -303,6 +303,7 @@ export type ProblemCode =
   | 'mandate-exceeded'
   | 'insufficient-funds'
   | 'not-found'
+  | 'bad-request'
   | 'upstream-failed';
 
 export class PayError extends Error {

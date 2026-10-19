@@ -38,6 +38,15 @@ export interface RouteSpec {
   path: string; // supports :param segments; relative to the service prefix
   price: string; // USD, up to six decimals; "0" = free, forwarded unpaid
   description?: string;
+  /**
+   * Body constraints, so a flat price sells exactly one bounded operation on
+   * providers whose cost depends on the request. Both apply to JSON bodies.
+   * body_allow: the only top-level keys a buyer may send; anything else is a
+   * 400 before any challenge. body_fixed: keys the gateway sets itself before
+   * forwarding, overriding whatever the buyer sent.
+   */
+  body_allow?: string[];
+  body_fixed?: Record<string, unknown>;
 }
 
 export interface ServiceSpec {
@@ -45,6 +54,8 @@ export interface ServiceSpec {
   prefix: string; // matched longest-first; "" is the root
   upstream: string;
   upstream_headers?: Record<string, string>;
+  /** Query parameters added to every upstream URL, for providers that take their key in the query string. */
+  upstream_query?: Record<string, string>;
   description?: string;
   /** Environment variables the service needs (API keys). If any is unset or empty, loadSpec drops the service and lists it in Spec.skipped. */
   requires?: string[];
@@ -105,6 +116,12 @@ export function loadSpec(path: string): Spec {
   for (const s of spec.services) {
     if (typeof s.prefix !== 'string' || !s.upstream) throw new Error(`service ${s.name}: prefix and upstream are required`);
     for (const r of s.routes) {
+      if (r.body_allow !== undefined && (!Array.isArray(r.body_allow) || !r.body_allow.every((k) => typeof k === 'string'))) {
+        throw new Error(`service ${s.name} route ${r.path}: body_allow must be a list of key names`);
+      }
+      if (r.body_fixed !== undefined && (typeof r.body_fixed !== 'object' || r.body_fixed === null || Array.isArray(r.body_fixed))) {
+        throw new Error(`service ${s.name} route ${r.path}: body_fixed must be an object`);
+      }
       const micro = usdToMicro(r.price); // validate prices early
       // a token with fewer than 6 decimals cannot carry every micro amount
       if (spec.rail === 'evm' && spec.evm && micro > 0) microToBaseUnits(BigInt(micro), spec.evm.decimals);
@@ -142,6 +159,36 @@ export function matchRoute(spec: Spec, method: string, pathname: string): Match 
     }
   }
   return null;
+}
+
+/**
+ * Apply a route's body constraints. Returns the body to forward, or an error
+ * message when the buyer sent a key the route does not allow. A route with no
+ * constraints forwards the body untouched (any content type). A route with
+ * constraints expects JSON: an empty body counts as {}.
+ */
+export function applyBodyRules(route: RouteSpec, body: Buffer): { body: Buffer; error?: string } {
+  if (!route.body_allow && !route.body_fixed) return { body };
+  let parsed: unknown = {};
+  const text = body.toString('utf8');
+  if (text.trim() !== '') {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return { body, error: 'this route takes a JSON object body' };
+    }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { body, error: 'this route takes a JSON object body' };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (route.body_allow) {
+    const allowed = new Set([...route.body_allow, ...Object.keys(route.body_fixed ?? {})]);
+    const extra = Object.keys(obj).filter((k) => !allowed.has(k));
+    if (extra.length) return { body, error: `body keys not allowed on this route: ${extra.join(', ')}` };
+  }
+  const out = { ...obj, ...(route.body_fixed ?? {}) };
+  return { body: Buffer.from(JSON.stringify(out)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +410,13 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     // many providers reject a trailing slash.
     const base = match.service.upstream.replace(/\/$/, '');
     const rest = match.rest === '/' && new URL(base).pathname !== '/' ? '' : match.rest;
-    const url = base + rest + search;
+    let url = base + rest + search;
+    const extraQuery = Object.entries(match.service.upstream_query ?? {});
+    if (extraQuery.length) {
+      const target = new URL(url);
+      for (const [k, v] of extraQuery) target.searchParams.set(k, v);
+      url = target.toString();
+    }
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) {
       if (v === undefined) continue;
@@ -481,7 +534,27 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           return;
         }
         const limit = Number(u.searchParams.get('limit') ?? 50) || 50;
-        sendJson(res, 200, { realm: spec.realm, receipts: store.receipts(limit) });
+        const payer = u.searchParams.get('payer') ?? undefined;
+        const since = u.searchParams.get('since') ?? undefined;
+        sendJson(res, 200, { realm: spec.realm, receipts: store.receipts(limit, { payer, since }) });
+        return;
+      }
+      // what one mandate has spent here, by window. A mandate id is the hash of a signed
+      // document only its owner and agent hold, so this reveals nothing to anyone else;
+      // an owner uses it to attribute spend to the mandate it issued for one job.
+      if (pathname.startsWith('/.well-known/tab/mandate/') && pathname.endsWith('/spent') && method === 'GET') {
+        const id = pathname.slice('/.well-known/tab/mandate/'.length, -'/spent'.length);
+        if (!/^[A-Za-z0-9_-]{43}$/.test(id)) {
+          sendJson(res, 400, { error: 'mandate id must be a base64url sha256' });
+          return;
+        }
+        const windows = store.spentAll(id);
+        const total = windows.reduce((n, w) => n + w.spent, 0);
+        sendJson(res, 200, {
+          mandate_id: id, realm: spec.realm, currency: spec.currency ?? 'USD',
+          spent: microToUsd(total), micro: total,
+          windows: windows.map((w) => ({ window_key: w.window_key, spent: microToUsd(w.spent), micro: w.spent })),
+        });
         return;
       }
 
@@ -493,11 +566,18 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       const priceMicro = usdToMicro(match.route.price);
       const resource = resourceOf(method, pathname);
       const body = await readBody(req);
+      // the credential commits to the body the buyer sent; the body forwarded may carry the route's fixed keys
+      const rules = applyBodyRules(match.route, body);
+      if (rules.error) {
+        await respondProblem(res, 'bad-request', rules.error, 400);
+        return;
+      }
+      const forwardBody = rules.body;
 
       if (priceMicro === 0) {
         // free routes are forwarded unpaid
         try {
-          const upstream = await forwardUpstream(req, body, match, u.search, null);
+          const upstream = await forwardUpstream(req, forwardBody, match, u.search, null);
           await relayResponse(res, upstream, {});
           log(`${method} ${pathname} -> ${upstream.status} free ${Date.now() - started}ms`);
         } catch (err) {
@@ -544,7 +624,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
 
       let upstream: Response;
       try {
-        upstream = await forwardUpstream(req, body, match, u.search, hold);
+        upstream = await forwardUpstream(req, forwardBody, match, u.search, hold);
       } catch (err) {
         await releaseHold(hold);
         await respondProblem(res, 'upstream-failed', `upstream unreachable: ${(err as Error).message}`, 502);
