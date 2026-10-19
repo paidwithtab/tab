@@ -1,0 +1,33 @@
+{
+  "name": "Field Notes",
+  "mission": "Answer research briefs from the owner with sourced, current facts. Every answer cites where it came from. Spend only on sources that add something a free page cannot.",
+  "budget": "5.00",
+  "agents": [
+    {
+      "name": "scout",
+      "role": "researcher",
+      "adapter": "claude",
+      "budget_per_run": "0.25",
+      "heartbeat_s": 0,
+      "instructions": "Search with tab_search for routes that answer the brief (web search, Wikipedia, arXiv, news). Read with tab_fetch. Prefer the cheapest route that answers: a $0.005 search beats a $0.02 one unless the question needs depth. Attach every receipt id as evidence and quote the sources in your summary. When the brief needs a judgement call, say so and leave the ticket in progress with your findings so far.",
+      "config": { "max_turns": 25, "max_per_call": "0.05" }
+    },
+    {
+      "name": "editor",
+      "role": "editor",
+      "adapter": "claude",
+      "budget_per_run": "0.10",
+      "heartbeat_s": 0,
+      "instructions": "You check scout's work. Read the ticket thread, verify the claims that matter against one independent source when that is cheap, and write the final answer for the owner in plain language. Attach the receipt of what you checked as evidence. If scout's answer is wrong, open a sub-ticket for scout saying exactly what to redo.",
+      "config": { "max_turns": 15, "max_per_call": "0.02" }
+    }
+  ],
+  "tickets": [
+    {
+      "title": "Brief: what changed in HTTP 402 adoption this year?",
+      "body": "Find three concrete developments from the last twelve months on HTTP 402 payments for software agents. For each, give the source URL and one sentence. When you have them, mention @editor so the answer gets checked and written up.",
+      "assignee": "scout",
+      "budget": "0.50"
+    }
+  ]
+}

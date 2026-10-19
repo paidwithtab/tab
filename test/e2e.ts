@@ -73,6 +73,7 @@ async function main(): Promise<void> {
     if (u.pathname === '/secret') return json(req.headers['x-api-key'] === 'k-123' ? 200 : 401, { via: 'secret' });
     if (u.pathname === '/boom') return json(500, { error: 'boom' });
     if (u.pathname === '/free') return json(200, { free: true, q: u.search });
+    if (u.pathname === '/bounded') return json(200, { got: body });
     return json(404, { error: 'upstream 404' });
   });
   const upPort = await listen(upstream);
@@ -91,7 +92,13 @@ async function main(): Promise<void> {
           { method: 'GET', path: '/boom', price: '0.01', description: 'always fails' },
           { method: 'GET', path: '/things/:id', price: '0.01', description: 'param route' },
           { method: 'GET', path: '/free', price: '0', description: 'free route' },
+          { method: 'POST', path: '/bounded', price: '0.005', description: 'one bounded op', body_allow: ['hi'], body_fixed: { max_results: 1 } },
         ],
+      },
+      {
+        // a provider that takes its key in the query string
+        name: 'keyed', prefix: '/keyed', upstream: `http://127.0.0.1:${upPort}`, upstream_query: { key: 'k-456' },
+        routes: [{ method: 'GET', path: '/free', price: '0', description: 'query key injected' }],
       },
       {
         name: 'premium', prefix: '/premium', upstream: `http://127.0.0.1:${upPort}`,
@@ -122,7 +129,13 @@ async function main(): Promise<void> {
 
   const disc = await (await fetch(`${GW}/.well-known/tab`)).json() as any;
   check('discovery document', disc.ver === 'tab/0' && disc.realm === 'quotes.local'
-    && disc.rail === 'ledger' && disc.recipient === seller.publicKey && disc.services.length === 3);
+    && disc.rail === 'ledger' && disc.recipient === seller.publicKey && disc.services.length === 4);
+  check('body constraints stay out of discovery', !JSON.stringify(disc).includes('body_fixed') && !JSON.stringify(disc).includes('max_results'));
+
+  {
+    const keyed = await fetch(`${GW}/keyed/free?x=1`);
+    check('upstream_query adds the provider key to the forwarded url', keyed.status === 200 && /x=1/.test((await keyed.json() as any).q) && /key=k-456/.test((await (await fetch(`${GW}/keyed/free?x=1`)).json() as any).q));
+  }
 
   const freeRes = await fetch(`${GW}/free?x=1`);
   check('free route forwarded unpaid', freeRes.status === 200 && (await freeRes.json() as any).q === '?x=1' && receiptOf(freeRes) === null);
@@ -161,6 +174,18 @@ async function main(): Promise<void> {
   check('body forwarded, attribution headers added', echoRes.status === 200
     && echoBody.echo === '{"hi":1}' && echoBody.payer === agent.publicKey && typeof echoBody.hold === 'string'
     && echoBody.auth === null); // and the buyer's Authorization was stripped
+
+  {
+    const hits = upstreamHits;
+    const bounded = await client.fetch(`${GW}/bounded`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hi: 1, max_results: 500 }) });
+    const got = JSON.parse((await bounded.json() as any).got);
+    check('body_fixed overrides what the buyer sent and the paid call still verifies', bounded.status === 200 && got.hi === 1 && got.max_results === 1 && receiptOf(bounded)?.amount === '5000');
+    const extra = await fetch(`${GW}/bounded`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hi: 1, model: 'huge' }) });
+    const notJson = await fetch(`${GW}/bounded`, { method: 'POST', body: 'hi=1' });
+    const empty = await client.fetch(`${GW}/bounded`, { method: 'POST' });
+    check('body_allow refuses extra keys and non-JSON before any challenge', extra.status === 400 && (await extra.json() as any).type === 'urn:tab:problem:bad-request'
+      && notJson.status === 400 && empty.status === 200 && JSON.parse((await empty.json() as any).got).max_results === 1 && upstreamHits === hits + 2);
+  }
 
   const secretRes = await client.fetch(`${GW}/premium/secret`);
   check('prefix stripped and upstream_headers injected', secretRes.status === 200 && (await secretRes.json() as any).via === 'secret' && receiptOf(secretRes)!.amount === '20000');
@@ -266,6 +291,16 @@ async function main(): Promise<void> {
   const recs = await (await fetch(`${GW}/.well-known/tab/receipts?limit=100`)).json() as any;
   check('public receipts', Array.isArray(recs.receipts) && recs.receipts.length >= 5
     && recs.receipts.every((r: any) => typeof r.ref === 'string' && r.ref.startsWith('ledger:')));
+  {
+    const byPayer = await (await fetch(`${GW}/.well-known/tab/receipts?payer=${encodeURIComponent(agent.publicKey)}&since=${encodeURIComponent(new Date(Date.now() - 60_000).toISOString())}`)).json() as any;
+    const nobody = await (await fetch(`${GW}/.well-known/tab/receipts?payer=${encodeURIComponent(webAgent.publicKey)}`)).json() as any;
+    check('receipts filter by payer and since', byPayer.receipts.length >= 5 && byPayer.receipts.every((r: any) => r.payer === agent.publicKey) && nobody.receipts.length === 0);
+    const spent = await (await fetch(`${GW}/.well-known/tab/mandate/${mandate.id}/spent`)).json() as any;
+    check('spend by mandate id, by window', spent.mandate_id === mandate.id && spent.micro === store.spentAll(mandate.id).reduce((n, w) => n + w.spent, 0)
+      && spent.micro >= 40_000 && spent.windows.length === 1 && /^\d{4}-\d{2}-\d{2}$/.test(spent.windows[0].window_key) && spent.currency === 'USD');
+    const unknown = await (await fetch(`${GW}/.well-known/tab/mandate/${strangerMandate.id}/spent`)).json() as any;
+    check('an unspent mandate reports zero, a malformed id is refused', unknown.micro === 0 && (await fetch(`${GW}/.well-known/tab/mandate/nope/spent`)).status === 400);
+  }
 
   // -- 9b. starter credits (faucet) + tab init ------------------------------
 
@@ -369,7 +404,7 @@ async function main(): Promise<void> {
   check('search finds routes with full urls', s1.results.length >= 1
     && s1.results[0].url === `${GW}/quote` && s1.results[0].price === '0.01');
   const s2 = await (await fetch(`${CAT}/v1/search`)).json() as any;
-  check('empty search lists everything, cheapest first', s2.results.length === 7
+  check('empty search lists everything, cheapest first', s2.results.length === 9
     && s2.results[0].price_micro <= s2.results[s2.results.length - 1].price_micro);
   const s3 = await (await fetch(`${CAT}/v1/search?max_price=0.005`)).json() as any;
   check('max_price filter', s3.results.length >= 1 && s3.results.every((r: any) => usdToMicro(r.price) <= 5000));

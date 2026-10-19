@@ -44,3 +44,4 @@ demo/
 demo-spec.json
 # the token gateway specs are not credentials
 !examples/spec-token*.json
+web/company.html

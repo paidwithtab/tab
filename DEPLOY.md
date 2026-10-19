@@ -112,9 +112,10 @@ test/evm.ts                 # 41 checks: crypto vectors, a mock EVM node, rpc fa
 cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
-npm test                    # 63 passed, 0 failed on the dev box
-npm run test:adversarial    # 24 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery
-npm run test:evm            # 34 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
+npm test                    # 70 passed, 0 failed on the dev box
+npm run test:adversarial    # 26 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling
+npm run test:evm            # 41 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
+npm run test:company        # 70 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, budgets, signed board log
 ```
 
 These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes two read-only calls to the public Robinhood testnet RPC and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
@@ -151,6 +152,7 @@ To make `tab` a global command: `npm link` after building, or symlink `bin/tab.j
 | Example upstream (demo only) | 4101 | `npm run upstream` / `examples/upstream.ts` | none |
 | Gateway, ledger rail | 1402 | `tab serve --spec spec.json` | `tab.db` |
 | Catalog + front end | 1403 | `tab catalog serve` | `catalog.db` |
+| Company server + dashboard | 1407 | `tab company serve --host app.example.com` | `company.db`, `company.db.work/` |
 
 **All servers listen on every interface** (`server.listen(port)` with no host). On a VPS that means they are public the moment they start. Either firewall the ports and put nginx or Caddy in front (section 8), or bind them to loopback by editing the two `listen(` calls in `src/cli.ts` to `listen(port, '127.0.0.1', …)`.
 
@@ -175,6 +177,7 @@ One gateway can front many upstreams; one catalog can list many gateways; you ca
 | `TAB_MAX_PER_CALL` | `tab mcp` | client-side per-call ceiling in USD, independent of the mandate |
 | `TAB_CATALOG` | `tab mcp` | catalog origin for `tab_search`, `tab_discover`, `tab_balance`; default `https://paidwithtab.com` |
 | `SCRATCH` | tests | where temp DBs go; default OS tmpdir |
+| `CLAUDE_BIN` | `tab company serve` | the Claude Code binary claude agents run; default `claude` on `PATH` |
 
 Any `${UPPER_CASE_NAME}` inside a spec file is replaced from the environment when the spec is loaded (`loadSpec` in `src/gateway.ts`). Unset variables become empty strings, and an empty `recipient` makes `tab serve` refuse to start.
 
@@ -201,6 +204,10 @@ tab evm balance --wallet <key.json|0x> --token <0x> [--agent <key.json|0x>] [--r
 tab evm fund    --from key.json --to <key.json|0x> --eth 0.005 [--rpc url]
 tab fetch [--agent key.json --mandate mandate.json] [--max-per-call 0.05] [-X POST] [-d body] <url>
 tab mcp                                                             stdio; TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CATALOG]
+tab company serve  [--db company.db] [--port 1407] [--host app.example.com]... [--gateway origin] [--catalog origin]
+                   [--work dir] [--allow-private-origins] [--tick 3] [--run-timeout 600]
+tab company signup|login --email ... --password ... [--server http://127.0.0.1:1407]
+tab company new|fund|hire|ticket|comment|approve|pause|resume|budget|status|key   docs/company.md has every flag
 ```
 
 Notes:
@@ -530,11 +537,13 @@ The front end is static files under `web/` with no build step and no external sc
 | `GET /.well-known/tab/wallet/<id>` | available balance of a wallet on this rail |
 | `GET /.well-known/tab/receipts?limit=` | last receipts, only if `public_receipts` |
 | `POST /.well-known/tab/faucet {wallet}` | starter credits, only with `--faucet`: credits the wallet once, 429 past the per-address limit |
+| `GET /.well-known/tab/receipts?payer=&since=` | the same, filtered to one payer wallet and/or receipts at or after an ISO time |
+| `GET /.well-known/tab/mandate/<id>/spent` | what one mandate has spent here, total and per window; a mandate id is the hash of a document only its owner and agent hold |
 | `OPTIONS /.well-known/tab*` | CORS preflight |
 | any priced route | 402 with `WWW-Authenticate: Tab …` until paid; then proxied |
 | any unpriced path | 404 `not-found`, never proxied |
 
-Every 402 body is an RFC 9457 problem with `type: urn:tab:problem:<code>` and a fresh challenge in `WWW-Authenticate`. Codes: `payment-required`, `malformed-credential`, `invalid-challenge`, `payment-expired`, `verification-failed`, `mandate-invalid`, `mandate-denied`, `mandate-exceeded`, `insufficient-funds`. Upstream unreachable is 502 `upstream-failed`, nothing charged. Upstream non-2xx is passed through with a `Tab-Void` header and the hold released.
+Every 402 body is an RFC 9457 problem with `type: urn:tab:problem:<code>` and a fresh challenge in `WWW-Authenticate`. Codes: `payment-required`, `malformed-credential`, `invalid-challenge`, `payment-expired`, `verification-failed`, `mandate-invalid`, `mandate-denied`, `mandate-exceeded`, `insufficient-funds`. A body that breaks a route's `body_allow` or `body_fixed` rule (section 8.3) is 400 `bad-request` before any challenge. Upstream unreachable is 502 `upstream-failed`, nothing charged. Upstream non-2xx is passed through with a `Tab-Void` header and the hold released.
 
 The verification order and the reasons for it are in `SPEC.md` section 4. The short version: the challenge id is an HMAC over amount, recipient, resource and expiry with a per-database secret, so the gateway keeps no state per challenge and any edited challenge fails first; a challenge id can be redeemed once (insert-before-reserve, so two racing copies cannot both pay); the mandate budget check and the funds check are one SQLite transaction.
 
@@ -547,6 +556,7 @@ The verification order and the reasons for it are in `SPEC.md` section 4. The sh
 | `tab.db` (+ `-wal`, `-shm`) | gateway | HMAC secret, ledger wallets and balances, holds, receipts, mandate spend counters, redeemed challenge ids | ledger balances are gone; spend counters reset (mandates start fresh); outstanding challenges die harmlessly |
 | `tab-evm.db` (if you name it that) | evm gateway | same minus wallets; holds carry the signed transaction until capture | spend counters reset; on-chain state is unaffected |
 | `catalog.db` | catalog | announced gateways | re-announce or `--seed` |
+| `company.db` | company server | accounts (scrypt hashes), sessions, companies with **custodial owner and agent keys**, tickets, events, runs, the signed board log | companies are gone and their owner wallets with them unless the keys were exported; mode 600, back it up |
 | `keys/*.json` | you | private keys, mode 0600 | seller: cannot spend earnings. owner: cannot issue mandates or move funds. feepayer: gateway cannot broadcast. agent: mandate is useless |
 | `keys/mandate-*.json` | you | signed mandates, not secret but grant spending | re-issue from the owner key |
 
@@ -664,7 +674,7 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 
 ## 18. What is not built yet
 
-From the README roadmap, so you do not go looking for it: x402 client compatibility, agents acting as sellers, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4.)
+From the README roadmap, so you do not go looking for it: x402 client compatibility, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4; companies of agents, with a company earning through its own gateway, in 2.1.)
 
 Starter credits are not a wallet product: they live in one gateway's ledger and cannot be moved, topped up with a card, or spent on another gateway. The path from starter credits to real money is still the evm rail with a funded owner account.
 
@@ -700,3 +710,30 @@ Keys live in `~/tab/.env` (mode 600, gitignored; `examples/env.example` is the t
 ### 19.2 Backups
 
 `bash scripts/backup.sh` copies every `*.db` with SQLite's online backup API and every file in `keys/` into `~/tab-backups/tab-<stamp>.tar.gz` (mode 600), then extracts the archive to a temp directory and runs `pragma integrity_check` on each database before reporting success. It keeps the last 30 archives. `bash scripts/backup.sh --verify-only <archive>` repeats the restore test on an old archive. Run it daily from cron, and copy the archives off the box; a backup that lives only on the machine it protects is not a backup.
+
+---
+
+## 20. The company server
+
+`tab company serve` is the orchestrator described in `docs/company.md`: accounts, companies, agents, tickets, runs, and the signed board log, in one process on `company.db`. The reference deployment runs it at app.paidwithtab.com from `examples/tab-company.service` on port 1407, behind the same Cloudflare tunnel as the other hosts (`app.paidwithtab.com -> http://127.0.0.1:1407` in the tunnel's ingress).
+
+Install:
+
+```sh
+cp examples/tab-company.service ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now tab-company
+journalctl --user -u tab-company -f
+```
+
+What to check before opening it up:
+
+- `--host app.paidwithtab.com` (or your hostname) is on the command line. Any other Host header is answered 421; that is the DNS rebinding defence, and it also means a request through the tunnel with the wrong hostname fails loudly instead of quietly serving.
+- `claude --version` works as the service user, and that account is signed in. Claude agents run `claude -p` as that user; their model cost is billed to it and booked into the company. The unit's `Environment=PATH=` names `~/.local/bin` so the service finds the binary.
+- `company.db` is mode 600. It holds scrypt password hashes, sessions, and the custodial owner and agent keys of every hosted company. `scripts/backup.sh` includes it.
+- `company.db.work/<company id>/` is where claude agents write files; it grows with use.
+- No `--allow-private-origins`. Companies name gateways by origin and the server fetches their discovery documents; the private-address check is what keeps that from reaching internal services.
+- The default gateway (`--gateway`) is where a new company spends unless it names one; starter credits for the owner wallet come from that gateway's faucet when it has one. The public ledger gateway does, so a hosted company can run on sandbox credits before anyone funds a real wallet.
+- Sign up and log in are rate limited per client address, 20 per 15 minutes, using `cf-connecting-ip` first, so the tunnel's address does not count as one client.
+
+The surface is the JSON API under `/api/` (every route in `src/company/server.ts`, all authenticated except sign up, log in, health and templates) and the dashboard at `/`. The CLI client commands talk to the same API with a bearer token.
+

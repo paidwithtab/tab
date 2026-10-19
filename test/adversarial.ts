@@ -62,6 +62,7 @@ async function main(): Promise<void> {
         { method: 'POST', path: '/echo', price: '0.01' },
         { method: 'GET', path: '/destroy', price: '0.01' },
         { method: 'GET', path: '/hang', price: '0.01' },
+        { method: 'POST', path: '/bounded', price: '0.01', body_allow: ['q'], body_fixed: { n: 1 } },
       ],
     }],
   };
@@ -344,6 +345,27 @@ async function main(): Promise<void> {
       try { loadSpec(p); } catch { bad++; }
     }
     check('malformed prices never load', bad === 5, { bad });
+  }
+
+  // ==========================================================================
+  // G2. body constraints: a flat price buys one bounded operation
+  // ==========================================================================
+
+  {
+    const client = new TabClient({ agent, mandate: issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['adv.local'] }) });
+    const GW = `http://127.0.0.1:${(gateway.address() as { port: number }).port}`; // G restarted the gateway on a new port
+    const before = ownerBal();
+    // smuggle a key the route forbids, in every shape: prototype-ish, array body, a bare string, form text, a case variant
+    const bodies = ['{"q":"x","__proto__":{"n":9}}', '[{"q":"x"}]', '"q"', 'q=x', '{"q":"x","N":1}', '{"q":"x","model":"huge"}'];
+    let refused = 0;
+    for (const body of bodies) {
+      const r = await client.fetch(`${GW}/bounded`, { method: 'POST', headers: { 'content-type': 'application/json' }, body });
+      if (r.status === 400 && ((await r.json()) as any).type === 'urn:tab:problem:bad-request') refused++;
+    }
+    check('every smuggled body is refused before money moves', refused === bodies.length && ownerBal() === before, { refused });
+    // a buyer may send the fixed key; the gateway overwrites it, so the flat price buys the bounded call either way
+    const ok = await client.fetch(`${GW}/bounded`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"q":"x","n":999}' });
+    check('the allowed shape pays once and the upstream sees the fixed key, not the buyer\'s', ok.status === 200 && JSON.parse(((await ok.json()) as any).body).n === 1 && ownerBal() === before - 10_000);
   }
 
   // ==========================================================================

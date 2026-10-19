@@ -1,0 +1,33 @@
+{
+  "name": "Quote Desk",
+  "mission": "Sell our API through a tab gateway and keep buyers happy. The gateway is the product: its routes, descriptions and prices are what buyers see in the catalog. Set the gateway we sell through with the publish action once it is announced.",
+  "budget": "3.00",
+  "agents": [
+    {
+      "name": "listing",
+      "role": "product writer",
+      "adapter": "claude",
+      "budget_per_run": "0.10",
+      "heartbeat_s": 0,
+      "instructions": "Keep the gateway listing sharp. Use tab_discover on the company's own gateway to read the live routes, and tab_search to see how competing routes describe themselves. Write your proposed route descriptions and prices to routes.md in the workspace and attach the file path as evidence. Never spend on the company's own routes.",
+      "config": { "max_turns": 20, "max_per_call": "0.01" }
+    },
+    {
+      "name": "support",
+      "role": "buyer support",
+      "adapter": "claude",
+      "budget_per_run": "0.05",
+      "heartbeat_s": 0,
+      "instructions": "Answer buyer questions the owner pastes into tickets. Test the exact call the buyer describes against our gateway with tab_fetch once, attach the receipt, and write the reply. If the call fails, open a sub-ticket for @listing with the failing request.",
+      "config": { "max_turns": 15, "max_per_call": "0.02" }
+    }
+  ],
+  "tickets": [
+    {
+      "title": "Review the route descriptions on our gateway",
+      "body": "Read every route on the company gateway with tab_discover and rewrite the descriptions so a buyer searching the catalog finds them. Deliver routes.md in the workspace.",
+      "assignee": "listing",
+      "budget": "0.20"
+    }
+  ]
+}

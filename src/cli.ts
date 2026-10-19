@@ -17,6 +17,7 @@ import { runMcpServer } from './mcp.js';
 import { scalarFromSeed, addressFromSeed, checksumAddress } from './evm/secp256k1.js';
 import { EvmRpc } from './evm/rpc.js';
 import { signTx, erc20 } from './evm/tx.js';
+import { companyCommand, COMPANY_USAGE } from './company/cli.js';
 
 // Node's fetch tries each address of a host for 250 ms before moving to the next (happy eyeballs). From far
 // away, a round trip alone can take that long, so upstreams on another continent fail to connect at all.
@@ -44,6 +45,8 @@ const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed man
   tab evm fund    --from key.json --to <key.json|0x> --eth 0.005 [--rpc url]  gas for the agent
   tab fetch [--agent key.json --mandate mandate.json] [--max-per-call 0.05] [--currency USD] [-X POST] [-d body] <url>
   tab mcp   (env: TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CURRENCY], [TAB_CATALOG])
+  tab company serve|signup|login|new|fund|hire|ticket|comment|approve|pause|resume|budget|status|key
+            a company of agents with tab as its money layer; tab company --help for the flags
 
   fetch and mcp default to the agent and mandate that tab init wrote in ~/.tab, and pay in USD
   unless --currency or TAB_CURRENCY names the token a gateway charges in.
@@ -240,6 +243,11 @@ async function main(): Promise<void> {
 
     case 'evm':
       await evmCommand(rest);
+      return;
+
+    case 'company':
+      if (rest[0] === '--help' || rest[0] === '-h') { process.stdout.write(COMPANY_USAGE); return; }
+      await companyCommand(rest);
       return;
 
     case 'fetch': {

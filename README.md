@@ -45,6 +45,7 @@
 [Quickstart](#quickstart) ·
 [For API providers](#for-api-providers) ·
 [For agent developers](#for-agent-developers) ·
+[Companies](#companies) ·
 [Settlement](#settlement) ·
 [Security model](#security-model) ·
 [Testing](#testing) ·
@@ -291,6 +292,25 @@ tab also exposes five MCP tools, so compatible agents can discover and purchase 
 
 Hooking tab into a particular agent, with the MCP JSON for Cursor, Codex, Windsurf and Claude Desktop, framework tools, Python by subprocess, and where keys live in production: **[docs/agents.md](docs/agents.md)**
 
+## Companies
+
+tab 2.1 adds a company of agents on top of the payment layer: `tab company` and the dashboard at [app.paidwithtab.com](https://app.paidwithtab.com). A company has a mission, a budget, agents with roles (Claude Code sessions with the tab MCP server attached, or any HTTP endpoint), and tickets. The difference from a plain agent orchestrator is where the money lives:
+
+- Every run gets its own mandate, signed by the company's owner key and capped at the smallest of the company's remaining budget, the agent's per-run budget and the ticket's cap. The gateway enforces it; the agent cannot exceed it.
+- What a run spent is what the gateways booked against that mandate, attributed to the run, the ticket and the company, receipt by receipt. Model cost is booked too. The company warns at 80 percent and pauses at 100.
+- Nothing closes without evidence: a receipt id, a URL, a file, the literal output. "Done" without it goes to review.
+- Hire, budget, approve, pause and publish are board actions signed with the owner key and verified on every read. Export the key and sign them offline.
+- A company can earn: publish the gateway it sells through and its receipts show up as earnings.
+
+```sh
+tab company serve --host app.example.com          # one process, SQLite, no dependencies
+tab company signup --email you@example.com --password ...
+tab company new --template examples/companies/research.json
+tab company fund && tab company status
+```
+
+[docs/company.md](docs/company.md) has the packet an agent receives, the result it must return, the adapters, the board log and the server's trust boundary.
+
 ## Settlement
 
 tab settles in USDG on Robinhood Chain mainnet and test USDC on its testnet, or in any ERC-20 a gateway chooses to charge in (its prices, challenges and receipts then name that token in `currency`), following a delivery first model. The gateway does not settle a payment until the upstream service has responded successfully.
@@ -332,13 +352,14 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 128 automated checks across protocol behavior, adversarial conditions, and EVM settlement.
+tab currently runs 207 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
-| `npm test` | 63 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init` |
-| `npm run test:adversarial` | 24 | Concurrency, replay, mutation, SSRF, persistence |
+| `npm test` | 70 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate |
+| `npm run test:adversarial` | 26 | Concurrency, replay, mutation, SSRF, persistence, body smuggling |
 | `npm run test:evm` | 41 | Cryptography, EVM transactions, Robinhood Chain |
+| `npm run test:company` | 70 | Accounts and the trust boundary, runs that pay at a real gateway, evidence, budgets, the signed board log, both adapters |
 
 > The concurrency suite fires 150 simultaneous $0.01 requests at a $1.00 mandate. Exactly 100 settle.
 
@@ -377,11 +398,12 @@ tab currently runs 128 automated checks across protocol behavior, adversarial co
 
 ```text
 src/          protocol, gateway, catalog, client, CLI and MCP
+src/company/  the company orchestrator: store, engine, adapters, packet, board, server
 src/evm/      EVM cryptography, transactions and JSON RPC
 src/rails/    sandbox and EVM settlement rails
-web/          site and catalog
-examples/     demos and example specifications
-test/         protocol, adversarial and EVM tests
+web/          site, catalog and the company dashboard
+examples/     demos, example specifications and company templates
+test/         protocol, adversarial, EVM and company tests
 
 SPEC.md       protocol specification
 DEPLOY.md     deployment and operations
@@ -400,7 +422,6 @@ The specification lives in [SPEC.md](SPEC.md).
 Areas currently under exploration:
 
 - x402 compatibility
-- Agents acting as sellers
 - Metered pricing and payment channels
 - Windowed onchain budgets
 - Header binding and subscriptions

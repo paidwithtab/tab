@@ -56,7 +56,7 @@ function isPrivateIp(ip: string): boolean {
  * between this check and the fetch; run the catalog with no reachable internal
  * services if that matters in your deployment.
  */
-async function originIsPublic(origin: string): Promise<{ ok: boolean; reason?: string }> {
+export async function originIsPublic(origin: string): Promise<{ ok: boolean; reason?: string }> {
   let host: string;
   try {
     host = new URL(origin).hostname.replace(/^\[|\]$/g, '');

@@ -1,6 +1,6 @@
 {
   "name": "paidwithtab",
-  "version": "0.4.2",
+  "version": "2.1.0",
   "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402, spending capped by signed mandates, settled in USDC on Robinhood Chain. Zero runtime dependencies.",
   "type": "module",
   "bin": {
@@ -16,6 +16,7 @@
     "dist/src",
     "web",
     "docs",
+    "examples/companies",
     "!docs/x-posting.md",
     "SPEC.md",
     "DEPLOY.md"
@@ -26,6 +27,7 @@
     "test": "node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts",
     "test:adversarial": "node --no-warnings=ExperimentalWarning --import tsx test/adversarial.ts",
     "test:evm": "node --no-warnings=ExperimentalWarning --import tsx test/evm.ts",
+    "test:company": "node --no-warnings=ExperimentalWarning --import tsx test/company.ts",
     "upstream": "node --no-warnings=ExperimentalWarning --import tsx examples/upstream.ts",
     "demo": "bash examples/demo.sh",
     "prepublishOnly": "tsc && node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts"

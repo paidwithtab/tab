@@ -1,0 +1,18 @@
+# User-level systemd unit for the company server at app.paidwithtab.com (DEPLOY.md section 20).
+# Install: cp examples/tab-company.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now tab-company
+# Claude agents run the `claude` binary as this user, so Claude Code must be installed and signed in for it.
+[Unit]
+Description=tab company server (app.paidwithtab.com)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/tab
+EnvironmentFile=-%h/tab/.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js company serve --db %h/tab/company.db --port 1407 --host app.paidwithtab.com --gateway https://pay.paidwithtab.com --catalog https://paidwithtab.com
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
