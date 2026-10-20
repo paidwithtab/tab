@@ -115,7 +115,7 @@ npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 70 passed, 0 failed on the dev box
 npm run test:adversarial    # 26 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling
 npm run test:evm            # 41 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
-npm run test:company        # 70 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, budgets, signed board log
+npm run test:company        # 71 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, budgets, signed board log
 ```
 
 These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes two read-only calls to the public Robinhood testnet RPC and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.

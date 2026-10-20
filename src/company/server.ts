@@ -7,6 +7,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { microToUsd, usdToMicro, isCurrency, type Receipt } from '../protocol.js';
@@ -332,8 +333,11 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       if (method === 'GET' && !path.startsWith('/api/')) {
         if (!web) { sendJson(res, 500, { error: 'ui not found: keep web/ next to dist/' }); return; }
         if (path === '/' || path === '/app' || path === '/index.html') {
-          res.writeHead(200, { 'content-type': TYPES.html, 'cache-control': 'no-cache', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'" });
-          res.end(readFileSync(join(web, 'app.html')));
+          // the page's one inline script runs under a per-response nonce; nothing else may execute
+          const nonce = randomBytes(16).toString('base64url');
+          const html = readFileSync(join(web, 'app.html'), 'utf8').replace(/<script>/g, `<script nonce="${nonce}">`);
+          res.writeHead(200, { 'content-type': TYPES.html, 'cache-control': 'no-cache', 'x-frame-options': 'DENY', 'content-security-policy': `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'` });
+          res.end(html);
           return;
         }
         const m = /^\/([a-z0-9-]+)\.(css|png|jpg|woff2)$/.exec(path);

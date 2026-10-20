@@ -352,14 +352,14 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 207 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator.
+tab currently runs 208 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
 | `npm test` | 70 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate |
 | `npm run test:adversarial` | 26 | Concurrency, replay, mutation, SSRF, persistence, body smuggling |
 | `npm run test:evm` | 41 | Cryptography, EVM transactions, Robinhood Chain |
-| `npm run test:company` | 70 | Accounts and the trust boundary, runs that pay at a real gateway, evidence, budgets, the signed board log, both adapters |
+| `npm run test:company` | 71 | Accounts and the trust boundary, runs that pay at a real gateway, evidence, budgets, the signed board log, both adapters |
 
 > The concurrency suite fires 150 simultaneous $0.01 requests at a $1.00 mandate. Exactly 100 settle.
 

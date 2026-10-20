@@ -347,7 +347,10 @@ process.stdin.on('end', () => {
   check('a template founds a company with its agents and tickets', fromTemplate.status === 200 && fromTemplate.body.agents.length === 2
     && (await api('GET', `/api/companies/${fromTemplate.body.company.id}`)).body.tickets.length === 1);
   const page = await fetch(APP + '/');
+  const pageHtml = await page.text();
+  const cspNonce = /script-src 'nonce-([A-Za-z0-9_-]+)'/.exec(page.headers.get('content-security-policy') ?? '')?.[1];
   check('the dashboard is served with a CSP', page.status === 200 && /text\/html/.test(page.headers.get('content-type') ?? '') && /default-src 'self'/.test(page.headers.get('content-security-policy') ?? ''));
+  check('the dashboard script carries the CSP nonce', !!cspNonce && pageHtml.includes(`<script nonce="${cspNonce}">`) && !/<script>/.test(pageHtml));
   const out = await raw('POST', '/api/logout', {}, { authorization: `Bearer ${token}` });
   check('logout ends the session', out.status === 200 && (await api('GET', '/api/me')).status === 401);
 
