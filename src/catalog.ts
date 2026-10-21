@@ -128,6 +128,8 @@ const TYPES: Record<string, string> = {
   woff2: 'font/woff2', mp4: 'video/mp4', md: 'text/markdown; charset=utf-8',
 };
 const DOCS = new Set(['README.md', 'SPEC.md', 'DEPLOY.md']);
+/** Where the site sends /app: the company dashboard's own origin. */
+const APP_URL = process.env.TAB_APP_URL || 'https://app.paidwithtab.com';
 function staticFile(uiDir: string, path: string): [file: string, type: string] | null {
   if (path === '/' || path === '/index.html') {
     // the landing page when the operator ships one; otherwise the catalog app is the front door
@@ -240,12 +242,20 @@ export function createCatalog(opts: CatalogOptions): Server {
         return;
       }
 
-      // the three project docs, all rendered through the same shell so none opens as raw markdown
+      // the dashboard is its own origin; the site only points at it (the shell in web/app.html has no API here)
+      if (method === 'GET' && (path === '/app' || path === '/app.html')) {
+        res.writeHead(302, { location: APP_URL });
+        res.end();
+        return;
+      }
+
+      // the project docs, all rendered through the same shell so none opens as raw markdown
       const RENDERED: Record<string, { file: string; opts: Parameters<typeof renderDocsPage>[1] }> = {
         '/docs': { file: 'README.md', opts: { active: 'docs', groups: DOC_GROUPS } },
         '/docs.html': { file: 'README.md', opts: { active: 'docs', groups: DOC_GROUPS } },
         '/protocol': { file: 'SPEC.md', opts: { active: 'protocol', title: 'Specification' } },
         '/deployment': { file: 'DEPLOY.md', opts: { active: 'deployment', title: 'Deployment' } },
+        '/company-guide': { file: 'docs/company.md', opts: { active: 'docs', title: 'Companies' } },
       };
       if (method === 'GET' && uiPath && RENDERED[path]) {
         const { file, opts } = RENDERED[path];
@@ -258,7 +268,7 @@ export function createCatalog(opts: CatalogOptions): Server {
       }
 
       // a person clicking /SPEC.md etc should see the rendered doc, never raw markdown; ?raw=1 keeps the source
-      const MD_REDIRECT: Record<string, string> = { '/README.md': '/docs', '/SPEC.md': '/protocol', '/DEPLOY.md': '/deployment' };
+      const MD_REDIRECT: Record<string, string> = { '/README.md': '/docs', '/SPEC.md': '/protocol', '/DEPLOY.md': '/deployment', '/docs/company.md': '/company-guide' };
       if (method === 'GET' && MD_REDIRECT[path] && u.searchParams.get('raw') !== '1') {
         res.writeHead(301, { location: MD_REDIRECT[path] });
         res.end();

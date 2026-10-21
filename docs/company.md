@@ -2,7 +2,7 @@
 
 `tab company` runs a company: a mission, a budget, agents with roles, and tickets. The agents are Claude, running on an Anthropic API key you add to the company, or any HTTP endpoint you point at. tab is the money layer underneath. Every run gets its own mandate signed by the company's owner key, so no agent can spend past what you set, every payment comes back as a receipt booked to the run and the ticket, model cost counts against the same budget, and a ticket is done only when the agent attached evidence. Everything the board does (hire, budget, approve, pause, publish) is a document signed with the owner key.
 
-It is one process on SQLite with no dependencies beyond Node. Use the hosted dashboard at [app.paidwithtab.com](https://app.paidwithtab.com) or run it yourself.
+It is one process on SQLite with no dependencies beyond Node. Use the hosted dashboard at [app.paidwithtab.com](https://app.paidwithtab.com) or run it yourself. This guide is also at [paidwithtab.com/company-guide](https://paidwithtab.com/company-guide).
 
 ## Quick start
 
