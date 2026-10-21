@@ -625,6 +625,828 @@
      "description": "JSON body {\"prompt\": \"...\", \"image_size\": \"landscape_4_3\"}; returns image urls"
     }
    ]
+  },
+  {
+   "name": "chain",
+   "prefix": "/chain",
+   "upstream": "https://robinhoodchain.blockscout.com/api/v2",
+   "upstream_headers": {
+    "User-Agent": "Mozilla/5.0 (compatible; tab-gateway/2.2; +https://paidwithtab.com)"
+   },
+   "description": "Robinhood Chain mainnet explorer reads: addresses, balances, transactions and tokens (Blockscout)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/addresses/:address",
+     "price": "0.002",
+     "description": "An address: native balance, contract or not, transaction count"
+    },
+    {
+     "method": "GET",
+     "path": "/addresses/:address/token-balances",
+     "price": "0.002",
+     "description": "Every token balance an address holds, with token metadata"
+    },
+    {
+     "method": "GET",
+     "path": "/addresses/:address/transactions",
+     "price": "0.002",
+     "description": "Transactions to and from an address, newest first"
+    },
+    {
+     "method": "GET",
+     "path": "/transactions/:hash",
+     "price": "0.002",
+     "description": "One transaction by hash: status, value, fee, block"
+    },
+    {
+     "method": "GET",
+     "path": "/tokens/:address",
+     "price": "0.001",
+     "description": "A token contract: name, symbol, decimals, holders, type"
+    },
+    {
+     "method": "GET",
+     "path": "/tokens/:address/transfers",
+     "price": "0.002",
+     "description": "Latest transfers of a token"
+    }
+   ]
+  },
+  {
+   "name": "rpc",
+   "prefix": "/rpc",
+   "upstream": "https://rpc.mainnet.chain.robinhood.com",
+   "description": "Robinhood Chain mainnet JSON-RPC (chain id 4663): any read method",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/",
+     "price": "0.002",
+     "description": "JSON-RPC body {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBalance\",\"params\":[\"0x...\",\"latest\"]}; reads only, sending raw transactions is not what this is for"
+    }
+   ]
+  },
+  {
+   "name": "eth",
+   "prefix": "/eth",
+   "upstream": "https://ethereum-rpc.publicnode.com",
+   "description": "Ethereum mainnet JSON-RPC (PublicNode): balances, blocks, eth_call, logs",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/",
+     "price": "0.002",
+     "description": "JSON-RPC body {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_blockNumber\",\"params\":[]}"
+    }
+   ]
+  },
+  {
+   "name": "bitcoin",
+   "prefix": "/bitcoin",
+   "upstream": "https://mempool.space/api",
+   "description": "Bitcoin mainnet: fee estimates, addresses, transactions, blocks (mempool.space)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/v1/fees/recommended",
+     "price": "0.001",
+     "description": "Recommended fee rates in sat/vB for fastest, half hour, hour, economy"
+    },
+    {
+     "method": "GET",
+     "path": "/address/:address",
+     "price": "0.001",
+     "description": "Address stats: funded and spent sums, transaction count, mempool state"
+    },
+    {
+     "method": "GET",
+     "path": "/tx/:txid",
+     "price": "0.001",
+     "description": "A transaction by id: inputs, outputs, fee, confirmation status"
+    },
+    {
+     "method": "GET",
+     "path": "/blocks/tip/height",
+     "price": "0.001",
+     "description": "Current block height"
+    }
+   ]
+  },
+  {
+   "name": "edgar",
+   "prefix": "/edgar",
+   "upstream": "https://data.sec.gov",
+   "upstream_headers": {
+    "User-Agent": "paidwithtab.com tab-gateway/2.2 (https://paidwithtab.com)"
+   },
+   "description": "SEC EDGAR company data: filing history and XBRL financial facts by CIK",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/submissions/:cik",
+     "price": "0.005",
+     "description": "Filing history for a company: /submissions/CIK0001783879.json (10-digit zero-padded CIK; Robinhood is 1783879)"
+    },
+    {
+     "method": "GET",
+     "path": "/api/xbrl/companyfacts/:cik",
+     "price": "0.005",
+     "description": "Every reported XBRL fact for a company: /api/xbrl/companyfacts/CIK0001783879.json"
+    },
+    {
+     "method": "GET",
+     "path": "/api/xbrl/companyconcept/:cik/:taxonomy/:concept",
+     "price": "0.002",
+     "description": "One concept over time: /api/xbrl/companyconcept/CIK0000320193/us-gaap/Revenues.json"
+    }
+   ]
+  },
+  {
+   "name": "edgar-search",
+   "prefix": "/edgar-search",
+   "upstream": "https://efts.sec.gov/LATEST",
+   "upstream_headers": {
+    "User-Agent": "paidwithtab.com tab-gateway/2.2 (https://paidwithtab.com)"
+   },
+   "description": "SEC EDGAR full-text search across filings since 2001",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/search-index",
+     "price": "0.005",
+     "description": "Full-text search: ?q=\"payment gateway\"&forms=10-K&dateRange=custom&startdt=2025-01-01"
+    }
+   ]
+  },
+  {
+   "name": "rdap",
+   "prefix": "/rdap",
+   "upstream": "https://rdap.verisign.com",
+   "upstream_headers": {
+    "Accept": "application/rdap+json"
+   },
+   "description": "Domain registration data for .com and .net: registrar, creation and expiry dates, status, nameservers (Verisign RDAP)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/com/v1/domain/:name",
+     "price": "0.002",
+     "description": "A .com domain: /com/v1/domain/example.com"
+    },
+    {
+     "method": "GET",
+     "path": "/net/v1/domain/:name",
+     "price": "0.002",
+     "description": "A .net domain: /net/v1/domain/example.net"
+    }
+   ]
+  },
+  {
+   "name": "dns",
+   "prefix": "/dns",
+   "upstream": "https://dns.google",
+   "description": "DNS over HTTPS: any record type for any name (Google Public DNS). Email verification starts here: MX, SPF and DMARC",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/resolve",
+     "price": "0.001",
+     "description": "Resolve a name: ?name=example.com&type=MX (A, AAAA, TXT, NS, CNAME, SOA, CAA ...)"
+    }
+   ]
+  },
+  {
+   "name": "binance",
+   "prefix": "/binance",
+   "upstream": "https://api.binance.com/api/v3",
+   "description": "Binance spot market data: prices, 24h stats, candles, order book",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/ticker/price",
+     "price": "0.001",
+     "description": "Last price: ?symbol=ETHUSDT, or all symbols with no query"
+    },
+    {
+     "method": "GET",
+     "path": "/ticker/24hr",
+     "price": "0.001",
+     "description": "24 hour stats: ?symbol=BTCUSDT"
+    },
+    {
+     "method": "GET",
+     "path": "/klines",
+     "price": "0.001",
+     "description": "Candles: ?symbol=ETHUSDT&interval=1h&limit=24"
+    },
+    {
+     "method": "GET",
+     "path": "/depth",
+     "price": "0.001",
+     "description": "Order book: ?symbol=ETHUSDT&limit=20"
+    }
+   ]
+  },
+  {
+   "name": "kraken",
+   "prefix": "/kraken",
+   "upstream": "https://api.kraken.com/0/public",
+   "description": "Kraken spot market data: tickers, candles, order book, recent trades",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/Ticker",
+     "price": "0.001",
+     "description": "Ticker: ?pair=ETHUSD,BTCUSD"
+    },
+    {
+     "method": "GET",
+     "path": "/OHLC",
+     "price": "0.001",
+     "description": "Candles: ?pair=ETHUSD&interval=60"
+    },
+    {
+     "method": "GET",
+     "path": "/Depth",
+     "price": "0.001",
+     "description": "Order book: ?pair=ETHUSD&count=10"
+    },
+    {
+     "method": "GET",
+     "path": "/Trades",
+     "price": "0.001",
+     "description": "Recent trades: ?pair=ETHUSD"
+    }
+   ]
+  },
+  {
+   "name": "coinpaprika",
+   "prefix": "/coinpaprika",
+   "upstream": "https://api.coinpaprika.com/v1",
+   "description": "Crypto market data for thousands of coins: tickers, coin profiles, search (Coinpaprika)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/tickers/:id",
+     "price": "0.001",
+     "description": "Ticker by coin id: /tickers/btc-bitcoin"
+    },
+    {
+     "method": "GET",
+     "path": "/tickers",
+     "price": "0.002",
+     "description": "Tickers for every coin: ?limit=100"
+    },
+    {
+     "method": "GET",
+     "path": "/coins/:id",
+     "price": "0.001",
+     "description": "Coin profile: /coins/eth-ethereum"
+    },
+    {
+     "method": "GET",
+     "path": "/search/",
+     "price": "0.001",
+     "description": "Search coins, exchanges, people, tags: /search/?q=solana&limit=5"
+    }
+   ]
+  },
+  {
+   "name": "defillama",
+   "prefix": "/defillama",
+   "upstream": "https://api.llama.fi",
+   "description": "DeFi data: TVL by chain and protocol, protocol profiles (DefiLlama)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/v2/chains",
+     "price": "0.001",
+     "description": "Current TVL of every chain"
+    },
+    {
+     "method": "GET",
+     "path": "/protocols",
+     "price": "0.002",
+     "description": "Every protocol with TVL, chains and category (large)"
+    },
+    {
+     "method": "GET",
+     "path": "/protocol/:slug",
+     "price": "0.002",
+     "description": "One protocol with TVL history: /protocol/aave"
+    },
+    {
+     "method": "GET",
+     "path": "/tvl/:slug",
+     "price": "0.001",
+     "description": "Current TVL of one protocol as a number: /tvl/uniswap"
+    }
+   ]
+  },
+  {
+   "name": "bluesky",
+   "prefix": "/bluesky",
+   "upstream": "https://api.bsky.app/xrpc",
+   "description": "Bluesky public data: post search, profiles, author feeds, people search",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/app.bsky.feed.searchPosts",
+     "price": "0.003",
+     "description": "Search posts: ?q=robinhood+chain&limit=25&sort=latest"
+    },
+    {
+     "method": "GET",
+     "path": "/app.bsky.actor.getProfile",
+     "price": "0.001",
+     "description": "A profile: ?actor=bsky.app (handle or DID)"
+    },
+    {
+     "method": "GET",
+     "path": "/app.bsky.feed.getAuthorFeed",
+     "price": "0.002",
+     "description": "Posts by an account: ?actor=bsky.app&limit=20"
+    },
+    {
+     "method": "GET",
+     "path": "/app.bsky.actor.searchActors",
+     "price": "0.002",
+     "description": "Search people: ?q=robinhood&limit=10"
+    }
+   ]
+  },
+  {
+   "name": "trials",
+   "prefix": "/trials",
+   "upstream": "https://clinicaltrials.gov/api/v2",
+   "description": "Clinical trials registered at ClinicalTrials.gov: search and study records",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/studies",
+     "price": "0.002",
+     "description": "Search: ?query.term=aspirin&query.cond=stroke&pageSize=10"
+    },
+    {
+     "method": "GET",
+     "path": "/studies/:nctId",
+     "price": "0.002",
+     "description": "One study: /studies/NCT02415803"
+    }
+   ]
+  },
+  {
+   "name": "fda",
+   "prefix": "/fda",
+   "upstream": "https://api.fda.gov",
+   "description": "US FDA data: drug labels and adverse events, food and device recalls (openFDA)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/drug/label.json",
+     "price": "0.002",
+     "description": "Drug labels: ?search=openfda.brand_name:advil&limit=1"
+    },
+    {
+     "method": "GET",
+     "path": "/drug/event.json",
+     "price": "0.002",
+     "description": "Adverse event reports: ?search=patient.drug.medicinalproduct:aspirin&count=patient.reaction.reactionmeddrapt.exact"
+    },
+    {
+     "method": "GET",
+     "path": "/food/enforcement.json",
+     "price": "0.002",
+     "description": "Food recalls: ?search=state:CA&limit=10"
+    },
+    {
+     "method": "GET",
+     "path": "/device/recall.json",
+     "price": "0.002",
+     "description": "Device recalls: ?search=product_description:pump&limit=10"
+    }
+   ]
+  },
+  {
+   "name": "europepmc",
+   "prefix": "/europepmc",
+   "upstream": "https://www.ebi.ac.uk/europepmc/webservices/rest",
+   "description": "Europe PMC: 40 million life science abstracts and full texts",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/search",
+     "price": "0.002",
+     "description": "Search: ?query=aspirin%20AND%20stroke&format=json&pageSize=10"
+    }
+   ]
+  },
+  {
+   "name": "cve",
+   "prefix": "/cve",
+   "upstream": "https://services.nvd.nist.gov/rest/json",
+   "description": "CVE records from the US National Vulnerability Database",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/cves/2.0",
+     "price": "0.002",
+     "description": "Search: ?keywordSearch=openssl&resultsPerPage=10, or ?cveId=CVE-2024-3094"
+    }
+   ]
+  },
+  {
+   "name": "osv",
+   "prefix": "/osv",
+   "upstream": "https://api.osv.dev/v1",
+   "description": "Known vulnerabilities for open source packages (OSV, Google)",
+   "routes": [
+    {
+     "method": "POST",
+     "path": "/query",
+     "price": "0.002",
+     "description": "Vulnerabilities for a version: JSON body {\"package\":{\"name\":\"lodash\",\"ecosystem\":\"npm\"},\"version\":\"4.17.20\"}",
+     "body_allow": [
+      "package",
+      "version",
+      "commit",
+      "page_token"
+     ]
+    },
+    {
+     "method": "GET",
+     "path": "/vulns/:id",
+     "price": "0.001",
+     "description": "One advisory: /vulns/GHSA-29mw-wpgm-hmr9"
+    }
+   ]
+  },
+  {
+   "name": "npm",
+   "prefix": "/npm",
+   "upstream": "https://registry.npmjs.org",
+   "description": "npm registry: package metadata and search",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/:name/latest",
+     "price": "0.001",
+     "description": "Latest version of an unscoped package: /express/latest"
+    },
+    {
+     "method": "GET",
+     "path": "/:name",
+     "price": "0.001",
+     "description": "Every version of an unscoped package with dist-tags and times: /express"
+    },
+    {
+     "method": "GET",
+     "path": "/-/v1/search",
+     "price": "0.001",
+     "description": "Search: ?text=http%20402&size=10"
+    }
+   ]
+  },
+  {
+   "name": "pypi",
+   "prefix": "/pypi",
+   "upstream": "https://pypi.org/pypi",
+   "description": "PyPI: package metadata and release files",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/:name/json",
+     "price": "0.001",
+     "description": "A package: /requests/json"
+    },
+    {
+     "method": "GET",
+     "path": "/:name/:version/json",
+     "price": "0.001",
+     "description": "One release: /requests/2.32.3/json"
+    }
+   ]
+  },
+  {
+   "name": "endoflife",
+   "prefix": "/endoflife",
+   "upstream": "https://endoflife.date/api",
+   "description": "Release and end-of-life dates for 300+ products (endoflife.date)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/:product",
+     "price": "0.001",
+     "description": "Release cycles of a product: /nodejs.json, /python.json, /ubuntu.json"
+    },
+    {
+     "method": "GET",
+     "path": "/all.json",
+     "price": "0.001",
+     "description": "Every product name"
+    }
+   ]
+  },
+  {
+   "name": "ecb",
+   "prefix": "/ecb",
+   "upstream": "https://data-api.ecb.europa.eu/service",
+   "description": "European Central Bank statistics: exchange rates, interest rates, inflation, money supply",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/data/:flow/:key",
+     "price": "0.001",
+     "description": "A series: /data/EXR/D.USD.EUR.SP00.A?format=jsondata&lastNObservations=10"
+    }
+   ]
+  },
+  {
+   "name": "worldbank",
+   "prefix": "/worldbank",
+   "upstream": "https://api.worldbank.org/v2",
+   "description": "World Bank development indicators for every country: GDP, population, inflation, 16,000 series",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/country/:country/indicator/:indicator",
+     "price": "0.001",
+     "description": "A series: /country/PT/indicator/NY.GDP.MKTP.CD?format=json&mrv=5"
+    },
+    {
+     "method": "GET",
+     "path": "/country",
+     "price": "0.001",
+     "description": "Countries with region, income level, capital: ?format=json&per_page=300"
+    }
+   ]
+  },
+  {
+   "name": "flights",
+   "prefix": "/flights",
+   "upstream": "https://api.adsb.lol/v2",
+   "upstream_headers": {
+    "User-Agent": "tab-gateway/2.2 (https://paidwithtab.com; contact https://github.com/paidwithtab/tab/issues)"
+   },
+   "description": "Live aircraft positions from ADS-B receivers worldwide (adsb.lol)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/lat/:lat/lon/:lon/dist/:km",
+     "price": "0.002",
+     "description": "Aircraft within a radius: /lat/35.6/lon/139.7/dist/50"
+    },
+    {
+     "method": "GET",
+     "path": "/callsign/:callsign",
+     "price": "0.002",
+     "description": "Aircraft by flight callsign: /callsign/JAL973"
+    },
+    {
+     "method": "GET",
+     "path": "/hex/:hex",
+     "price": "0.002",
+     "description": "Aircraft by ICAO hex: /hex/862d94"
+    }
+   ]
+  },
+  {
+   "name": "holidays",
+   "prefix": "/holidays",
+   "upstream": "https://date.nager.at/api/v3",
+   "description": "Public holidays for 100+ countries (Nager.Date)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/PublicHolidays/:year/:country",
+     "price": "0.001",
+     "description": "Holidays in a year: /PublicHolidays/2026/US"
+    },
+    {
+     "method": "GET",
+     "path": "/NextPublicHolidays/:country",
+     "price": "0.001",
+     "description": "The next holidays: /NextPublicHolidays/JP"
+    },
+    {
+     "method": "GET",
+     "path": "/AvailableCountries",
+     "price": "0.001",
+     "description": "Supported countries"
+    }
+   ]
+  },
+  {
+   "name": "time",
+   "prefix": "/time",
+   "upstream": "https://timeapi.io/api",
+   "description": "Current time and time zone data (timeapi.io)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/time/current/zone",
+     "price": "0.001",
+     "description": "Current time in a zone: ?timeZone=Asia/Tokyo"
+    },
+    {
+     "method": "GET",
+     "path": "/timezone/zone",
+     "price": "0.001",
+     "description": "Zone details, offset and DST: ?timeZone=Europe/Lisbon"
+    },
+    {
+     "method": "GET",
+     "path": "/timezone/availabletimezones",
+     "price": "0.001",
+     "description": "Every IANA time zone name"
+    }
+   ]
+  },
+  {
+   "name": "ip",
+   "prefix": "/ip",
+   "upstream": "https://ipapi.co",
+   "upstream_headers": {
+    "User-Agent": "Mozilla/5.0 (compatible; tab-gateway/2.2; +https://paidwithtab.com)"
+   },
+   "description": "IP geolocation: city, country, ASN, time zone, currency (ipapi.co)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/:ip/json",
+     "price": "0.001",
+     "description": "Look up an address: /8.8.8.8/json"
+    }
+   ]
+  },
+  {
+   "name": "pageviews",
+   "prefix": "/pageviews",
+   "upstream": "https://wikimedia.org/api/rest_v1/metrics/pageviews",
+   "upstream_headers": {
+    "User-Agent": "tab-gateway/2.2 (https://paidwithtab.com)"
+   },
+   "description": "Wikipedia page view counts, a public attention signal for any topic (Wikimedia)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/per-article/:project/:access/:agent/:article/:granularity/:start/:end",
+     "price": "0.001",
+     "description": "Daily views of an article: /per-article/en.wikipedia/all-access/user/HTTP_402/daily/20261001/20261020"
+    },
+    {
+     "method": "GET",
+     "path": "/top/:project/:access/:year/:month/:day",
+     "price": "0.001",
+     "description": "The 1000 most viewed articles on a day: /top/en.wikipedia/all-access/2026/10/01"
+    }
+   ]
+  },
+  {
+   "name": "openverse",
+   "prefix": "/openverse",
+   "upstream": "https://api.openverse.org/v1",
+   "description": "Openly licensed images and audio with license metadata (Openverse)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/images/",
+     "price": "0.002",
+     "description": "Search images: ?q=lisbon&license_type=commercial&page_size=20"
+    },
+    {
+     "method": "GET",
+     "path": "/audio/",
+     "price": "0.002",
+     "description": "Search audio: ?q=rain&page_size=20"
+    }
+   ]
+  },
+  {
+   "name": "tides",
+   "prefix": "/tides",
+   "upstream": "https://api.tidesandcurrents.noaa.gov/api/prod",
+   "description": "US tides, water levels and predictions at NOAA stations",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/datagetter",
+     "price": "0.001",
+     "description": "Latest water level: ?station=9414290&product=water_level&date=latest&datum=MLLW&units=metric&time_zone=gmt&format=json; predictions with product=predictions&date=today"
+    }
+   ]
+  },
+  {
+   "name": "food",
+   "prefix": "/food",
+   "upstream": "https://world.openfoodfacts.org/api/v2",
+   "upstream_headers": {
+    "User-Agent": "tab-gateway/2.2 (https://paidwithtab.com)"
+   },
+   "description": "Food products by barcode: ingredients, nutrition, Nutri-Score (Open Food Facts)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/product/:barcode",
+     "price": "0.001",
+     "description": "A product: /product/737628064502.json?fields=product_name,nutriscore_grade,ingredients_text"
+    }
+   ]
+  },
+  {
+   "name": "gutenberg",
+   "prefix": "/gutenberg",
+   "upstream": "https://gutendex.com",
+   "description": "75,000 public domain books from Project Gutenberg: search and download links (Gutendex)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/books/",
+     "price": "0.001",
+     "description": "Search: ?search=dickens&languages=en"
+    },
+    {
+     "method": "GET",
+     "path": "/books/:id/",
+     "price": "0.001",
+     "description": "One book with its formats: /books/98/"
+    }
+   ]
+  },
+  {
+   "name": "words",
+   "prefix": "/words",
+   "upstream": "https://api.datamuse.com",
+   "description": "Words by meaning, sound, spelling and context: synonyms, rhymes, completions (Datamuse)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/words",
+     "price": "0.001",
+     "description": "Query: ?ml=ledger (meaning), ?rel_rhy=pay (rhymes), ?sp=led??r (spelling), &max=20"
+    },
+    {
+     "method": "GET",
+     "path": "/sug",
+     "price": "0.001",
+     "description": "Autocomplete: ?s=payme"
+    }
+   ]
+  },
+  {
+   "name": "postcodes",
+   "prefix": "/postcodes",
+   "upstream": "https://api.zippopotam.us",
+   "description": "Postal codes to places for 60 countries (Zippopotam)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/:country/:code",
+     "price": "0.001",
+     "description": "A postal code: /us/94107, /pt/1100-148, /jp/100-0001"
+    }
+   ]
+  },
+  {
+   "name": "pwned",
+   "prefix": "/pwned",
+   "upstream": "https://api.pwnedpasswords.com",
+   "upstream_headers": {
+    "User-Agent": "tab-gateway/2.2 (https://paidwithtab.com)"
+   },
+   "description": "Has a password appeared in a breach, checked by k-anonymity (Have I Been Pwned)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/range/:prefix",
+     "price": "0.001",
+     "description": "Send the first 5 hex characters of the SHA-1 of the password: /range/5BAA6; match the rest locally"
+    }
+   ]
+  },
+  {
+   "name": "zenodo",
+   "prefix": "/zenodo",
+   "upstream": "https://zenodo.org/api",
+   "upstream_headers": {
+    "User-Agent": "tab-gateway/2.2 (https://paidwithtab.com)"
+   },
+   "description": "Research datasets, software and papers with DOIs (Zenodo, CERN)",
+   "routes": [
+    {
+     "method": "GET",
+     "path": "/records",
+     "price": "0.002",
+     "description": "Search: ?q=agent%20payments&size=10&sort=mostrecent"
+    },
+    {
+     "method": "GET",
+     "path": "/records/:id",
+     "price": "0.001",
+     "description": "One record: /records/1234567"
+    }
+   ]
   }
  ]
 }

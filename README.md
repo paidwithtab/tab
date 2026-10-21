@@ -169,7 +169,7 @@ npx paidwithtab init
 
 This creates an owner key and an agent key in `~/.tab`, signs a mandate ($1.00 per day, $0.05 per call, 90 days), and claims $1.00 of starter credits on the public gateway at `pay.paidwithtab.com`. Nothing to fund, no chain, no API keys.
 
-Those credits buy real things: 40 routes across 23 services, from web search, translation and speech to text to geocoding, air quality, arXiv, PubMed, Crossref, OpenAlex, Hacker News, Stack Overflow, GitHub, Open Library, Wikidata, OpenStreetMap, earthquakes and crypto prices, between $0.001 and $0.02 a call. The full list with prices is in the [quickstart](docs/quickstart.md#what-the-starter-credits-buy).
+Those credits buy real things: 123 routes across 59 services, from web search, translation and speech to text to Robinhood Chain and Ethereum reads, SEC EDGAR filings, DNS and domain records, exchange tickers, Bluesky, clinical trials, CVEs, package registries, central bank data, live flights, holidays, geocoding, air quality, arXiv, PubMed, Crossref, OpenAlex, Hacker News, Stack Overflow, GitHub, Open Library, Wikidata, OpenStreetMap, earthquakes and crypto prices, between $0.001 and $0.02 a call. The full list with prices is in the [quickstart](docs/quickstart.md#what-the-starter-credits-buy).
 
 **1. Pay for something from the shell.**
 

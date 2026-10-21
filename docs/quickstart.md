@@ -17,7 +17,7 @@ The second line gives Claude Code the five tab tools. Ask it to look something u
 
 ## What the starter credits buy
 
-40 routes across 23 services are live on `pay.paidwithtab.com` today, between $0.001 and $0.02 a call. The same routes are served for test USDC at `testnet.paidwithtab.com` and for USDG at `mainnet.paidwithtab.com`. The live list, with every route's path and price, is [paidwithtab.com/catalog](https://paidwithtab.com/catalog); this table is the services as of 2026-10-12.
+123 routes across 59 services are live on `pay.paidwithtab.com` today, between $0.001 and $0.02 a call. The same routes are served for test USDC at `testnet.paidwithtab.com` and for USDG at `mainnet.paidwithtab.com`. The live list, with every route's path and price, is [paidwithtab.com/catalog](https://paidwithtab.com/catalog); this table is the services as of 2026-10-21.
 
 | Prefix | What | Price per call |
 | --- | --- | --- |
@@ -44,6 +44,42 @@ The second line gives Claude Code the five tab tools. Ask it to look something u
 | `/github` | GitHub public data: repository search and metadata (unauthenticated, rate limited) | 0.001, 0.002 |
 | `/openalex` | OpenAlex: 250 million scholarly works, authors and institutions | 0.001, 0.002 |
 | `/extract` | Extract the content of one or more URLs, cleaned for agents (Tavily) | 0.01 |
+| `/chain` | Robinhood Chain mainnet explorer reads: addresses, balances, transactions and tokens (Blockscout) | 0.001, 0.002 |
+| `/rpc` | Robinhood Chain mainnet JSON-RPC (chain id 4663): any read method | 0.002 |
+| `/eth` | Ethereum mainnet JSON-RPC (PublicNode): balances, blocks, eth_call, logs | 0.002 |
+| `/bitcoin` | Bitcoin mainnet: fee estimates, addresses, transactions, blocks (mempool.space) | 0.001 |
+| `/edgar` | SEC EDGAR company data: filing history and XBRL financial facts by CIK | 0.002, 0.005 |
+| `/edgar-search` | SEC EDGAR full-text search across filings since 2001 | 0.005 |
+| `/rdap` | Domain registration data for .com and .net: registrar, creation and expiry dates, status, nameservers (Verisign RDAP) | 0.002 |
+| `/dns` | DNS over HTTPS: any record type for any name (Google Public DNS). Email verification starts here: MX, SPF and DMARC | 0.001 |
+| `/binance` | Binance spot market data: prices, 24h stats, candles, order book | 0.001 |
+| `/kraken` | Kraken spot market data: tickers, candles, order book, recent trades | 0.001 |
+| `/coinpaprika` | Crypto market data for thousands of coins: tickers, coin profiles, search (Coinpaprika) | 0.001, 0.002 |
+| `/defillama` | DeFi data: TVL by chain and protocol, protocol profiles (DefiLlama) | 0.001, 0.002 |
+| `/bluesky` | Bluesky public data: post search, profiles, author feeds, people search | 0.001, 0.002, 0.003 |
+| `/trials` | Clinical trials registered at ClinicalTrials.gov: search and study records | 0.002 |
+| `/fda` | US FDA data: drug labels and adverse events, food and device recalls (openFDA) | 0.002 |
+| `/europepmc` | Europe PMC: 40 million life science abstracts and full texts | 0.002 |
+| `/cve` | CVE records from the US National Vulnerability Database | 0.002 |
+| `/osv` | Known vulnerabilities for open source packages (OSV, Google) | 0.001, 0.002 |
+| `/npm` | npm registry: package metadata and search | 0.001 |
+| `/pypi` | PyPI: package metadata and release files | 0.001 |
+| `/endoflife` | Release and end-of-life dates for 300+ products (endoflife.date) | 0.001 |
+| `/ecb` | European Central Bank statistics: exchange rates, interest rates, inflation, money supply | 0.001 |
+| `/worldbank` | World Bank development indicators for every country: GDP, population, inflation, 16,000 series | 0.001 |
+| `/flights` | Live aircraft positions from ADS-B receivers worldwide (adsb.lol) | 0.002 |
+| `/holidays` | Public holidays for 100+ countries (Nager.Date) | 0.001 |
+| `/time` | Current time and time zone data (timeapi.io) | 0.001 |
+| `/ip` | IP geolocation: city, country, ASN, time zone, currency (ipapi.co) | 0.001 |
+| `/pageviews` | Wikipedia page view counts, a public attention signal for any topic (Wikimedia) | 0.001 |
+| `/openverse` | Openly licensed images and audio with license metadata (Openverse) | 0.002 |
+| `/tides` | US tides, water levels and predictions at NOAA stations | 0.001 |
+| `/food` | Food products by barcode: ingredients, nutrition, Nutri-Score (Open Food Facts) | 0.001 |
+| `/gutenberg` | 75,000 public domain books from Project Gutenberg: search and download links (Gutendex) | 0.001 |
+| `/words` | Words by meaning, sound, spelling and context: synonyms, rhymes, completions (Datamuse) | 0.001 |
+| `/postcodes` | Postal codes to places for 60 countries (Zippopotam) | 0.001 |
+| `/pwned` | Has a password appeared in a breach, checked by k-anonymity (Have I Been Pwned) | 0.001 |
+| `/zenodo` | Research datasets, software and papers with DOIs (Zenodo, CERN) | 0.001, 0.002 |
 
 Three paid calls, as pasted:
 
