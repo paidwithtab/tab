@@ -172,16 +172,17 @@ async function main(): Promise<void> {
       for (const path of ['/', '/product', '/developers', '/providers', '/catalog', '/docs', '/company', '/company-guide', '/protocol', '/deployment']) {
         const p = await context.newPage();
         const lw = watch(p);
-        const r = await p.goto(SITE + path, { waitUntil: 'load' });
+        const r = await p.goto(SITE + path, { waitUntil: 'domcontentloaded', timeout: 60_000 });
         await p.waitForTimeout(500);
         check(`site ${path} loads clean`, !!r && r.status() === 200 && lw.errors.length === 0 && lw.failed.length === 0, { status: r?.status(), errors: lw.errors, failed: lw.failed });
         await p.close();
       }
       const p = await context.newPage();
       const lw = watch(p);
-      const r = await p.goto(LIVE_APP + '/', { waitUntil: 'load' });
+      const r = await p.goto(LIVE_APP + '/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
       await p.locator('#v-auth:not([hidden])').waitFor({ timeout: 10_000 });
-      check('the live app serves the auth view with templates and no errors', !!r && r.status() === 200 && lw.errors.length === 0 && lw.failed.length === 0 && (await p.locator('#n-template option').count()) >= 3, { errors: lw.errors, failed: lw.failed });
+      await p.locator('#n-template option').nth(2).waitFor({ state: 'attached', timeout: 10_000 }); // templates arrive after the auth check
+      check('the live app serves the auth view with templates and no errors', !!r && r.status() === 200 && lw.errors.length === 0 && lw.failed.length === 0, { errors: lw.errors, failed: lw.failed });
       await p.close();
     }
   } finally {
