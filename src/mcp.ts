@@ -33,6 +33,11 @@ export function runMcpServer(opts: McpOptions): void {
   const replyError = (id: unknown, code: number, message: string) =>
     write({ jsonrpc: '2.0', id, error: { code, message } });
 
+  // a tool call in flight when stdin closes still gets its reply before the process ends
+  let pending = 0;
+  let closed = false;
+  const maybeExit = () => { if (closed && pending === 0) process.exit(0); };
+
   const rl = createInterface({ input: process.stdin, terminal: false });
   rl.on('line', (line) => {
     line = line.trim();
@@ -57,15 +62,17 @@ export function runMcpServer(opts: McpOptions): void {
     } else if (method === 'tools/list') {
       reply(id, { tools: tools.list });
     } else if (method === 'tools/call') {
+      pending++;
       tools.call(String(params?.name), (params?.arguments ?? {}) as Record<string, unknown>)
         .then((r) => reply(id, { content: [{ type: 'text', text: r.text }], isError: r.isError }))
         .catch((err) => reply(id, {
           content: [{ type: 'text', text: `error: ${(err as Error).message}` }],
           isError: true,
-        }));
+        }))
+        .finally(() => { pending--; maybeExit(); });
     } else if (id !== undefined) {
       replyError(id, -32601, `method not found: ${method}`);
     }
   });
-  rl.on('close', () => process.exit(0));
+  rl.on('close', () => { closed = true; maybeExit(); });
 }
