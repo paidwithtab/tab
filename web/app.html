@@ -96,7 +96,7 @@
       <label for="a-pass">Password</label><input id="a-pass" type="password" autocomplete="current-password" placeholder="at least 8 characters">
       <div class="actions"><button class="btn primary" id="a-login">Log in</button><button class="btn ghost" id="a-signup">Sign up</button></div>
       <div class="err" id="a-err"></div>
-      <p class="note">Accounts here are custodial: the company's owner key lives on this server until you export it. Fund companies with amounts you can afford to lose.</p>
+      <p class="note">Accounts here are custodial: the company's owner key lives on this server until you export it. Claude agents run on your own Anthropic API key, which you add to the company after founding it. Fund companies with amounts you can afford to lose.</p>
     </div>
   </section>
 
@@ -146,6 +146,17 @@
       <div class="err" id="c-err"></div>
     </div>
 
+    <div class="panel" id="mk-panel">
+      <h3>Model key</h3>
+      <p class="note" id="mk-status" style="margin-top:0"></p>
+      <div class="grid3" id="mk-form">
+        <div style="grid-column:1/-1"><label for="mk-key">Anthropic API key</label><input id="mk-key" type="password" autocomplete="off" placeholder="sk-ant-..."></div>
+      </div>
+      <div class="actions"><button class="btn primary" id="mk-save">Save key</button><button class="sm" id="mk-remove" hidden>Remove key</button></div>
+      <div class="err" id="mk-err"></div>
+      <p class="note">Your claude agents run on this key and its usage is billed to your Anthropic account; the cost of each run is booked against the company budget. The key is checked once, sealed at rest, and never shown again. Get one at console.anthropic.com.</p>
+    </div>
+
     <div class="two">
       <section>
         <h2>Agents</h2>
@@ -156,7 +167,7 @@
             <div class="grid3">
               <div><label for="h-name">Name</label><input id="h-name" placeholder="scout"></div>
               <div><label for="h-role">Role</label><input id="h-role" placeholder="researcher"></div>
-              <div><label for="h-adapter">Adapter</label><select id="h-adapter"><option value="claude">claude (Claude Code on this server)</option><option value="http">http (your endpoint)</option></select></div>
+              <div><label for="h-adapter">Adapter</label><select id="h-adapter"><option value="claude">claude (Claude, on the company's API key)</option><option value="http">http (your endpoint)</option></select></div>
             </div>
             <div class="grid3">
               <div><label for="h-budget">Budget per run</label><input id="h-budget" value="0.25"></div>
@@ -262,7 +273,8 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const when = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); };
   const pill = (s) => `<span class="pill ${esc(s)}">${esc(String(s).replace('_', ' '))}</span>`;
-  const state = { me: null, companies: [], company: null, view: null, ticket: null, run: null, templates: [], timer: null };
+  const state = { me: null, companies: [], company: null, view: null, ticket: null, run: null, templates: [], timer: null, config: { adapters: ['claude', 'http'], host_model_key: false } };
+  const ADAPTER_LABELS = { claude: "claude (Claude, on the company's API key)", http: 'http (your endpoint)', 'claude-code': 'claude-code (Claude Code on this server)' };
 
   async function api(path, body, method) {
     const r = await fetch(path, { method: method ?? (body === undefined ? 'GET' : 'POST'), credentials: 'same-origin', headers: body !== undefined ? { 'content-type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
@@ -283,6 +295,8 @@
 
   // -- auth --
   async function boot() {
+    try { state.config = { ...state.config, ...(await api('/api/health')) }; } catch {}
+    $('h-adapter').innerHTML = (state.config.adapters || ['claude', 'http']).map((a) => `<option value="${esc(a)}">${esc(ADAPTER_LABELS[a] || a)}</option>`).join('');
     try { state.me = (await api('/api/me')).user; await loadList(); } catch { show('auth'); }
     try { state.templates = (await api('/api/templates')).templates; } catch { state.templates = []; }
     $('n-template').innerHTML = '<option value="">a blank company</option>' + state.templates.map((t, i) => `<option value="${i}">${esc(t.name)}: ${esc((t.agents || []).map((a) => a.name).join(', '))}</option>`).join('');
@@ -357,6 +371,13 @@
     const bar = $('c-bar'); bar.firstElementChild.style.width = `${c.spent.percent}%`; bar.className = `bar${c.spent.percent >= 100 ? ' over' : c.spent.percent >= 80 ? ' warn' : ''}`;
     $('c-pause').textContent = c.state === 'paused' ? 'Resume' : 'Pause';
     $('c-wallet').textContent = c.owner_pub; $('c-realms').textContent = c.realms.join(', ');
+
+    const waiting = v.agents.some((a) => a.state === 'active' && a.adapter === 'claude') && !c.model_key;
+    $('mk-status').innerHTML = c.model_key === 'company' ? `A company key ending in <span class="mono">${esc(c.model_key_hint)}</span> is set. Paste a new one to replace it.`
+      : c.model_key === 'host' ? 'This server runs claude agents on its own key. Set a company key to bill your own account instead.'
+      : waiting ? '<span class="bad">Your claude agents are waiting for a model key.</span> Paste an Anthropic API key and the open tickets start on the next tick.'
+      : 'No key yet. Claude agents need one before they can run; http agents do not.';
+    $('mk-remove').hidden = c.model_key !== 'company';
 
     const active = v.agents.filter((a) => a.state === 'active');
     $('agents').querySelector('tbody').innerHTML = v.agents.length
@@ -449,6 +470,14 @@
   $('c-setbudget').onclick = () => busy($('c-setbudget'), 'c-err', async () => { const b = prompt('New company budget', state.view.company.budget); if (b) { await api(`/api/companies/${state.company}/budget`, { budget: b.trim() }); await refresh(); } });
   $('c-key').onclick = () => busy($('c-key'), 'c-err', async () => { if (!confirm('Export the owner key? It signs board actions and moves company funds. The export is logged.')) return; const k = await api(`/api/companies/${state.company}/key`); const blob = new Blob([JSON.stringify({ publicKey: k.publicKey, privateKey: k.privateKey }, null, 2) + '\n'], { type: 'application/json' }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `owner-${state.company}.json`; a.click(); });
   $('h-adapter').onchange = () => { $('h-http').hidden = $('h-adapter').value !== 'http'; };
+  $('mk-save').onclick = () => busy($('mk-save'), 'mk-err', async () => {
+    const key = $('mk-key').value.trim();
+    if (!key) throw new Error('paste the key first');
+    await api(`/api/companies/${state.company}/model-key`, { key });
+    $('mk-key').value = '';
+    await refresh();
+  });
+  $('mk-remove').onclick = () => busy($('mk-remove'), 'mk-err', async () => { if (confirm('Remove the company model key? Claude agents stop running until a new one is set.')) { await api(`/api/companies/${state.company}/model-key`, { remove: true }); await refresh(); } });
   $('h-go').onclick = () => busy($('h-go'), 'h-err', async () => {
     const adapter = $('h-adapter').value;
     const config = { max_per_call: $('h-maxcall').value.trim() || undefined };

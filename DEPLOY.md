@@ -115,7 +115,7 @@ npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 70 passed, 0 failed on the dev box
 npm run test:adversarial    # 26 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling
 npm run test:evm            # 41 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
-npm run test:company        # 71 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, budgets, signed board log
+npm run test:company        # 87 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
 ```
 
 These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes two read-only calls to the public Robinhood testnet RPC and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
@@ -177,7 +177,8 @@ One gateway can front many upstreams; one catalog can list many gateways; you ca
 | `TAB_MAX_PER_CALL` | `tab mcp` | client-side per-call ceiling in USD, independent of the mandate |
 | `TAB_CATALOG` | `tab mcp` | catalog origin for `tab_search`, `tab_discover`, `tab_balance`; default `https://paidwithtab.com` |
 | `SCRATCH` | tests | where temp DBs go; default OS tmpdir |
-| `CLAUDE_BIN` | `tab company serve` | the Claude Code binary claude agents run; default `claude` on `PATH` |
+| `CLAUDE_BIN` | `tab company serve --local-claude` | the Claude Code binary claude-code agents run; default `claude` on `PATH` |
+| `ANTHROPIC_API_KEY` | `tab company serve --host-model-key` | the key companies without their own run on; not set on the hosted deployment |
 
 Any `${UPPER_CASE_NAME}` inside a spec file is replaced from the environment when the spec is loaded (`loadSpec` in `src/gateway.ts`). Unset variables become empty strings, and an empty `recipient` makes `tab serve` refuse to start.
 
@@ -207,7 +208,7 @@ tab mcp                                                             stdio; TAB_A
 tab company serve  [--db company.db] [--port 1407] [--host app.example.com]... [--gateway origin] [--catalog origin]
                    [--work dir] [--allow-private-origins] [--tick 3] [--run-timeout 600]
 tab company signup|login --email ... --password ... [--server http://127.0.0.1:1407]
-tab company new|fund|hire|ticket|comment|approve|pause|resume|budget|status|key   docs/company.md has every flag
+tab company new|model-key|fund|hire|ticket|comment|approve|pause|resume|budget|status|key   docs/company.md has every flag
 ```
 
 Notes:
@@ -556,7 +557,8 @@ The verification order and the reasons for it are in `SPEC.md` section 4. The sh
 | `tab.db` (+ `-wal`, `-shm`) | gateway | HMAC secret, ledger wallets and balances, holds, receipts, mandate spend counters, redeemed challenge ids | ledger balances are gone; spend counters reset (mandates start fresh); outstanding challenges die harmlessly |
 | `tab-evm.db` (if you name it that) | evm gateway | same minus wallets; holds carry the signed transaction until capture | spend counters reset; on-chain state is unaffected |
 | `catalog.db` | catalog | announced gateways | re-announce or `--seed` |
-| `company.db` | company server | accounts (scrypt hashes), sessions, companies with **custodial owner and agent keys**, tickets, events, runs, the signed board log | companies are gone and their owner wallets with them unless the keys were exported; mode 600, back it up |
+| `company.db` | company server | accounts (scrypt hashes), sessions, companies with **custodial owner and agent keys** and **sealed model keys**, tickets, events, runs, the signed board log | companies are gone and their owner wallets with them unless the keys were exported; mode 600, back it up |
+| `company.db.key` | company server | the 32-byte master key the companies' model keys are sealed under (AES-256-GCM, company id as AAD); created on first start, mode 600 | every company must paste its Anthropic key again; back it up next to the database |
 | `keys/*.json` | you | private keys, mode 0600 | seller: cannot spend earnings. owner: cannot issue mandates or move funds. feepayer: gateway cannot broadcast. agent: mandate is useless |
 | `keys/mandate-*.json` | you | signed mandates, not secret but grant spending | re-issue from the owner key |
 
@@ -674,7 +676,7 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 
 ## 18. What is not built yet
 
-From the README roadmap, so you do not go looking for it: x402 client compatibility, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4; companies of agents, with a company earning through its own gateway, in 2.1.)
+From the README roadmap, so you do not go looking for it: x402 client compatibility, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4; companies of agents, with a company earning through its own gateway, in 2.1; bring-your-own model keys and the API-based claude adapter in 2.2.)
 
 Starter credits are not a wallet product: they live in one gateway's ledger and cannot be moved, topped up with a card, or spent on another gateway. The path from starter credits to real money is still the evm rail with a funded owner account.
 
@@ -728,9 +730,9 @@ journalctl --user -u tab-company -f
 What to check before opening it up:
 
 - `--host app.paidwithtab.com` (or your hostname) is on the command line. Any other Host header is answered 421; that is the DNS rebinding defence, and it also means a request through the tunnel with the wrong hostname fails loudly instead of quietly serving.
-- `claude --version` works as the service user, and that account is signed in. Claude agents run `claude -p` as that user; their model cost is billed to it and booked into the company. The unit's `Environment=PATH=` names `~/.local/bin` so the service finds the binary.
-- `company.db` is mode 600. It holds scrypt password hashes, sessions, and the custodial owner and agent keys of every hosted company. `scripts/backup.sh` includes it.
-- `company.db.work/<company id>/` is where claude agents write files; it grows with use.
+- Claude agents run in the server process against the Anthropic Messages API on each company's own key, with the tab tools and nothing else; the hosted unit runs with neither `--local-claude` nor `--host-model-key`, so no sign-up can spend the host's accounts or run a binary on the box. A self-hosted server may add either; with `--local-claude`, `claude --version` must work as the service user and that account must be signed in (the unit's `Environment=PATH=` names `~/.local/bin` for that case).
+- `company.db` is mode 600. It holds scrypt password hashes, sessions, the custodial owner and agent keys of every hosted company, and their model keys sealed under `company.db.key` (also mode 600, created on first start). `scripts/backup.sh` includes the database; copy the key file next to it.
+- `company.db.work/<company id>/` is where claude-code agents write files, where that adapter is on; it grows with use.
 - No `--allow-private-origins`. Companies name gateways by origin and the server fetches their discovery documents; the private-address check is what keeps that from reaching internal services.
 - The default gateway (`--gateway`) is where a new company spends unless it names one; starter credits for the owner wallet come from that gateway's faucet when it has one. The public ledger gateway does, so a hosted company can run on sandbox credits before anyone funds a real wallet.
 - Sign up and log in are rate limited per client address, 20 per 15 minutes, using `cf-connecting-ip` first, so the tunnel's address does not count as one client.

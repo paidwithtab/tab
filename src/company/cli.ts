@@ -8,16 +8,20 @@ import { dirname, join, resolve } from 'node:path';
 import { CompanyStore } from './store.js';
 import { Engine } from './engine.js';
 import { createCompanyServer } from './server.js';
+import { Secrets } from './secrets.js';
 import { signBoardAction, type BoardActionKind } from './board.js';
+import type { AdapterName } from './adapters.js';
 import { loadKey } from '../keys.js';
 
 export const COMPANY_USAGE = `  tab company serve  [--db company.db] [--port 1407] [--host app.example.com]... [--gateway https://pay.paidwithtab.com]
                      [--catalog https://paidwithtab.com] [--work company.work] [--allow-private-origins] [--tick 3]
+                     [--host-model-key] (companies without a key use $ANTHROPIC_API_KEY) [--local-claude] (allow claude-code agents)
   tab company signup --email you@example.com --password ... [--server http://127.0.0.1:1407]
   tab company login  --email you@example.com --password ... [--server http://127.0.0.1:1407]
   tab company new    --name "Acme Research" [--mission "..."] [--budget 5.00] [--gateway origin]... [--template file.json]
   tab company fund   [--company id]                                    starter credits for the owner wallet, where offered
-  tab company hire   --name scout --role "researcher" --adapter claude|http [--url https://...] [--agent-pub <pub>]
+  tab company model-key [--key sk-ant-...] [--key-file path] [--remove] [--company id]   the Anthropic key its claude agents run on
+  tab company hire   --name scout --role "researcher" --adapter claude|http|claude-code [--url https://...] [--agent-pub <pub>]
                      [--budget-per-run 0.50] [--heartbeat 0] [--instructions "..."] [--model m] [--company id]
   tab company ticket --title "..." [--body "..."] [--assignee scout] [--budget 0.50] [--company id]
   tab company comment --ticket id --text "..." [--company id]
@@ -102,16 +106,23 @@ export async function companyCommand(rest: string[]): Promise<void> {
         'run-timeout': { type: 'string', default: '600' },
         'allow-private-origins': { type: 'boolean', default: false },
         'insecure-cookies': { type: 'boolean', default: false },
+        'host-model-key': { type: 'boolean', default: false },
+        'local-claude': { type: 'boolean', default: false },
       });
       const db = resolve(values.db as string);
       const store = new CompanyStore(db);
+      const secrets = Secrets.fromFile(db + '.key');
+      const hostModelKey = values['host-model-key'] ? process.env.ANTHROPIC_API_KEY ?? '' : '';
+      if (values['host-model-key'] && !hostModelKey) die('--host-model-key needs ANTHROPIC_API_KEY in the environment');
+      const anthropicUrl = process.env.TAB_ANTHROPIC_URL || undefined;
+      const adapters: AdapterName[] = ['claude', 'http', ...(values['local-claude'] ? ['claude-code' as const] : [])];
       const engine = new Engine({
-        store, workDir: (values.work as string | undefined) ?? db + '.work', log,
+        store, workDir: (values.work as string | undefined) ?? db + '.work', log, secrets, hostModelKey: hostModelKey || null, anthropicUrl,
         tickMs: Math.max(1, Number(values.tick)) * 1000, runTimeoutMs: Math.max(10, Number(values['run-timeout'])) * 1000,
       });
       const hosts = (values.host as string[] | undefined) ?? [];
       const server = createCompanyServer({
-        store, engine, hosts, log,
+        store, engine, hosts, log, secrets, adapters, hostModelKey: !!hostModelKey, anthropicUrl,
         defaultGateway: (values.gateway as string).replace(/\/$/, ''),
         defaultCatalog: (values.catalog as string).replace(/\/$/, '') || null,
         allowPrivateOrigins: values['allow-private-origins'] as boolean,
@@ -119,7 +130,7 @@ export async function companyCommand(rest: string[]): Promise<void> {
       });
       const port = Number(values.port);
       server.listen(port, () => {
-        log(`company server listening on :${port}, db ${db}, hosts ${hosts.length ? hosts.join(', ') : 'loopback only'}, default gateway ${values.gateway}`);
+        log(`company server listening on :${port}, db ${db}, hosts ${hosts.length ? hosts.join(', ') : 'loopback only'}, default gateway ${values.gateway}, adapters ${adapters.join(', ')}${hostModelKey ? ', host model key set' : ''}`);
         engine.start();
       });
       return;
@@ -163,6 +174,21 @@ export async function companyCommand(rest: string[]): Promise<void> {
       const { values } = opts(args, { company: { type: 'string' } });
       const out = await api(conf, 'POST', `/api/companies/${companyId(conf, values.company as string)}/fund`, {});
       console.log(JSON.stringify(out, null, 2));
+      return;
+    }
+    case 'model-key': {
+      const { values } = opts(args, { company: { type: 'string' }, key: { type: 'string' }, 'key-file': { type: 'string' }, remove: { type: 'boolean', default: false } });
+      const c = companyId(conf, values.company as string);
+      if (values.remove) {
+        await api(conf, 'POST', `/api/companies/${c}/model-key`, { remove: true });
+        console.log(`model key removed from ${c}`);
+        return;
+      }
+      let key = (values.key as string | undefined) ?? process.env.ANTHROPIC_API_KEY ?? '';
+      if (values['key-file']) key = readFileSync(values['key-file'] as string, 'utf8').trim();
+      if (!key) die('give the key with --key, --key-file, or ANTHROPIC_API_KEY in the environment');
+      const out = await api(conf, 'POST', `/api/companies/${c}/model-key`, { key });
+      console.log(`model key set for ${c} (...${String(out.model_key_hint)}); its claude agents run on it from the next tick`);
       return;
     }
     case 'hire': {

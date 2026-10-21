@@ -1,9 +1,12 @@
-// Adapters: how a run reaches an agent. `claude` spawns Claude Code in print
-// mode with the tab MCP server attached (the agent key and the run's mandate
-// go to a 0700 temp directory that is deleted when the run ends). `http`
-// POSTs the packet to an endpoint the agent definition names and reads the
-// result back. Agent definitions are data: nothing in them is executed here,
-// and the http adapter calls out, never in.
+// Adapters: how a run reaches an agent. `claude` runs the agent in process as
+// a tool-use loop against the Anthropic Messages API under the company's own
+// API key, with the tab tools and nothing else (src/company/model.ts).
+// `claude-code` spawns Claude Code in print mode with the tab MCP server
+// attached (the agent key and the run's mandate go to a 0700 temp directory
+// that is deleted when the run ends); it is for self-hosted servers whose user
+// is signed in to Claude Code. `http` POSTs the packet to an endpoint the agent
+// definition names and reads the result back. Agent definitions are data:
+// nothing in them is executed here, and every adapter calls out, never in.
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
@@ -14,16 +17,22 @@ import { usdToMicro } from '../protocol.js';
 import { saveKey, type KeyPair } from '../keys.js';
 import { saveMandate, type Mandate } from '../mandate.js';
 import { parseResult, validateResult, type AgentResult, type Packet } from './packet.js';
+import { runModelAgent } from './model.js';
 import type { AgentRow } from './store.js';
+
+export const ADAPTERS = ['claude', 'claude-code', 'http'] as const;
+export type AdapterName = (typeof ADAPTERS)[number];
 
 export interface AdapterContext {
   agent: AgentRow;
   packet: Packet;
-  agentKey: KeyPair | null; // custodial key for the claude adapter
+  agentKey: KeyPair | null; // custodial key for the claude adapters
   mandate: Mandate | null;
   catalog: string | null;
   currency: string;
-  workDir: string; // the company workspace; the claude adapter runs there
+  workDir: string; // the company workspace; the claude-code adapter runs there
+  modelKey: string | null; // the company's Anthropic API key (or the host's), for the claude adapter
+  anthropicUrl?: string; // tests point the claude adapter at a stub
   timeoutMs: number;
   fetch?: typeof fetch;
   log?: (msg: string) => void;
@@ -56,7 +65,9 @@ export async function runAdapter(ctx: AdapterContext): Promise<AdapterOutput> {
     case 'http':
       return runHttp(ctx);
     case 'claude':
-      return runClaude(ctx);
+      return runModel(ctx);
+    case 'claude-code':
+      return runClaudeCode(ctx);
     default:
       throw new Error(`unknown adapter ${String(ctx.agent.adapter)}`);
   }
@@ -95,9 +106,29 @@ async function runHttp(ctx: AdapterContext): Promise<AdapterOutput> {
 }
 
 // ---------------------------------------------------------------------------
-// claude: Claude Code in print mode with the tab MCP server
+// claude: the Messages API, in process, with the tab tools
 
-async function runClaude(ctx: AdapterContext): Promise<AdapterOutput> {
+async function runModel(ctx: AdapterContext): Promise<AdapterOutput> {
+  if (!ctx.modelKey) throw new Error('no model key: add an Anthropic API key to the company before its claude agents can run');
+  const cfg = ctx.agent.config;
+  const out = await runModelAgent({
+    apiKey: ctx.modelKey, baseUrl: ctx.anthropicUrl,
+    model: cfg.model ? String(cfg.model) : undefined,
+    maxTurns: Number(cfg.max_turns) || undefined,
+    system: cfg.system ? String(cfg.system) : undefined,
+    packet: ctx.packet, agentKey: ctx.agentKey, mandate: ctx.mandate, catalog: ctx.catalog, currency: ctx.currency,
+    maxPerCallUsd: typeof cfg.max_per_call === 'string' ? cfg.max_per_call : undefined,
+    timeoutMs: ctx.timeoutMs, fetch: ctx.fetch, log: ctx.log,
+  });
+  const head = `[${out.model}: ${out.usage.turns} turns, ${out.usage.input} tokens in, ${out.usage.output} out${out.usage.cache_read ? `, ${out.usage.cache_read} cached` : ''}]`;
+  ctx.log?.(`${ctx.agent.name} ${head}`);
+  return { text: `${head}\n${out.text}`, result: out.result, modelCostMicro: out.modelCostMicro };
+}
+
+// ---------------------------------------------------------------------------
+// claude-code: Claude Code in print mode with the tab MCP server
+
+async function runClaudeCode(ctx: AdapterContext): Promise<AdapterOutput> {
   const cfg = ctx.agent.config;
   const bin = String(cfg.command ?? process.env.CLAUDE_BIN ?? 'claude');
   const tools = Array.isArray(cfg.tools) ? cfg.tools.map(String) : DEFAULT_CLAUDE_TOOLS;

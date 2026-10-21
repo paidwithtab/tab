@@ -75,7 +75,7 @@ export function buildPacket(input: PacketInput): Packet {
     ? `${microToUsd(Number(mandate.budget))} ${cur} through tab for this run (mandate ${mandate.id}, valid at ${mandate.allow.join(', ')}, until ${mandate.expires_at})`
     : `nothing: the company has no gateway to spend at, so this run costs only what the model costs`;
 
-  const spendHow = agent.adapter === 'claude'
+  const spendHow = agent.adapter === 'claude' || agent.adapter === 'claude-code'
     ? 'Spend through the tab tools: tab_search finds priced routes in the catalog, tab_fetch pays for one call and returns a receipt. tab_limits shows what this run may spend.'
     : 'The mandate is in the packet JSON under budget.mandate; pay with any tab client under your own agent key (the mandate names it).';
 
@@ -102,7 +102,7 @@ Rules:
 3. Keep to the ticket. Open a sub-ticket for a colleague when their role fits better; request an approval from the owner for anything over budget or outside the mission.
 4. Never ask for the owner key, other agents' keys, or more budget than the task needs.
 
-End your reply with exactly one JSON object in a \`\`\`json fence with this shape (omit what you do not need):
+${agent.adapter === 'claude' ? 'When you are finished, call the finish tool with this shape (omit what you do not need):' : 'End your reply with exactly one JSON object in a \`\`\`json fence with this shape (omit what you do not need):'}
 ${JSON.stringify(CONTRACT, null, 2)}
 `;
 

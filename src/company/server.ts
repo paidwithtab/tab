@@ -14,7 +14,10 @@ import { microToUsd, usdToMicro, isCurrency, type Receipt } from '../protocol.js
 import { newKeyPair } from '../keys.js';
 import { originIsPublic } from '../catalog.js';
 import { signBoardAction, verifyBoardAction, BOARD_ACTIONS, type SignedBoardAction, type BoardActionKind } from './board.js';
+import { ADAPTERS, type AdapterName } from './adapters.js';
+import { ANTHROPIC_URL } from './model.js';
 import type { Engine } from './engine.js';
+import type { Secrets } from './secrets.js';
 import type { AgentRow, CompanyRow, CompanyStore, TicketRow, TicketState, UserRow } from './store.js';
 
 export interface CompanyServerOptions {
@@ -31,6 +34,14 @@ export interface CompanyServerOptions {
   allowPrivateOrigins?: boolean;
   /** Sign ups and log ins per address per 15 minutes. Default 20. */
   authPerWindow?: number;
+  /** Seals company model keys at rest. Without it, model keys cannot be set. */
+  secrets?: Secrets;
+  /** Adapters a company may hire. Default claude and http; claude-code only where the host runs Claude Code. */
+  adapters?: AdapterName[];
+  /** Whether the engine has a host key for companies that set none (shown to the dashboard; the key itself stays in the engine). */
+  hostModelKey?: boolean;
+  /** Where model keys are verified; tests point it at a stub. */
+  anthropicUrl?: string;
   log?: (msg: string) => void;
 }
 
@@ -106,6 +117,8 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
   const hosts = new Set((opts.hosts ?? []).map((h) => h.toLowerCase()));
   const secure = opts.secureCookies ?? [...hosts].some((h) => !isLoopbackHost(h.replace(/:\d+$/, '')));
   const authPerWindow = opts.authPerWindow ?? 20;
+  const adapters = new Set<AdapterName>(opts.adapters ?? ['claude', 'http']);
+  const anthropicUrl = (opts.anthropicUrl ?? ANTHROPIC_URL).replace(/\/$/, '');
   const web = findWeb();
 
   function hostAllowed(req: IncomingMessage): boolean {
@@ -176,9 +189,11 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
   const publicCompany = (c: CompanyRow) => {
     const s = store.companySpent(c.id);
     const total = s.tab + s.model;
-    const { owner_priv: _p, ...rest } = c;
+    const { owner_priv: _p, model_key: _k, ...rest } = c;
     return {
       ...rest,
+      // where the claude agents' model key comes from: the company's own, the host's, or nowhere yet
+      model_key: c.model_key ? 'company' : opts.hostModelKey ? 'host' : null,
       budget: microToUsd(c.budget),
       spent: { tab: microToUsd(s.tab), model: microToUsd(s.model), total: microToUsd(total), remaining: microToUsd(Math.max(0, c.budget - total)), percent: c.budget ? Math.min(100, Math.floor((total / c.budget) * 100)) : 100 },
     };
@@ -219,8 +234,8 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         const name = str(p.name, 40);
         if (!NAME_RE.test(name)) throw new HttpError(400, 'agent name: letters, digits, dot, dash, underscore; up to 40');
         if (store.agentByName(c.id, name)) throw new HttpError(409, `an agent named ${name} exists`);
-        const adapter = p.adapter === 'http' ? 'http' : p.adapter === 'claude' ? 'claude' : null;
-        if (!adapter) throw new HttpError(400, 'adapter must be claude or http');
+        const adapter = (ADAPTERS as readonly string[]).includes(String(p.adapter)) && adapters.has(p.adapter as AdapterName) ? (p.adapter as AdapterName) : null;
+        if (!adapter) throw new HttpError(400, `adapter must be one of ${[...adapters].join(', ')}`);
         const config = (p.config && typeof p.config === 'object' && !Array.isArray(p.config) ? p.config : {}) as Record<string, unknown>;
         let agent_pub: string;
         let agent_priv: string | null = null;
@@ -353,7 +368,10 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       if (!path.startsWith('/api/')) { sendJson(res, 404, { error: 'not found' }); return; }
       if (method !== 'GET' && method !== 'POST') { sendJson(res, 405, { error: 'method not allowed' }); return; }
 
-      if (method === 'GET' && path === '/api/health') { sendJson(res, 200, { ok: true, companies: store.allCompanies().length }); return; }
+      if (method === 'GET' && path === '/api/health') {
+        sendJson(res, 200, { ok: true, companies: store.allCompanies().length, adapters: [...adapters], host_model_key: !!opts.hostModelKey, default_gateway: opts.defaultGateway ?? null });
+        return;
+      }
       if (method === 'GET' && path === '/api/templates') {
         // the example companies shipped with the package, for the new company form
         const dir = web ? join(web, '..', 'examples', 'companies') : null;
@@ -535,6 +553,32 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       if (sub === 'budget') { sendJson(res, 200, boardAct(c, 'budget', { budget: str(body.budget, 20) }) as object); return; }
       if (sub === 'pause' || sub === 'resume') { sendJson(res, 200, boardAct(c, sub, { reason: str(body.reason, 500) }) as object); return; }
       if (sub === 'publish') { sendJson(res, 200, boardAct(c, 'publish', { gateway: str(body.gateway, 300) }) as object); return; }
+      if (sub === 'model-key') {
+        // the company's own Anthropic API key: verified against the API, sealed at rest, never returned
+        if (!opts.secrets) throw new HttpError(503, 'this server has no secrets store, so it cannot hold model keys');
+        if (body.remove === true) {
+          store.updateCompany(c.id, { model_key: null, model_key_hint: null });
+          store.addEvent({ company_id: c.id, ticket_id: null, agent_id: null, kind: 'model-key', body: { removed: true, by: auth.user.email } });
+          sendJson(res, 200, { ok: true, model_key: opts.hostModelKey ? 'host' : null, model_key_hint: null });
+          return;
+        }
+        const key = str(body.key, 400).trim();
+        if (!/^sk-ant-[A-Za-z0-9_-]{20,}$/.test(key)) throw new HttpError(400, 'that does not look like an Anthropic API key (they start with sk-ant-)');
+        let r: Response;
+        try {
+          r = await fetch(`${anthropicUrl}/v1/models?limit=1`, { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(10_000) });
+        } catch (err) {
+          throw new HttpError(502, `could not reach the model API to check the key: ${(err as Error).message}`);
+        }
+        if (r.status === 401 || r.status === 403) throw new HttpError(400, 'Anthropic refused that key; check it in the Claude Console');
+        if (!r.ok) throw new HttpError(502, `the model API answered HTTP ${r.status} while checking the key`);
+        const hint = key.slice(-4);
+        store.updateCompany(c.id, { model_key: opts.secrets.seal(key, c.id), model_key_hint: hint });
+        store.addEvent({ company_id: c.id, ticket_id: null, agent_id: null, kind: 'model-key', body: { hint, by: auth.user.email } });
+        log(`company ${c.id}: model key set (...${hint}) by ${auth.user.email}`);
+        sendJson(res, 200, { ok: true, model_key: 'company', model_key_hint: hint });
+        return;
+      }
       const apm = /^approvals\/([A-Za-z0-9_-]+)$/.exec(sub);
       if (apm) {
         const decision = body.decision === 'approve' ? 'approve' : body.decision === 'reject' ? 'reject' : null;

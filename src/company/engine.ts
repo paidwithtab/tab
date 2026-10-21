@@ -12,11 +12,18 @@ import { addressFromSeed } from '../evm/secp256k1.js';
 import type { KeyPair } from '../keys.js';
 import { buildPacket, type AgentResult } from './packet.js';
 import { runAdapter } from './adapters.js';
+import type { Secrets } from './secrets.js';
 import type { AgentRow, CompanyStore, CompanyRow, Evidence, RunRow, TicketRow } from './store.js';
 
 export interface EngineOptions {
   store: CompanyStore;
   workDir: string; // per-company workspaces live under here
+  /** Opens the sealed model keys. Without it no company key can be read. */
+  secrets?: Secrets;
+  /** The server's own Anthropic key for companies that set none (self-hosted convenience). */
+  hostModelKey?: string | null;
+  /** Where the claude adapter sends Messages API calls; tests point it at a stub. */
+  anthropicUrl?: string;
   log?: (msg: string) => void;
   tickMs?: number; // default 3000
   runTimeoutMs?: number; // default 600 s
@@ -31,6 +38,7 @@ export class Engine {
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
   private running = new Map<string, Promise<void>>(); // agent id -> the run in flight
+  private keyNoted = new Set<string>(); // companies told once that their claude agents wait on a model key
   readonly workDir: string;
   readonly runTimeoutMs: number;
   private doFetch: typeof fetch;
@@ -80,6 +88,16 @@ export class Engine {
         if (company.state !== 'active' || agent.state !== 'active') return false;
         if (this.running.has(agent.id) || started.has(agent.id)) return false;
         if (countRunning(company.id) >= company.concurrency) return false;
+        if (agent.adapter === 'claude' && !this.modelKeyFor(company)) {
+          // the wake stays; the run starts on the first tick after the owner adds a key
+          if (!this.keyNoted.has(company.id)) {
+            this.keyNoted.add(company.id);
+            this.store.addEvent({ company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: 'needs-model-key', body: { agent: agent.name, reason: 'add an Anthropic API key to the company so its claude agents can run' } }, now);
+            this.log(`company ${company.name}: ${agent.name} waits for a model key`);
+          }
+          return false;
+        }
+        if (agent.adapter === 'claude') this.keyNoted.delete(company.id);
         started.add(agent.id);
         runningPerCompany.set(company.id, countRunning(company.id) + 1);
         this.launch(company, agent, ticket, reason);
@@ -133,6 +151,16 @@ export class Engine {
 
   private ownerKey(company: CompanyRow): KeyPair {
     return { publicKey: company.owner_pub, privateKey: company.owner_priv };
+  }
+
+  /** The API key a company's claude agents run on: its own sealed key, else the host's, else none. */
+  modelKeyFor(company: CompanyRow): string | null {
+    if (company.model_key && this.opts.secrets) {
+      const k = this.opts.secrets.open(company.model_key, company.id);
+      if (k) return k;
+      this.log(`company ${company.id}: the sealed model key does not open; was the master key replaced?`);
+    }
+    return this.opts.hostModelKey ?? null;
   }
 
   async runOnce(company: CompanyRow, agent: AgentRow, ticket: TicketRow | null, reason: string): Promise<RunRow | null> {
@@ -197,6 +225,7 @@ export class Engine {
       const out = await runAdapter({
         agent, packet, mandate, currency: company.currency, catalog: company.catalog, workDir,
         agentKey: agent.agent_priv ? { publicKey: agent.agent_pub, privateKey: agent.agent_priv } : null,
+        modelKey: agent.adapter === 'claude' ? this.modelKeyFor(company) : null, anthropicUrl: this.opts.anthropicUrl,
         timeoutMs: this.runTimeoutMs, fetch: this.doFetch, log: this.log,
       });
       text = out.text;

@@ -294,7 +294,7 @@ Hooking tab into a particular agent, with the MCP JSON for Cursor, Codex, Windsu
 
 ## Companies
 
-tab 2.1 adds a company of agents on top of the payment layer: `tab company` and the dashboard at [app.paidwithtab.com](https://app.paidwithtab.com). A company has a mission, a budget, agents with roles (Claude Code sessions with the tab MCP server attached, or any HTTP endpoint), and tickets. The difference from a plain agent orchestrator is where the money lives:
+tab 2.2 runs a company of agents on top of the payment layer: `tab company` and the dashboard at [app.paidwithtab.com](https://app.paidwithtab.com). A company has a mission, a budget, agents with roles, and tickets. An agent is Claude, running on the Anthropic API key you add to the company with the five tab tools and nothing else, or any HTTP endpoint you point at (a self-hosted server can also run Claude Code). The difference from a plain agent orchestrator is where the money lives:
 
 - Every run gets its own mandate, signed by the company's owner key and capped at the smallest of the company's remaining budget, the agent's per-run budget and the ticket's cap. The gateway enforces it; the agent cannot exceed it.
 - What a run spent is what the gateways booked against that mandate, attributed to the run, the ticket and the company, receipt by receipt. Model cost is booked too. The company warns at 80 percent and pauses at 100.
@@ -306,6 +306,7 @@ tab 2.1 adds a company of agents on top of the payment layer: `tab company` and 
 tab company serve --host app.example.com          # one process, SQLite, no dependencies
 tab company signup --email you@example.com --password ...
 tab company new --template examples/companies/research.json
+tab company model-key --key sk-ant-...            # your Anthropic key, sealed at rest; your agents run on it
 tab company fund && tab company status
 ```
 
@@ -352,14 +353,14 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 208 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator.
+tab currently runs 224 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
 | `npm test` | 70 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate |
 | `npm run test:adversarial` | 26 | Concurrency, replay, mutation, SSRF, persistence, body smuggling |
 | `npm run test:evm` | 41 | Cryptography, EVM transactions, Robinhood Chain |
-| `npm run test:company` | 71 | Accounts and the trust boundary, runs that pay at a real gateway, evidence, budgets, the signed board log, both adapters |
+| `npm run test:company` | 87 | Accounts and the trust boundary, runs that pay at a real gateway, evidence, budgets, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary |
 
 > The concurrency suite fires 150 simultaneous $0.01 requests at a $1.00 mandate. Exactly 100 settle.
 
@@ -398,7 +399,8 @@ tab currently runs 208 automated checks across protocol behavior, adversarial co
 
 ```text
 src/          protocol, gateway, catalog, client, CLI and MCP
-src/company/  the company orchestrator: store, engine, adapters, packet, board, server
+src/tools.ts  the five tab tools, shared by the MCP server and the company's claude adapter
+src/company/  the company orchestrator: store, engine, adapters, model (the Messages API loop), secrets, packet, board, server
 src/evm/      EVM cryptography, transactions and JSON RPC
 src/rails/    sandbox and EVM settlement rails
 web/          site, catalog and the company dashboard

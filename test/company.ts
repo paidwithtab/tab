@@ -2,7 +2,9 @@
 // limits, isolation), founding and funding a company, hiring, tickets, runs
 // through the http adapter paying at a real in-process gateway, spend
 // attribution, evidence before done, sub-tickets, approvals, budget warning
-// and pause, signed board actions, and the claude adapter through a fake binary.
+// and pause, signed board actions, the claude adapter against a fake Messages
+// API (sealed company keys, scripted tool use, retries), and the claude-code
+// adapter through a fake binary.
 //   npm run test:company
 
 import { createServer, request, type Server } from 'node:http';
@@ -19,6 +21,8 @@ import type { Mandate } from '../src/mandate.js';
 import { CompanyStore } from '../src/company/store.js';
 import { Engine } from '../src/company/engine.js';
 import { createCompanyServer } from '../src/company/server.js';
+import { Secrets } from '../src/company/secrets.js';
+import { priceUsage } from '../src/company/model.js';
 import { signBoardAction, verifyBoardAction } from '../src/company/board.js';
 import { parseResult, validateResult } from '../src/company/packet.js';
 
@@ -91,10 +95,41 @@ async function main(): Promise<void> {
   });
   const STUB = `http://127.0.0.1:${await listen(stub)}`;
 
+  // -- a fake Anthropic Messages API: a key check, scripted tool use, one flaky reply --
+  const GOOD_KEY = 'sk-ant-api03-test-' + 'x'.repeat(24);
+  let antMode = 'tools';
+  let antFlake = false;
+  const antCalls: Array<{ headers: Record<string, unknown>; body: any; status: number }> = [];
+  const anthropic = createServer(async (req, res) => {
+    const json = (st: number, d: unknown) => { res.writeHead(st, { 'content-type': 'application/json' }); res.end(JSON.stringify(d)); };
+    const key = String(req.headers['x-api-key'] ?? '');
+    const refused = () => json(401, { type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } });
+    if (req.method === 'GET' && req.url?.startsWith('/v1/models')) return key === GOOD_KEY ? json(200, { data: [{ id: 'claude-sonnet-5-5' }] }) : refused();
+    if (req.method !== 'POST' || req.url !== '/v1/messages') return json(404, { error: 'nope' });
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    const body = JSON.parse(Buffer.concat(chunks).toString());
+    if (key !== GOOD_KEY) { antCalls.push({ headers: req.headers, body, status: 401 }); return refused(); }
+    if (antFlake) { antFlake = false; antCalls.push({ headers: req.headers, body, status: 529 }); return json(529, { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }); }
+    antCalls.push({ headers: req.headers, body, status: 200 });
+    const turn = body.messages.filter((m: any) => m.role === 'assistant').length;
+    const usage = { input_tokens: 1000, output_tokens: 100 };
+    const reply = (content: unknown[], stop = 'tool_use') => json(200, { id: 'msg_x', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', content, stop_reason: stop, usage });
+    if (antMode === 'prose') return reply([{ type: 'text', text: 'All done.\n```json\n' + JSON.stringify({ status: 'done', summary: 'prose report', evidence: [{ kind: 'text', value: 'prose' }] }) + '\n```' }], 'end_turn');
+    if (turn === 0) return reply([{ type: 'text', text: 'Checking my limits.' }, { type: 'tool_use', id: 'tu_1', name: 'tab_limits', input: {} }]);
+    if (turn === 1) return reply([{ type: 'tool_use', id: 'tu_2', name: 'tab_fetch', input: { url: `${GW}/quote` } }]);
+    const last = body.messages[body.messages.length - 1].content;
+    let receipt = '';
+    try { receipt = JSON.parse(last[0].content).receipt.id; } catch { /* no receipt in the tool result */ }
+    return reply([{ type: 'tool_use', id: 'tu_3', name: 'finish', input: { status: 'done', summary: 'bought a quote through the api', evidence: [{ kind: 'receipt', value: receipt }], comment: 'done via finish' } }]);
+  });
+  const ANT = `http://127.0.0.1:${await listen(anthropic)}`;
+
   // -- the company server ----------------------------------------------------
   const store = new CompanyStore(join(scratch, 'company.db'));
-  const engine = new Engine({ store, workDir: join(scratch, 'work'), tickMs: 3_600_000, runTimeoutMs: 10_000 });
-  const server = createCompanyServer({ store, engine, hosts: ['app.test'], allowPrivateOrigins: true, defaultGateway: GW, authPerWindow: 6, secureCookies: false });
+  const secrets = Secrets.ephemeral();
+  const engine = new Engine({ store, workDir: join(scratch, 'work'), tickMs: 3_600_000, runTimeoutMs: 10_000, secrets, anthropicUrl: ANT });
+  const server = createCompanyServer({ store, engine, hosts: ['app.test'], allowPrivateOrigins: true, defaultGateway: GW, authPerWindow: 6, secureCookies: false, secrets, anthropicUrl: ANT, adapters: ['claude', 'http', 'claude-code'] });
   const port = await listen(server);
   const APP = `http://127.0.0.1:${port}`;
 
@@ -158,9 +193,10 @@ async function main(): Promise<void> {
   check('http agent without a key is refused', (await api('POST', `/api/companies/${cid}/agents`, { name: 'nokey', role: 'x', adapter: 'http', config: { url: STUB } })).status === 400);
   check('duplicate agent name refused', (await api('POST', `/api/companies/${cid}/agents`, { name: 'ant', role: 'x', adapter: 'http', agent_pub: B.publicKey, config: { url: STUB } })).status === 409);
   const bee = await api('POST', `/api/companies/${cid}/agents`, { name: 'bee', role: 'helper', adapter: 'http', agent_pub: B.publicKey, config: { url: STUB }, budget_per_run: '0.05' });
-  const cat = await api('POST', `/api/companies/${cid}/agents`, { name: 'cat', role: 'coder', adapter: 'claude', budget_per_run: '0.10' });
-  check('claude agent gets a custodial key the API never shows', cat.status === 200 && cat.body.agent.custodial === true && cat.body.agent.agent_priv === undefined
+  const cat = await api('POST', `/api/companies/${cid}/agents`, { name: 'cat', role: 'coder', adapter: 'claude-code', budget_per_run: '0.10' });
+  check('claude-code agent gets a custodial key the API never shows', cat.status === 200 && cat.body.agent.custodial === true && cat.body.agent.agent_priv === undefined
     && store.agent(cat.body.agent.id)!.agent_priv !== null);
+  check('an adapter the server does not offer is refused', (await api('POST', `/api/companies/${cid}/agents`, { name: 'proc', role: 'x', adapter: 'process', config: { command: 'rm' } })).status === 400);
   const board1 = await api('GET', `/api/companies/${cid}/board`);
   check('hires are signed board actions that verify', board1.body.actions.length === 3 && board1.body.actions.every((a: any) => a.action === 'hire' && a.verified === true) && board1.body.next_seq === 4);
 
@@ -309,7 +345,64 @@ async function main(): Promise<void> {
   v = await view();
   check('a heartbeat re-runs an agent with open work', dog.status === 200 && v.runs[0].agent === 'dog' && v.runs[0].reason === 'heartbeat' && v.tickets.find((t: any) => t.id === t12.id).state === 'in_progress');
 
-  // -- 11. the claude adapter through a fake binary ----------------------------------------
+  // -- 11. the claude adapter: a company key, sealed at rest, and a scripted tool-use run --
+  await api('POST', `/api/companies/${cid}/agents/${dog.body.agent.id}/retire`, {});
+  const owl = await api('POST', `/api/companies/${cid}/agents`, { name: 'owl', role: 'analyst', adapter: 'claude', budget_per_run: '0.05', config: { max_per_call: '0.02' } });
+  const t14 = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'api quote', body: 'buy one quote through the api', assignee: 'owl' })).body.ticket;
+  const runsNoKey = (await view()).runs.length;
+  await runAll();
+  v = await view();
+  check('without a model key a claude agent waits: one event, the wake kept, nothing run', owl.status === 200 && v.runs.length === runsNoKey && v.company.model_key === null
+    && v.events.filter((e: any) => e.kind === 'needs-model-key').length === 1 && store.wakes().some((w) => w.ticket_id === t14.id));
+  check('a string that is not a key is refused', (await api('POST', `/api/companies/${cid}/model-key`, { key: 'hunter2' })).status === 400);
+  check('a key Anthropic refuses is refused', (await api('POST', `/api/companies/${cid}/model-key`, { key: 'sk-ant-api03-wrong-' + 'y'.repeat(24) })).status === 400);
+  const setKey = await api('POST', `/api/companies/${cid}/model-key`, { key: GOOD_KEY });
+  v = await view();
+  const rowKey = store.company(cid)!.model_key ?? '';
+  check('a good key is checked, sealed at rest and never returned', setKey.status === 200 && setKey.body.model_key_hint === GOOD_KEY.slice(-4) && v.company.model_key === 'company'
+    && rowKey.startsWith('v1.') && !rowKey.includes(GOOD_KEY) && !JSON.stringify(v).includes(GOOD_KEY) && v.events.some((e: any) => e.kind === 'model-key'));
+  check('the seal is bound to the company', secrets.open(rowKey, cid) === GOOD_KEY && secrets.open(rowKey, 'other-company') === null && Secrets.ephemeral().open(rowKey, cid) === null);
+  await runAll();
+  v = await view();
+  tk = v.tickets.find((t: any) => t.id === t14.id);
+  run = v.runs.find((r: any) => r.agent === 'owl');
+  const first = antCalls.find((c) => c.status === 200)!;
+  check('the claude adapter paid at the gateway through tab_fetch and finished with the receipt', tk.state === 'done' && tk.evidence[0].kind === 'receipt' && tk.evidence[0].value.length > 10
+    && run.state === 'done' && run.spent === '0.01' && run.result.status === 'done' && v.receipts.some((r: any) => r.agent === 'owl'));
+  check('model usage is priced into the run', usdToMicro(run.model_cost) === priceUsage('claude-sonnet-5-5', { input_tokens: 3000, output_tokens: 300 }) && usdToMicro(run.model_cost) === 9_000);
+  check('the request carried the company key, the tab tools and finish, and the packet as the user turn', first.headers['x-api-key'] === GOOD_KEY && first.headers['anthropic-version'] === '2023-06-01'
+    && first.body.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,finish' && /You are owl/.test(first.body.messages[0].content) && /call finish/.test(first.body.system));
+  const second = antCalls.filter((c) => c.status === 200)[1];
+  check('the mandate was capped by the agent budget and tab_limits told the agent its per-call cap', run.mandate.budget === '0.05'
+    && /"client_max_per_call_usd": "0\.02"/.test(String(second.body.messages[2].content[0].content)) && /"budget_usd": "0\.05"/.test(String(second.body.messages[2].content[0].content)));
+  const runOut = (await api('GET', `/api/companies/${cid}/runs/${run.id}`)).body.run;
+  check('the run log shows the model, the turns and the tool calls', /claude-sonnet-5-5: 3 turns/.test(runOut.output) && /\[tab_fetch/.test(runOut.output) && !runOut.output.includes(GOOD_KEY));
+  antFlake = true;
+  const t15 = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'flaky api', assignee: 'owl' })).body.ticket;
+  await runAll();
+  check('an overloaded reply is retried', (await view()).tickets.find((t: any) => t.id === t15.id).state === 'done' && antCalls.some((c) => c.status === 529));
+  antMode = 'prose';
+  const t16 = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'prose api', assignee: 'owl' })).body.ticket;
+  await runAll();
+  v = await view();
+  check('a report written as prose instead of finish is still parsed', v.tickets.find((t: any) => t.id === t16.id).state === 'done' && v.runs.find((r: any) => r.ticket_id === t16.id).spent === '0.00');
+  antMode = 'tools';
+  const removed = await api('POST', `/api/companies/${cid}/model-key`, { remove: true });
+  const t17 = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'after removal', assignee: 'owl' })).body.ticket;
+  await runAll();
+  v = await view();
+  check('removing the key stops claude agents again and says so once more', removed.status === 200 && v.company.model_key === null && store.company(cid)!.model_key === null
+    && v.events.filter((e: any) => e.kind === 'needs-model-key').length === 2 && v.tickets.find((t: any) => t.id === t17.id).state === 'open');
+  const plain = createCompanyServer({ store, engine, hosts: ['app.test'], allowPrivateOrigins: true, defaultGateway: GW, secureCookies: false });
+  const plainPort = await listen(plain);
+  const plainHire = await fetch(`http://127.0.0.1:${plainPort}/api/companies/${cid}/agents`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ name: 'local', role: 'x', adapter: 'claude-code' }) });
+  const plainHealth = (await (await fetch(`http://127.0.0.1:${plainPort}/api/health`)).json()) as any;
+  check('a server started without --local-claude offers claude and http only', plainHire.status === 400 && plainHealth.adapters.join(',') === 'claude,http' && plainHealth.host_model_key === false);
+  const noSecrets = await fetch(`http://127.0.0.1:${plainPort}/api/companies/${cid}/model-key`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ key: GOOD_KEY }) });
+  check('a server without a secrets store refuses to hold keys', noSecrets.status === 503);
+  plain.close();
+
+  // -- 12. the claude-code adapter through a fake binary ------------------------------------
   const fake = join(scratch, 'fake-claude');
   writeFileSync(fake, `#!/usr/bin/env node
 const fs = require('fs');
@@ -333,10 +426,10 @@ process.stdin.on('end', () => {
   await runAll();
   v = await view();
   tk = v.tickets.find((t: any) => t.id === t13.id);
-  check('claude adapter: key files, mcp config, prompt on stdin, result and cost parsed', tk.state === 'done' && /mcp:true/.test(tk.evidence[0].value)
+  check('claude-code adapter: key files, mcp config, prompt on stdin, result and cost parsed', tk.state === 'done' && /mcp:true/.test(tk.evidence[0].value)
     && tk.evidence[0].value.includes(join(scratch, 'work', cid)) && v.runs[0].model_cost === '0.0123' && v.runs[0].agent === 'cat');
 
-  // -- 12. packet parsing and the rest of the surface ----------------------------------------
+  // -- 13. packet parsing and the rest of the surface ----------------------------------------
   check('parseResult takes the last fence or a bare object', parseResult('x ```json\n{"status":"blocked","summary":"a"}\n``` y ```json\n{"status":"done","summary":"b"}\n```')?.summary === 'b'
     && parseResult('nope {"status":"in_progress","summary":"c"} done')?.status === 'in_progress' && parseResult('nothing here') === null);
   check('validateResult rejects bad shapes and trims', validateResult({ status: 'later' }) === null && validateResult(null) === null
@@ -357,6 +450,7 @@ process.stdin.on('end', () => {
   // -- done ---------------------------------------------------------------------------
   server.close();
   stub.close();
+  anthropic.close();
   gateway.close();
   upstream.close();
   store.close();

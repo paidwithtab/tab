@@ -24,6 +24,8 @@ export interface CompanyRow {
   realms: string[]; // realms of those gateways; the mandate allow list
   catalog: string | null;
   sell_gateway: string | null; // where the company earns, set by the publish action
+  model_key: string | null; // the company's Anthropic API key, sealed by Secrets; never leaves the server
+  model_key_hint: string | null; // its last four characters, for the dashboard
   state: 'active' | 'paused';
   warned: boolean; // the 80 percent warning was written
   concurrency: number; // runs at once
@@ -37,10 +39,10 @@ export interface AgentRow {
   name: string;
   role: string;
   instructions: string;
-  adapter: 'claude' | 'http';
+  adapter: 'claude' | 'claude-code' | 'http';
   config: Record<string, unknown>;
   agent_pub: string;
-  agent_priv: string | null; // custodial for the claude adapter; null for http agents that hold their own key
+  agent_priv: string | null; // custodial for the claude adapters; null for http agents that hold their own key
   budget_per_run: number; // micro; the mandate ceiling for one run
   heartbeat_s: number; // 0 = only wake on assignment or mention
   state: 'active' | 'retired';
@@ -199,6 +201,10 @@ export class CompanyStore {
       CREATE TABLE IF NOT EXISTS limits (key TEXT NOT NULL, at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS limits_key ON limits (key, at);
     `);
+    // 2.2: a sealed model key per company
+    const cols = new Set((this.db.prepare('PRAGMA table_info(companies)').all() as Array<{ name: string }>).map((c) => c.name));
+    if (!cols.has('model_key')) this.db.exec('ALTER TABLE companies ADD COLUMN model_key TEXT');
+    if (!cols.has('model_key_hint')) this.db.exec('ALTER TABLE companies ADD COLUMN model_key_hint TEXT');
   }
 
   tx<T>(fn: () => T): T {
@@ -281,13 +287,14 @@ export class CompanyStore {
       owner_pub: String(r.owner_pub), owner_priv: String(r.owner_priv), budget: Number(r.budget),
       currency: String(r.currency), gateways: parse<string[]>(r.gateways, []), realms: parse<string[]>(r.realms, []),
       catalog: r.catalog == null ? null : String(r.catalog), sell_gateway: r.sell_gateway == null ? null : String(r.sell_gateway),
+      model_key: r.model_key == null ? null : String(r.model_key), model_key_hint: r.model_key_hint == null ? null : String(r.model_key_hint),
       state: r.state as CompanyRow['state'], warned: Number(r.warned) === 1, concurrency: Number(r.concurrency),
       max_tickets: Number(r.max_tickets), created_at: String(r.created_at),
     };
   }
 
-  createCompany(c: Omit<CompanyRow, 'id' | 'created_at' | 'warned'> & { id?: string }, now = new Date()): CompanyRow {
-    const row: CompanyRow = { ...c, id: c.id ?? randomId(), warned: false, created_at: now.toISOString() };
+  createCompany(c: Omit<CompanyRow, 'id' | 'created_at' | 'warned' | 'model_key' | 'model_key_hint'> & { id?: string }, now = new Date()): CompanyRow {
+    const row: CompanyRow = { ...c, id: c.id ?? randomId(), warned: false, model_key: null, model_key_hint: null, created_at: now.toISOString() };
     this.db.prepare(`INSERT INTO companies (id, user_id, name, mission, owner_pub, owner_priv, budget, currency, gateways, realms,
       catalog, sell_gateway, state, warned, concurrency, max_tickets, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(row.id, row.user_id, row.name, row.mission, row.owner_pub, row.owner_priv, row.budget, row.currency,
@@ -311,7 +318,7 @@ export class CompanyStore {
       .map((r) => this.rowToCompany(r));
   }
 
-  updateCompany(id: string, patch: Partial<Pick<CompanyRow, 'budget' | 'state' | 'warned' | 'sell_gateway' | 'mission' | 'name' | 'gateways' | 'realms' | 'concurrency'>>): void {
+  updateCompany(id: string, patch: Partial<Pick<CompanyRow, 'budget' | 'state' | 'warned' | 'sell_gateway' | 'mission' | 'name' | 'gateways' | 'realms' | 'concurrency' | 'model_key' | 'model_key_hint'>>): void {
     const sets: string[] = [];
     const args: Array<string | number | null> = [];
     for (const [k, v] of Object.entries(patch)) {
