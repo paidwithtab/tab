@@ -31,6 +31,8 @@ export interface EngineOptions {
 }
 
 const ACTIVE: ReadonlySet<string> = new Set(['open', 'in_progress']);
+// a ticket in review can still be worked by the colleague it was handed to
+const WAKEABLE: ReadonlySet<string> = new Set(['open', 'in_progress', 'review']);
 
 export class Engine {
   private store: CompanyStore;
@@ -111,7 +113,7 @@ export class Engine {
         const company = this.store.company(agent.company_id);
         if (!company) { this.store.clearWake(w.agent_id, w.ticket_id); continue; }
         const ticket = w.ticket_id ? this.store.ticket(w.ticket_id) ?? null : null;
-        if (w.ticket_id && (!ticket || !ACTIVE.has(ticket.state))) { this.store.clearWake(w.agent_id, w.ticket_id); continue; }
+        if (w.ticket_id && (!ticket || !WAKEABLE.has(ticket.state))) { this.store.clearWake(w.agent_id, w.ticket_id); continue; }
         if (tryStart(company, agent, ticket, w.reason)) this.store.clearWake(w.agent_id, w.ticket_id);
       }
 
@@ -304,7 +306,11 @@ export class Engine {
           for (const e of evidence) ev('evidence', { kind: e.kind, value: e.value, run_id: run.id });
         }
         if (r.status === 'done') {
-          if (evidence.length || ticket.evidence.length) {
+          const handoff = (r.mentions ?? []).map((n) => this.store.agentByName(company.id, n)).filter((a) => a && a.id !== agent.id && a.state === 'active') as AgentRow[];
+          if ((evidence.length || ticket.evidence.length) && handoff.length) {
+            // done, but handed to a colleague: the ticket waits in review until they report
+            setState(ticket, 'review', `handed to ${handoff.map((a) => a.name).join(', ')}`);
+          } else if (evidence.length || ticket.evidence.length) {
             setState(ticket, 'done');
             // a finished sub-ticket wakes whoever owns the parent
             if (ticket.parent_id) {
@@ -345,7 +351,7 @@ export class Engine {
       }
       for (const name of r.mentions ?? []) {
         const other = this.store.agentByName(company.id, name);
-        if (other && other.id !== agent.id && other.state === 'active') this.store.wake(other.id, ticket?.id ?? null, `mentioned by ${agent.name}`, now);
+        if (other && other.id !== agent.id && other.state === 'active') this.store.wake(other.id, ticket?.id ?? null, `${r.status === 'done' ? 'handed over' : 'mentioned'} by ${agent.name}`, now);
       }
     }
 

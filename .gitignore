@@ -45,3 +45,17 @@ demo-spec.json
 # the token gateway specs are not credentials
 !examples/spec-token*.json
 web/company.html
+web/x-callback.html
+web/company-demo.mp4
+web/company-demo-poster.jpg
+web/company-loop-boardroom.mp4
+web/company-loop-gateway.mp4
+web/company-shot-agents.png
+web/company-shot-board.png
+web/company-shot-budget.png
+web/company-shot-key.png
+web/company-shot-receipts.png
+web/company-shot-runlog.png
+web/company-shot-runs.png
+web/company-shot-ticket-editor.png
+web/company-shot-ticket-top.png

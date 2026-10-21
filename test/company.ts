@@ -91,6 +91,7 @@ async function main(): Promise<void> {
     if (mode === 'request') return json(200, { status: 'in_progress', summary: 'need more', requests: [{ kind: 'budget', amount: '1.00', reason: 'bigger job' }] });
     if (mode === 'costly') return json(200, { result: { status: 'done', summary: 'expensive', evidence: [{ kind: 'text', value: 'out' }] }, cost_usd: 1.0 });
     if (mode === 'mention') return json(200, { status: 'in_progress', summary: 'bee, look', mentions: ['@bee'] });
+    if (mode === 'handoff') return json(200, { status: 'done', summary: 'found it, bee checks', evidence: [{ kind: 'text', value: 'findings' }], mentions: ['bee'] });
     return json(200, { status: 'in_progress', summary: mode });
   });
   const STUB = `http://127.0.0.1:${await listen(stub)}`;
@@ -265,6 +266,14 @@ async function main(): Promise<void> {
   check('a mention in the result wakes that agent on the ticket', store.wakes().some((w) => w.ticket_id === t7.id && w.agent_id === bee.body.agent.id));
   await runAll();
   check('the mentioned agent ran with the reason', (await view()).runs[0].agent === 'bee' && /mentioned/.test((await view()).runs[0].reason));
+  modes.ant = 'handoff';
+  const t7b = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'handoff', assignee: 'ant' })).body.ticket;
+  await runAll();
+  v = await view();
+  check('done with a mention hands the ticket to the colleague in review', v.tickets.find((t: any) => t.id === t7b.id).state === 'review' && store.wakes().some((w) => w.ticket_id === t7b.id && w.agent_id === bee.body.agent.id && /handed over/.test(w.reason)));
+  await runAll();
+  v = await view();
+  check('the colleague runs on the review ticket and closes it with evidence', v.tickets.find((t: any) => t.id === t7b.id).state === 'done' && v.runs[0].agent === 'bee' && v.runs[0].ticket_id === t7b.id);
   await api('POST', `/api/companies/${cid}/tickets/${t7.id}/comment`, { text: '@bee please look again' });
   check('an owner comment wakes the named agent', store.wakes().some((w) => w.ticket_id === t7.id && w.agent_id === bee.body.agent.id && /owner/.test(w.reason)));
   await runAll();
