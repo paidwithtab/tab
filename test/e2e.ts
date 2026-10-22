@@ -302,6 +302,36 @@ async function main(): Promise<void> {
     check('an unspent mandate reports zero, a malformed id is refused', unknown.micro === 0 && (await fetch(`${GW}/.well-known/tab/mandate/nope/spent`)).status === 400);
   }
 
+  // -- 9a. per-service upstream rate limit ---------------------------------
+
+  {
+    const slowSpec: Spec = { ...spec, services: [{ name: 'slow', prefix: '/slow', upstream: `http://127.0.0.1:${upPort}/quote`, rate_limit_per_minute: 1,
+      routes: [{ method: 'GET', path: '/', price: '0.01', description: 'one call a minute upstream' }] }] };
+    const slowGw = createGateway(slowSpec, { store });
+    const SGW = `http://127.0.0.1:${await listen(slowGw)}`;
+    const sDisc = await (await fetch(`${SGW}/.well-known/tab`)).json() as any;
+    const before = store.balance(owner.publicKey);
+    const r1 = await client.fetch(`${SGW}/slow`);
+    const afterOne = store.balance(owner.publicKey);
+    const r2 = await client.fetch(`${SGW}/slow`);
+    const p2 = await r2.json() as any;
+    check('a rate-limited service serves within its limit, then answers 429 with Retry-After and charges nothing',
+      sDisc.services[0].rate_limit_per_minute === 1 && r1.status === 200 && before - afterOne === 10_000
+      && r2.status === 429 && Number(r2.headers.get('retry-after')) > 0 && p2.type === 'urn:tab:problem:rate-limited'
+      && store.balance(owner.publicKey) === afterOne);
+    const unpaid = await fetch(`${SGW}/slow`);
+    check('the 402 challenge itself is not rate limited', unpaid.status === 402);
+    slowGw.close();
+    const groupSpec: Spec = { ...spec, services: ['ga', 'gb'].map((n) => ({ name: n, prefix: '/' + n, upstream: `http://127.0.0.1:${upPort}/quote`,
+      rate_limit_per_minute: 1, rate_limit_group: 'shared', routes: [{ method: 'GET', path: '/', price: '0.01', description: 'grouped' }] })) };
+    const groupGw = createGateway(groupSpec, { store });
+    const GGW = `http://127.0.0.1:${await listen(groupGw)}`;
+    const ga = await client.fetch(`${GGW}/ga`);
+    const gb = await client.fetch(`${GGW}/gb`);
+    check('services in one rate limit group share its budget', ga.status === 200 && gb.status === 429);
+    groupGw.close();
+  }
+
   // -- 9b. starter credits (faucet) + tab init ------------------------------
 
   const faucetStore = new Store(join(scratch, 'faucet.db'));
@@ -408,6 +438,14 @@ async function main(): Promise<void> {
     && s2.results[0].price_micro <= s2.results[s2.results.length - 1].price_micro);
   const s3 = await (await fetch(`${CAT}/v1/search?max_price=0.005`)).json() as any;
   check('max_price filter', s3.results.length >= 1 && s3.results.every((r: any) => usdToMicro(r.price) <= 5000));
+  const s4 = await (await fetch(`${CAT}/v1/search?limit=2&offset=1`)).json() as any;
+  check('search pages with limit and offset and reports the total', s4.total === 9 && s4.offset === 1 && s4.results.length === 2
+    && s4.results[0].url === s2.results[1].url);
+  const slim = await (await fetch(`${CAT}/v1/catalog.json?services=0`)).json() as any;
+  const full = catDoc.gateways.find((g: any) => g.origin === GW);
+  const slimGw = slim.gateways.find((g: any) => g.origin === GW);
+  check('catalog.json?services=0 gives counts without the route lists', slimGw && slimGw.services === undefined
+    && slimGw.route_count === full.services.reduce((n: number, sv: any) => n + sv.routes.length, 0) && slimGw.service_count === full.services.length);
 
   const mv1 = await (await fetch(`${CAT}/v1/mandate/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mandate, realm: 'quotes.local' }) })).json() as any;
   const mv2 = await (await fetch(`${CAT}/v1/mandate/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mandate: { ...mandate, budget: '9' }, realm: 'quotes.local' }) })).json() as any;

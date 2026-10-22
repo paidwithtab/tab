@@ -294,7 +294,7 @@ async function main(): Promise<void> {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ origin }),
       })).json()) as any;
 
-    const huge = createServer((_req, res) => { res.writeHead(200); res.end('x'.repeat(3_000_000)); });
+    const huge = createServer((_req, res) => { res.writeHead(200); res.end('x'.repeat(17_000_000)); });
     const hugePort = await listen(huge);
     const hugeRow = await announce(`http://127.0.0.1:${hugePort}`);
     check('multi-megabyte discovery documents are refused', hugeRow.ok === false && /large/.test(hugeRow.error));

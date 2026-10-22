@@ -110,7 +110,7 @@ On success the response carries `Tab-Receipt: <base64url(receipt JSON)>`, which 
 
 The gateway verifies in exactly this order. Each failure is a fresh 402 (RFC 9457 problem, `type: urn:tab:problem:<code>`, plus a fresh challenge in `WWW-Authenticate`), except where noted.
 
-1. **Parse** the `Authorization` header. Not base64url JSON of the right shape → `malformed-credential`. On the evm rail, a missing or unparseable embedded transaction is also `malformed-credential`.
+1. **Parse** the `Authorization` header. Not base64url JSON of the right shape → `malformed-credential`. On the evm rail, a missing or unparseable embedded transaction is also `malformed-credential`. Then, for a service with `rate_limit_per_minute`, the gateway's own call budget to that upstream: over it → **429** `rate-limited` with `Retry-After`, before any check that could burn the challenge or hold money, so the buyer can retry the same credential. The discovery document lists the limit on the service. Services with the same `rate_limit_group` share one budget, for providers whose limit spans many hosts.
 2. **Challenge authenticity**: recompute the HMAC id. Mismatch → `invalid-challenge`. Because the id covers every challenge field, this single check makes all downstream fields trustworthy without server-side challenge state.
 3. **Challenge relevance**: `realm`, `rail`, `recipient`, `amount` and `resource` must equal what this gateway would charge for this request → else `invalid-challenge`. (An HMAC-valid challenge for a cheaper route must not pay for a dearer one.)
 4. **Challenge expiry** → `payment-expired`.
@@ -162,7 +162,7 @@ The catalog's own API (`/v1/catalog.json`, `/v1/search`, `/v1/announce`, `/v1/re
 
 ## 7. Problem codes
 
-`payment-required`, `malformed-credential`, `invalid-challenge`, `payment-expired`, `verification-failed`, `mandate-invalid`, `mandate-denied`, `mandate-exceeded`, `insufficient-funds` (all 402), `not-found` (404), `upstream-failed` (502). Bodies are RFC 9457 problems with `type: urn:tab:problem:<code>`.
+`payment-required`, `malformed-credential`, `invalid-challenge`, `payment-expired`, `verification-failed`, `mandate-invalid`, `mandate-denied`, `mandate-exceeded`, `insufficient-funds` (all 402), `not-found` (404), `rate-limited` (429), `upstream-failed` (502). Bodies are RFC 9457 problems with `type: urn:tab:problem:<code>`.
 
 ## 8. Conformance notes
 

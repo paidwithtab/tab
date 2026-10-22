@@ -28,7 +28,7 @@ export interface CatalogOptions {
   log?: (msg: string) => void;
 }
 
-const MAX_DISCOVERY_BYTES = 1_000_000;
+const MAX_DISCOVERY_BYTES = 16_000_000; // about 40,000 routes
 
 function isPrivateIp(ip: string): boolean {
   if (ip.toLowerCase().startsWith('::ffff:')) ip = ip.slice(7);
@@ -310,14 +310,24 @@ export function createCatalog(opts: CatalogOptions): Server {
       }
 
       if (method === 'GET' && path === '/v1/catalog.json') {
+        // ?services=0 leaves out each gateway's service list, so a page that only needs counts
+        // does not download every route of every gateway
+        const withServices = u.searchParams.get('services') !== '0';
         sendJson(res, 200, {
-          gateways: store.all().map((r) => ({
-            origin: r.origin,
-            ok: r.ok,
-            error: r.error,
-            fetched_at: r.fetched_at,
-            ...(r.payload ?? {}),
-          })),
+          gateways: store.all().map((r) => {
+            const { services, ...rest } = (r.payload ?? {}) as { services?: Array<{ routes?: unknown[] }> };
+            const list = Array.isArray(services) ? services : [];
+            return {
+              origin: r.origin,
+              ok: r.ok,
+              error: r.error,
+              fetched_at: r.fetched_at,
+              ...rest,
+              service_count: list.length,
+              route_count: list.reduce((n, s) => n + (Array.isArray(s.routes) ? s.routes.length : 0), 0),
+              ...(withServices && r.payload ? { services } : {}),
+            };
+          }),
         });
         return;
       }
@@ -329,21 +339,35 @@ export function createCatalog(opts: CatalogOptions): Server {
         // a price ceiling only means something in one currency: USD unless the caller says otherwise
         const currency = u.searchParams.get('currency') || 'USD';
         const terms = q ? q.split(/\s+/) : [];
+        // a page of results: limit defaults to 100 and caps at 1000, offset pages through the rest
+        const limit = Math.min(Math.max(Number(u.searchParams.get('limit') ?? 100) || 100, 1), 1000);
+        const offset = Math.max(Number(u.searchParams.get('offset') ?? 0) || 0, 0);
         const results: Array<CatalogRoute & { score: number }> = [];
         for (const row of store.all()) {
           for (const route of routesOf(row)) {
             if (maxMicro !== null && (route.currency !== currency || route.price_micro > maxMicro)) continue;
             const routeText = `${route.method} ${route.path} ${route.description}`.toLowerCase();
             const serviceText = `${route.service} ${route.service_description} ${route.realm}`.toLowerCase();
+            // every term must appear somewhere; terms found in the route itself and in the
+            // service name rank higher, so "bitcoin fees" puts /bitcoin/v1/fees first
             let score = 0;
             if (terms.length === 0) score = 1;
-            else if (terms.every((t) => routeText.includes(t))) score = 2;
-            else if (terms.every((t) => (routeText + ' ' + serviceText).includes(t))) score = 1;
+            else if (terms.every((t) => (routeText + ' ' + serviceText).includes(t))) {
+              for (const t of terms) {
+                if (routeText.includes(t)) score += 2;
+                if (route.service.toLowerCase().includes(t)) score += 3;
+                else if (serviceText.includes(t)) score += 1;
+              }
+            }
             if (score > 0) results.push({ ...route, score });
           }
         }
         results.sort((a, b) => b.score - a.score || a.price_micro - b.price_micro);
-        sendJson(res, 200, { results: results.map(({ score, ...r }) => r) });
+        sendJson(res, 200, {
+          total: results.length,
+          offset,
+          results: results.slice(offset, offset + limit).map(({ score, ...r }) => r),
+        });
         return;
       }
 

@@ -304,7 +304,8 @@ export type ProblemCode =
   | 'insufficient-funds'
   | 'not-found'
   | 'bad-request'
-  | 'upstream-failed';
+  | 'upstream-failed'
+  | 'rate-limited';
 
 export class PayError extends Error {
   constructor(

@@ -57,6 +57,18 @@ export interface ServiceSpec {
   /** Query parameters added to every upstream URL, for providers that take their key in the query string. */
   upstream_query?: Record<string, string>;
   description?: string;
+  /**
+   * Most upstream calls per minute this gateway makes to the service, for providers that ask for a
+   * ceiling (one request a second is common). Every buyer shares the gateway's IP, so the gateway
+   * enforces it: a paid call over the limit gets a 429 with Retry-After before any money is held.
+   */
+  rate_limit_per_minute?: number;
+  /**
+   * Services with the same group share one rate limit bucket, for providers whose limit covers many
+   * hosts (every Wikimedia wiki counts against one budget). The bucket refills at the first such
+   * service's rate_limit_per_minute.
+   */
+  rate_limit_group?: string;
   /** Environment variables the service needs (API keys). If any is unset or empty, loadSpec drops the service and lists it in Spec.skipped. */
   requires?: string[];
   routes: RouteSpec[];
@@ -115,6 +127,12 @@ export function loadSpec(path: string): Spec {
   if (spec.services.length === 0) throw new Error(`every service was skipped for missing environment variables: ${skipped.join('; ')}`);
   for (const s of spec.services) {
     if (typeof s.prefix !== 'string' || !s.upstream) throw new Error(`service ${s.name}: prefix and upstream are required`);
+    if (s.rate_limit_per_minute !== undefined && !(typeof s.rate_limit_per_minute === 'number' && s.rate_limit_per_minute > 0)) {
+      throw new Error(`service ${s.name}: rate_limit_per_minute must be a positive number`);
+    }
+    if (s.rate_limit_group !== undefined && !s.rate_limit_per_minute) {
+      throw new Error(`service ${s.name}: rate_limit_group needs rate_limit_per_minute`);
+    }
     for (const r of s.routes) {
       if (r.body_allow !== undefined && (!Array.isArray(r.body_allow) || !r.body_allow.every((k) => typeof k === 'string'))) {
         throw new Error(`service ${s.name} route ${r.path}: body_allow must be a list of key names`);
@@ -257,6 +275,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       name: s.name,
       prefix: s.prefix,
       description: s.description,
+      ...(s.rate_limit_per_minute ? { rate_limit_per_minute: s.rate_limit_per_minute } : {}),
+      ...(s.rate_limit_group ? { rate_limit_group: s.rate_limit_group } : {}),
       routes: s.routes.map((r) => ({
         method: r.method.toUpperCase(),
         path: r.path,
@@ -390,6 +410,29 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       }
       return hold;
     });
+  }
+
+  // per-service token buckets for rate_limit_per_minute; a bucket holds one second's worth of calls (at least one)
+  const buckets = new Map<string, { tokens: number; at: number }>();
+  /** Take one upstream call from the service's budget. Returns 0 when allowed, or the seconds to wait. */
+  function takeRate(service: ServiceSpec): number {
+    const perMinute = service.rate_limit_per_minute;
+    if (!perMinute) return 0;
+    const perMs = perMinute / 60_000;
+    const cap = Math.max(1, perMinute / 60);
+    const now = Date.now();
+    const key = service.rate_limit_group ? 'group:' + service.rate_limit_group : 'service:' + service.name;
+    const b = buckets.get(key) ?? { tokens: cap, at: now };
+    b.tokens = Math.min(cap, b.tokens + (now - b.at) * perMs);
+    b.at = now;
+    buckets.set(key, b);
+    if (b.tokens >= 1) { b.tokens -= 1; return 0; }
+    return Math.max(1, Math.ceil((1 - b.tokens) / perMs / 1000));
+  }
+  async function respondRateLimited(res: ServerResponse, service: ServiceSpec, wait: number): Promise<void> {
+    res.writeHead(429, { 'content-type': 'application/problem+json', 'retry-after': String(wait), ...CORS });
+    const scope = service.rate_limit_group ? `${service.rate_limit_group} services share` : `${service.name} allows`;
+    res.end(problemBody('rate-limited', `${scope} ${service.rate_limit_per_minute} calls a minute through this gateway; nothing was charged, retry in ${wait} s`, 429));
   }
 
   async function releaseHold(hold: HoldRow): Promise<void> {
@@ -576,6 +619,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
 
       if (priceMicro === 0) {
         // free routes are forwarded unpaid
+        const wait = takeRate(match.service);
+        if (wait) { await respondRateLimited(res, match.service, wait); return; }
         try {
           const upstream = await forwardUpstream(req, forwardBody, match, u.search, null);
           await relayResponse(res, upstream, {});
@@ -596,6 +641,9 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         await respondChallenge(res, 'malformed-credential', 'Authorization header is not a Tab credential', priceMicro, resource);
         return;
       }
+      // over the service's upstream rate limit: refuse before any hold, so the buyer pays nothing
+      const wait = takeRate(match.service);
+      if (wait) { await respondRateLimited(res, match.service, wait); return; }
 
       let hold: HoldRow;
       try {

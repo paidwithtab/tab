@@ -17,69 +17,21 @@ The second line gives Claude Code the five tab tools. Ask it to look something u
 
 ## What the starter credits buy
 
-123 routes across 59 services are live on `pay.paidwithtab.com` today, between $0.001 and $0.02 a call. The same routes are served for test USDC at `testnet.paidwithtab.com` and for USDG at `mainnet.paidwithtab.com`. The live list, with every route's path and price, is [paidwithtab.com/catalog](https://paidwithtab.com/catalog); this table is the services as of 2026-10-21.
+8,638 routes across 484 services are live on `pay.paidwithtab.com` today, between $0.001 and $0.02 a call. The same routes are served for test USDC at `testnet.paidwithtab.com` and for USDG at `mainnet.paidwithtab.com`. Search them all at [paidwithtab.com/catalog](https://paidwithtab.com/catalog), or from an agent with the `tab_search` tool. This is what they cover as of 2026-10-22.
 
-| Prefix | What | Price per call |
+| Area | What is in it | Routes |
 | --- | --- | --- |
-| `/read` | Read any web page as clean text or markdown (Jina Reader) | 0.003 |
-| `/wikipedia` | English Wikipedia: article summaries and search | 0.001 |
-| `/weather` | Weather forecasts for any coordinates (Open-Meteo) | 0.001 |
-| `/fx` | Currency exchange rates from the European Central Bank (Frankfurter) | 0.001 |
-| `/search` | Web search built for agents: ranked results with content snippets and an optional answer (Tavily) | 0.01 |
-| `/translate` | Translation between 30+ languages (DeepL) | 0.02 |
-| `/speech` | Speech to text and text to speech (Deepgram) | 0.02 |
-| `/geocode` | Place names to coordinates, worldwide (Open-Meteo geocoding) | 0.001 |
-| `/airquality` | Air quality for any coordinates: PM2.5, PM10, ozone, pollen, European and US AQI (Open-Meteo) | 0.001 |
-| `/marine` | Marine forecasts: wave height, swell, sea temperature (Open-Meteo) | 0.001 |
-| `/arxiv` | Search arXiv preprints: physics, maths, computer science, more (returns Atom XML) | 0.002 |
-| `/hn` | Hacker News search and items (Algolia) | 0.001 |
-| `/books` | Books and authors from Open Library | 0.001 |
-| `/wikidata` | Wikidata: entity search and structured facts about anything | 0.001 |
-| `/osm` | Geocoding and reverse geocoding from OpenStreetMap (Nominatim). Low volume only | 0.002 |
-| `/crossref` | Scholarly metadata for 150 million works, by DOI or text (Crossref) | 0.002 |
-| `/pubmed` | PubMed: biomedical literature search and summaries (NCBI E-utilities) | 0.002 |
-| `/quakes` | Earthquakes worldwide, real time (USGS) | 0.001 |
-| `/stackexchange` | Stack Overflow and the Stack Exchange network: questions and answers | 0.001 |
-| `/crypto` | Crypto prices and market data (CoinGecko public API) | 0.001 |
-| `/github` | GitHub public data: repository search and metadata (unauthenticated, rate limited) | 0.001, 0.002 |
-| `/openalex` | OpenAlex: 250 million scholarly works, authors and institutions | 0.001, 0.002 |
-| `/extract` | Extract the content of one or more URLs, cleaned for agents (Tavily) | 0.01 |
-| `/chain` | Robinhood Chain mainnet explorer reads: addresses, balances, transactions and tokens (Blockscout) | 0.001, 0.002 |
-| `/rpc` | Robinhood Chain mainnet JSON-RPC (chain id 4663): any read method | 0.002 |
-| `/eth` | Ethereum mainnet JSON-RPC (PublicNode): balances, blocks, eth_call, logs | 0.002 |
-| `/bitcoin` | Bitcoin mainnet: fee estimates, addresses, transactions, blocks (mempool.space) | 0.001 |
-| `/edgar` | SEC EDGAR company data: filing history and XBRL financial facts by CIK | 0.002, 0.005 |
-| `/edgar-search` | SEC EDGAR full-text search across filings since 2001 | 0.005 |
-| `/rdap` | Domain registration data for .com and .net: registrar, creation and expiry dates, status, nameservers (Verisign RDAP) | 0.002 |
-| `/dns` | DNS over HTTPS: any record type for any name (Google Public DNS). Email verification starts here: MX, SPF and DMARC | 0.001 |
-| `/binance` | Binance spot market data: prices, 24h stats, candles, order book | 0.001 |
-| `/kraken` | Kraken spot market data: tickers, candles, order book, recent trades | 0.001 |
-| `/coinpaprika` | Crypto market data for thousands of coins: tickers, coin profiles, search (Coinpaprika) | 0.001, 0.002 |
-| `/defillama` | DeFi data: TVL by chain and protocol, protocol profiles (DefiLlama) | 0.001, 0.002 |
-| `/bluesky` | Bluesky public data: post search, profiles, author feeds, people search | 0.001, 0.002, 0.003 |
-| `/trials` | Clinical trials registered at ClinicalTrials.gov: search and study records | 0.002 |
-| `/fda` | US FDA data: drug labels and adverse events, food and device recalls (openFDA) | 0.002 |
-| `/europepmc` | Europe PMC: 40 million life science abstracts and full texts | 0.002 |
-| `/cve` | CVE records from the US National Vulnerability Database | 0.002 |
-| `/osv` | Known vulnerabilities for open source packages (OSV, Google) | 0.001, 0.002 |
-| `/npm` | npm registry: package metadata and search | 0.001 |
-| `/pypi` | PyPI: package metadata and release files | 0.001 |
-| `/endoflife` | Release and end-of-life dates for 300+ products (endoflife.date) | 0.001 |
-| `/ecb` | European Central Bank statistics: exchange rates, interest rates, inflation, money supply | 0.001 |
-| `/worldbank` | World Bank development indicators for every country: GDP, population, inflation, 16,000 series | 0.001 |
-| `/flights` | Live aircraft positions from ADS-B receivers worldwide (adsb.lol) | 0.002 |
-| `/holidays` | Public holidays for 100+ countries (Nager.Date) | 0.001 |
-| `/time` | Current time and time zone data (timeapi.io) | 0.001 |
-| `/ip` | IP geolocation: city, country, ASN, time zone, currency (ipapi.co) | 0.001 |
-| `/pageviews` | Wikipedia page view counts, a public attention signal for any topic (Wikimedia) | 0.001 |
-| `/openverse` | Openly licensed images and audio with license metadata (Openverse) | 0.002 |
-| `/tides` | US tides, water levels and predictions at NOAA stations | 0.001 |
-| `/food` | Food products by barcode: ingredients, nutrition, Nutri-Score (Open Food Facts) | 0.001 |
-| `/gutenberg` | 75,000 public domain books from Project Gutenberg: search and download links (Gutendex) | 0.001 |
-| `/words` | Words by meaning, sound, spelling and context: synonyms, rhymes, completions (Datamuse) | 0.001 |
-| `/postcodes` | Postal codes to places for 60 countries (Zippopotam) | 0.001 |
-| `/pwned` | Has a password appeared in a breach, checked by k-anonymity (Have I Been Pwned) | 0.001 |
-| `/zenodo` | Research datasets, software and papers with DOIs (Zenodo, CERN) | 0.001, 0.002 |
+| Chains and crypto | Block explorer APIs for 42 chains including Robinhood Chain, JSON-RPC for 70 networks, Bitcoin and Liquid, market data from 20 exchanges, DefiLlama | about 3,100 |
+| Reference | Wikipedia in 48 languages, Wiktionary, Wikiquote, Wikisource, Wikivoyage, Wikidata and its SPARQL endpoint, Open Library, Internet Archive, museum collections | about 1,950 |
+| Science and health | GBIF, OBIS, WoRMS, Ensembl, UniProt, RCSB PDB, PubChem, ChEMBL, Reactome, OLS, NCBI, PubMed, Crossref, DataCite, Europe PMC, openFDA, RxNorm, clinical trials, NOAA space weather, JPL small bodies | about 1,250 |
+| Developer tooling | npm, PyPI, crates.io, RubyGems, Packagist, NuGet, Maven, Go, Docker Hub, Hex, pub.dev, Homebrew, CRAN, deps.dev, OSV, GitLab, Codeberg, Linux package indexes, release calendars | about 640 |
+| Internet infrastructure | RDAP for 55 registries and the regional internet registries, RIPEstat, RIPE Atlas, DNS over HTTPS, IP geolocation, cloud IP ranges, breach data | about 370 |
+| Government and economics | US Treasury Fiscal Data, USAspending, Federal Register, SEC EDGAR, ECB, World Bank, IMF, Eurostat, UK and French open data | about 420 |
+| Weather, earth and places | US National Weather Service, aviation weather, Canadian weather, USGS water and earthquakes, UK floods and carbon intensity, geocoding, postcodes, holidays, time zones | about 380 |
+| Social, media and games | Bluesky, eight Mastodon servers, Hacker News, TVmaze, iTunes, lichess, chess.com, football leagues | about 480 |
+| Paid providers | Tavily search and extract, DeepL translation, Deepgram speech, Jina Reader | 6 |
+
+Every route was called once with a real sample before it was listed. Services whose provider asks for a request ceiling carry `rate_limit_per_minute` in the discovery document, and the gateway answers 429 before charging when a call would go over it.
 
 Three paid calls, as pasted:
 

@@ -43,6 +43,7 @@ export const TAB_TOOLS: ToolSpec[] = [
       properties: {
         query: { type: 'string', description: 'keywords to search route names and descriptions' },
         max_price: { type: 'string', description: 'optional price ceiling in this agent\'s currency, e.g. "0.01"; routes priced in other currencies are left out' },
+        limit: { type: 'number', description: 'how many routes to return, best matches first (default 20, at most 100); the result says how many matched in total' },
       },
       required: ['query'],
     },
@@ -124,6 +125,7 @@ export function createTabTools(opts: TabToolOptions): { list: ToolSpec[]; call: 
           u.searchParams.set('q', String(args.query ?? ''));
           if (args.max_price) u.searchParams.set('max_price', String(args.max_price));
           u.searchParams.set('currency', currency);
+          u.searchParams.set('limit', String(Math.min(Math.max(Number(args.limit ?? 20) || 20, 1), 100)));
           const r = await doFetch(u, { signal: AbortSignal.timeout(10_000) });
           return text(await r.json());
         }

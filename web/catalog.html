@@ -200,7 +200,7 @@ function refLink(ref, origin) {
 
 async function search() {
   const q = $('#q').value.trim();
-  const data = await getJSON('/v1/search?q=' + encodeURIComponent(q));
+  const data = await getJSON('/v1/search?limit=200&q=' + encodeURIComponent(q));
   const rows = (data.results ?? []).map((r, i) => `
     <tr>
       <td><span class="m${r.method === 'GET' ? ' get' : ''}">${esc(r.method)}</span><span class="mono">${esc(r.path)}</span><br>
@@ -209,7 +209,8 @@ async function search() {
       <td>${tryInfo.enabled || r.price === '0' ? `<button data-i="${i}">Buy</button>` : ''}</td>
     </tr>`).join('');
   $('#results tbody').innerHTML = `<tr><th>route</th><th>price</th><th></th></tr>` +
-    (rows || `<tr><td colspan="3" class="dim">${q ? `no live route matches “${esc(q)}”. Clear the search to list everything.` : 'no gateways have announced routes here yet.'}</td></tr>`);
+    (rows || `<tr><td colspan="3" class="dim">${q ? `no live route matches “${esc(q)}”. Clear the search to list everything.` : 'no gateways have announced routes here yet.'}</td></tr>`) +
+    ((data.total ?? 0) > (data.results ?? []).length ? `<tr><td colspan="3" class="dim">Showing the best ${(data.results ?? []).length} of ${data.total} matching routes. Add a word to narrow it.</td></tr>` : '');
   $('#results').dataset.routes = JSON.stringify(data.results ?? []);
 }
 
@@ -237,7 +238,7 @@ async function tryRoute(i) {
 }
 
 async function loadGateways() {
-  const data = await getJSON('/v1/catalog.json');
+  const data = await getJSON('/v1/catalog.json?services=0');
   knownGateways = data.gateways ?? [];
   for (const g of knownGateways) { const e = g.explorer ?? g.rail_info?.explorer; if (e) explorers[g.origin] = e; }
   const rows = knownGateways.map((g) => `
@@ -255,7 +256,7 @@ async function loadGateways() {
     || '<option value="">no gateways announced yet</option>';
   if (current) sel.value = current;
   const up = knownGateways.filter((g) => g.ok);
-  const routes = up.reduce((n, g) => n + (g.services || []).reduce((k, sv) => k + (sv.routes || []).length, 0), 0);
+  const routes = up.reduce((n, g) => n + (g.route_count ?? (g.services || []).reduce((k, sv) => k + (sv.routes || []).length, 0)), 0);
   $('#cat-count').textContent = routes ? `${routes} routes on ${up.length} gateway${up.length === 1 ? '' : 's'}` : '';
 }
 

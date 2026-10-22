@@ -99,7 +99,7 @@ examples/
   spec-evm.json             # same routes on the evm rail (Robinhood Chain testnet)
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh                   # one-command sandbox
-test/e2e.ts                 # 63 in-process checks, temp DB, ~1-2 min
+test/e2e.ts                 # 75 in-process checks, temp DB, ~1-2 min
 test/adversarial.ts         # 24 hostile checks: concurrency, replay, mutation, SSRF, forgery
 test/evm.ts                 # 41 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway, live Robinhood testnet reads
 ```
