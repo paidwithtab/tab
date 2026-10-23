@@ -301,10 +301,6 @@ async function main(): Promise<void> {
 
     case 'mcp': {
       const files = defaultAgentFiles(process.env.TAB_AGENT, process.env.TAB_MANDATE);
-      // installed from an MCP directory before any setup: say how to get keys, not a stack trace
-      for (const f of [files.agent, files.mandate]) {
-        if (!existsSync(f)) die(`no ${f}: run "npx paidwithtab init" once to create an agent key, a mandate and starter credits, or set TAB_AGENT and TAB_MANDATE`);
-      }
       const agent = loadKey(files.agent);
       const mandate = loadMandate(files.mandate);
       const v = verifyMandate(mandate);
