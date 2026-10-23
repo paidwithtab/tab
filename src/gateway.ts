@@ -8,6 +8,7 @@ import {
   VERSION,
   encodeChallengeHeader,
   encodeReceiptHeader,
+  signReceipt,
   isCurrency,
   makeChallenge,
   microToBaseUnits,
@@ -270,6 +271,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     rail_info: rail.info(),
     currency: spec.currency,
     recipient: spec.recipient,
+    receipt_key: store.receiptKey.publicKey,
     faucet: faucetMicro > 0 ? microToUsd(faucetMicro) : undefined,
     services: spec.services.map((s) => ({
       name: s.name,
@@ -487,13 +489,14 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     res: ServerResponse,
     upstream: Response,
     extra: Record<string, string>,
+    read?: Buffer, // the body, when the caller already read it to commit to it
   ): Promise<void> {
     const headers: Record<string, string> = { ...CORS, ...extra };
     upstream.headers.forEach((v, k) => {
       if (['content-length', 'content-encoding', 'transfer-encoding', 'connection'].includes(k)) return;
       headers[k] = v;
     });
-    const body = Buffer.from(await upstream.arrayBuffer());
+    const body = read ?? Buffer.from(await upstream.arrayBuffer());
     res.writeHead(upstream.status, headers);
     res.end(body);
   }
@@ -681,17 +684,27 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       }
 
       if (upstream.status >= 200 && upstream.status < 300) {
+        // the receipt commits to the bytes relayed, so read them before any money moves
+        let delivered: Buffer;
+        try {
+          delivered = Buffer.from(await upstream.arrayBuffer());
+        } catch (err) {
+          await releaseHold(hold);
+          await respondProblem(res, 'upstream-failed', `upstream body failed: ${(err as Error).message}`, 502);
+          log(`${method} ${pathname} -> 502 upstream body failed (hold ${hold.id} released)`);
+          return;
+        }
         let ref: string;
         try {
           ref = await rail.capture(hold);
         } catch (err) {
           // The buyer got the response; worst case they were not charged.
           await releaseHold(hold);
-          await relayResponse(res, upstream, { 'tab-void': hold.id });
+          await relayResponse(res, upstream, { 'tab-void': hold.id }, delivered);
           log(`${method} ${pathname} -> ${upstream.status} capture FAILED, voided ${hold.id}: ${(err as Error).message}`);
           return;
         }
-        const receipt: Receipt = {
+        const receipt: Receipt = signReceipt(store.receiptKey, {
           id: hold.id,
           realm: spec.realm,
           resource,
@@ -703,10 +716,15 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           recipient: hold.recipient,
           ref,
           at: new Date().toISOString(),
-        };
+          mandate: hold.mandate_id,
+          challenge: hold.challenge_id,
+          request: cred.request,
+          credential: cred.sig,
+          response: { status: upstream.status, body_sha256: sha256b64url(delivered) },
+        });
         store.setHoldState(hold.id, 'captured', ref);
         store.addReceipt(receipt);
-        await relayResponse(res, upstream, { 'tab-receipt': encodeReceiptHeader(receipt) });
+        await relayResponse(res, upstream, { 'tab-receipt': encodeReceiptHeader(receipt) }, delivered);
         log(`${method} ${pathname} -> ${upstream.status} paid ${microToUsd(priceMicro)} ${ref} ${Date.now() - started}ms`);
       } else {
         await releaseHold(hold);

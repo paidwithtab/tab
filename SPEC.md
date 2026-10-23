@@ -1,6 +1,6 @@
 # The tab protocol, draft 0.4
 
-How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail for Robinhood Chain and the `evm_owner` mandate field, draft 0.3 made `evm` the sole settlement rail, draft 0.4 let a gateway charge in a token of any decimals and name it in `currency`).
+How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail for Robinhood Chain and the `evm_owner` mandate field, draft 0.3 made `evm` the sole settlement rail, draft 0.4 let a gateway charge in a token of any decimals and name it in `currency`, draft 0.5 made receipts signed statements that bind the policy, the request, the response and the payment).
 
 ## 1. Model and terms
 
@@ -104,7 +104,20 @@ so a credential authorizes **exactly this request** (method, path, query and bod
 
 ### 3.3 Receipts and voids
 
-On success the response carries `Tab-Receipt: <base64url(receipt JSON)>`, which decodes to `{id, realm, resource, amount, currency, rail, payer, owner, recipient, ref, at}` with `ref` = `ledger:<hold id>` or `evm:<tx hash>`. If the upstream answered non-2xx, the response is passed through unchanged plus `Tab-Void: <hold id>` and nothing is charged. The upstream itself receives `Tab-Payer`, `Tab-Owner` and `Tab-Hold` request headers for attribution; the buyer's `Authorization` header is stripped and the gateway's `upstream_headers` are injected.
+On success the response carries `Tab-Receipt: <base64url(receipt JSON)>`. A receipt says what was bought, not only that money moved:
+
+```json
+{ "id": "<hold id>", "realm": "…", "resource": "POST /v1/things", "amount": "2000", "currency": "USD",
+  "rail": "evm", "payer": "<agent>", "owner": "<owner>", "recipient": "<seller>", "ref": "evm:0x…", "at": "…",
+  "mandate": "<mandate id>", "challenge": "<challenge id>",
+  "request": { "query": "?q=1", "body_sha256": "…" }, "credential": "<agent signature>",
+  "response": { "status": 200, "body_sha256": "…" },
+  "gateway": "<receipt key>", "sig": "<gateway signature>" }
+```
+
+`ref` is `ledger:<hold id>` or `evm:<tx hash>`. `mandate` is the policy the payment ran under and `challenge` the id that fixed price, route and recipient. `request` and `credential` are the commitment and signature the agent sent (§3.2), so the receipt can be traced back to an authorization only the agent could give. `response.body_sha256` is the SHA-256 (base64url) of the body bytes the gateway relayed, after any transfer encoding is removed. `gateway` is the gateway's Ed25519 **receipt key**, published in discovery (§6), and `sig` is its signature over the canonical JSON of the receipt minus `sig`. The gateway reads the whole upstream body before capture, so the response is fixed before any money moves.
+
+A client SHOULD verify every receipt: `gateway` equals the `receipt_key` in the gateway's discovery document, `sig` verifies, `mandate` is its own mandate, `request` is what it sent, `response.status` is the status it got, and `response.body_sha256` matches the bytes it read. A receipt that fails any of these is evidence of tampering, not of a purchase. Gateways before draft 0.5 sent receipts without the commitment members and `sig`; those never count as verified. If the upstream answered non-2xx, the response is passed through unchanged plus `Tab-Void: <hold id>` and nothing is charged. The upstream itself receives `Tab-Payer`, `Tab-Owner` and `Tab-Hold` request headers for attribution; the buyer's `Authorization` header is stripped and the gateway's `upstream_headers` are injected.
 
 ## 4. Verification order
 
@@ -151,12 +164,12 @@ Per payment the agent builds an EIP-1559 transaction from the challenge (to = to
 
 ```json
 { "ver": "tab/0", "realm": "…", "rail": "ledger", "rail_info": { … },
-  "recipient": "<wallet id>",
+  "recipient": "<wallet id>", "receipt_key": "<Ed25519 public key, base64url>",
   "services": [ { "name": "…", "prefix": "…", "description": "…",
       "routes": [ { "method": "GET", "path": "/v1/things/:id", "price": "0.01", "description": "…" } ] } ] }
 ```
 
-Also `GET /.well-known/tab/wallet/<id>` (available balance on this rail) and, if the gateway opted in, `GET /.well-known/tab/receipts?limit=` (last 200). All JSON endpoints send `Access-Control-Allow-Origin: *`. Unpriced paths are 404 and never proxied; `"0"`-priced routes are proxied unpaid.
+Also `GET /.well-known/tab/wallet/<id>` (available balance on this rail) and, if the gateway opted in, `GET /.well-known/tab/receipts?limit=` (last 200, each signed receipt exactly as signed). `receipt_key` is generated once per gateway database and signs every receipt it issues. All JSON endpoints send `Access-Control-Allow-Origin: *`. Unpriced paths are 404 and never proxied; `"0"`-priced routes are proxied unpaid.
 
 The catalog's own API (`/v1/catalog.json`, `/v1/search`, `/v1/announce`, `/v1/refresh`, `/v1/mandate/verify`, `/v1/wallet`, `/v1/receipts`, `/v1/try`) is descriptive, not part of the payment protocol; see `DEPLOY.md` section 10.
 
@@ -182,9 +195,11 @@ The catalog's own API (`/v1/catalog.json`, `/v1/search`, `/v1/announce`, `/v1/re
 - **Challenge forgery** is stopped by the per-database HMAC secret; losing the database rotates the secret implicitly (old challenges die harmlessly) but also resets spend counters; see `DEPLOY.md` section 12.
 - **Request binding** (new in draft 0.1): the credential signature covers the query string and a SHA-256 body digest, and the gateway compares both against the request it actually received, so an authorization describes exactly one request. Residual gap: request *headers* are not bound; do not let header values change what an upstream sells for a given priced route.
 - **Catalog SSRF**: `/v1/announce` refuses origins that are IP-literals in, or resolve to, private/loopback/link-local/CGNAT/metadata ranges (unless started with `--allow-private-origins` for local development), refuses redirects and caps discovery documents at 1 MB; the wallet proxy only fetches already-catalogued origins. Residual gap: DNS rebinding between the resolve-check and the fetch, so run public catalogs on hosts with no reachable internal services.
+- **What a receipt proves** (new in draft 0.5): that this gateway, under its published key, served a response with this status and body hash for this exact request, under this mandate, and booked this payment (on the evm rail, the named transaction). It does not prove the upstream produced that body: the gateway signs what it relayed, and a dishonest gateway can sign a body it made up. Closing that needs the upstream to sign its own responses, which most public APIs do not. Receipts also do not hash response headers.
+- **Receipt key loss**: a new database means a new receipt key, and receipts from the old one no longer match discovery. Operators who rotate on purpose should keep the old public key on record for audits.
 - **Public receipts** expose payer and owner wallet ids; leave `public_receipts` off if that linkage matters.
 - The web try-it agent is a deliberate hole: anyone who can reach the catalog can spend that mandate. Give it a budget you are happy to lose.
 
-## Not in draft 0.3
+## Not in draft 0.5
 
-x402 client compatibility · agents acting as sellers · per-token / metered pricing and payment channels · windowed budgets enforced on-chain · header binding · subscriptions · fee splits · EIP-4337 / gas sponsorship · dispute windows.
+x402 client compatibility · agents acting as sellers · per-token / metered pricing and payment channels · windowed budgets enforced on-chain · header binding · upstream-signed responses · subscriptions · fee splits · EIP-4337 / gas sponsorship · dispute windows.

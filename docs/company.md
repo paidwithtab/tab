@@ -50,6 +50,8 @@ Three ceilings compose: the company budget, the agent's per-run budget (set at h
 
 Model cost is the other half. The claude adapter prices the token usage the Messages API reports (input, output, cache writes and reads, at the published per-model rates) and books it as `model_cost`; claude-code reads `total_cost_usd` from Claude Code's result; an http agent may report `cost_usd` in its reply. The company budget covers both. At 80 percent an event warns; at 100 percent the company pauses and runs nothing until the budget is raised.
 
+Receipts are signed by the gateway (spec draft 0.5). The engine checks each one against the key the gateway publishes and the run's own mandate before booking it, the dashboard marks it signed or NOT VERIFIED, and `GET /api/companies/<id>/receipts/<receipt id>` returns it exactly as signed, so anyone can check it later without trusting this server.
+
 A company can also earn. Publish the gateway it sells through (one whose `recipient` is the company's owner wallet) and the dashboard shows the balance and the receipts where the company is the recipient.
 
 ## Agents

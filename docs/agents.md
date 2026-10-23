@@ -128,6 +128,8 @@ try {
 
 `client.fetch` has the signature of `fetch`. On a 402 it checks the price against the mandate and your cap, signs a credential binding that exact request, retries once, and returns the response. `receiptOf` reads the receipt, or null if the route was free or the call was voided. `PaymentRefused` is thrown before any money moves.
 
+Receipts are signed. `await client.verify(url, res, body, init)` takes the bytes you read from the response (read them with `arrayBuffer()` and decode yourself, since a body can only be read once) and the `init` you sent, and returns `{ ok: true }` only when the receipt was signed by the `receipt_key` the gateway publishes in `/.well-known/tab`, names your mandate, commits to the request you sent, and hashes to exactly the body you got. Anything else returns `{ ok: false, reason }`. `tab fetch` and the MCP `tab_fetch` tool run this check on every paid call and report `receipt_verified`.
+
 ### As a tool in an agent framework
 
 Give the framework a tool whose implementation calls `client.fetch`. The model never sees a key; it sees a function that fetches URLs and reports what they cost. Two sketches:

@@ -139,18 +139,23 @@ export function createTabTools(opts: TabToolOptions): { list: ToolSpec[]; call: 
         case 'tab_fetch': {
           const method = String(args.method ?? 'GET').toUpperCase();
           try {
-            const r = await client.fetch(String(args.url), {
+            const init = {
               method,
               headers: args.body != null ? { 'content-type': 'application/json' } : undefined,
               body: args.body != null ? String(args.body) : undefined,
-            });
-            const bodyText = await r.text();
+            };
+            const r = await client.fetch(String(args.url), init);
+            const bytes = new Uint8Array(await r.arrayBuffer());
+            const bodyText = new TextDecoder().decode(bytes);
             const receipt = receiptOf(r);
+            const check = receipt ? await client.verify(String(args.url), r, bytes, init) : null;
             return text({
               status: r.status,
               paid: receipt ? formatAmount(Number(receipt.amount), receipt.currency) : null,
               paid_usd: receipt && (receipt.currency ?? 'USD') === 'USD' ? microToUsd(Number(receipt.amount)) : null,
               receipt,
+              receipt_verified: check ? check.ok : null,
+              ...(check && !check.ok ? { receipt_problem: check.reason } : {}),
               body: bodyText.slice(0, 50_000),
             });
           } catch (err) {

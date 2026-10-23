@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { newKeyPair } from '../src/keys.js';
 import {
   usdToMicro, signCredential, encodeCredentialHeader, parseChallengeHeader,
+  verifyReceipt, signReceipt, bodyDigest, type Receipt,
 } from '../src/protocol.js';
 import { issueMandate } from '../src/mandate.js';
 import { Store, CatalogStore } from '../src/store.js';
@@ -390,6 +391,43 @@ async function main(): Promise<void> {
       && free.status === 200);
     deadGw.close();
     deadStore.close();
+  }
+
+  // ==========================================================================
+  // I. signed receipts: a receipt proves what was bought, not just that money moved
+  // ==========================================================================
+
+  {
+    const GW = `http://127.0.0.1:${(gateway.address() as { port: number }).port}`;
+    const m = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['adv.local'] });
+    const client = new TabClient({ agent, mandate: m });
+    const init = { method: 'POST', body: '{"ask":"receipt"}' };
+    const res = await client.fetch(`${GW}/echo?x=1`, init);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const rec = receiptOf(res)!;
+    const key = ((await (await fetch(`${GW}/.well-known/tab`)).json()) as { receipt_key: string }).receipt_key;
+    check('discovery publishes the receipt key, and it survived the restart in G', key === store.receiptKey.publicKey && rec.gateway === key);
+    check('a paid receipt verifies: key, mandate, request and the body received', (await client.verify(`${GW}/echo?x=1`, res, bytes, init))?.ok === true);
+    check('the receipt binds policy, request, response and payment', rec.mandate === m.id && rec.request?.query === '?x=1'
+      && rec.request?.body_sha256 === bodyDigest(init.body) && rec.response?.status === 200
+      && rec.response?.body_sha256 === bodyDigest(bytes) && typeof rec.challenge === 'string' && rec.ref.startsWith('ledger:'));
+
+    const swapped = new TextEncoder().encode('{"path":"/echo","body":"something else"}');
+    check('a body swapped in transit fails the receipt', (await client.verify(`${GW}/echo?x=1`, res, swapped, init))?.reason === 'response body does not match the receipt');
+    check('a receipt for a different request fails', verifyReceipt(rec, { key, request: { query: '?x=2', body_sha256: rec.request!.body_sha256 } }).ok === false);
+    check('a receipt under a different mandate fails', verifyReceipt(rec, { key, mandate: mandate.id }).reason === 'receipt names a different mandate');
+    const inflated: Receipt = { ...rec, amount: '1' };
+    check('editing any field breaks the signature', verifyReceipt(inflated, { key }).reason === 'receipt signature does not verify');
+    const forged = signReceipt(attacker, { ...rec, response: { status: 200, body_sha256: bodyDigest(swapped) } });
+    check('a receipt re-signed by another key fails against the published key', verifyReceipt(forged, { key, body: swapped }).reason === 'receipt was signed by a key the gateway does not publish');
+    const legacy: Receipt = { ...rec, sig: undefined, gateway: undefined };
+    check('an unsigned receipt never counts as verified', verifyReceipt(legacy, { key }).reason === 'unsigned receipt');
+
+    const listed = ((await (await fetch(`${GW}/.well-known/tab/receipts?payer=${encodeURIComponent(agent.publicKey)}&limit=200`)).json()) as { receipts: Receipt[] }).receipts.find((r) => r.id === rec.id);
+    check('the receipts endpoint returns the receipt exactly as signed', !!listed && verifyReceipt(listed, { key, mandate: m.id, body: bytes }).ok);
+
+    const res402 = await client.fetch(`${GW}/destroy`);
+    check('a failed upstream issues no receipt', res402.status === 502 && receiptOf(res402) === null);
   }
 
   gateway.close();

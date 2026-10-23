@@ -5,7 +5,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { randomId } from '../protocol.js';
+import { randomId, type Receipt } from '../protocol.js';
 import type { Mandate } from '../mandate.js';
 
 export interface UserRow { id: string; email: string; created_at: string }
@@ -132,6 +132,8 @@ export interface CompanyReceipt {
   amount: number;
   currency: string;
   at: string;
+  verified: boolean; // signed by the key the gateway publishes, for this run's mandate
+  doc: Receipt | null; // the receipt as the gateway signed it
 }
 
 const parse = <T>(s: unknown, fallback: T): T => {
@@ -205,6 +207,10 @@ export class CompanyStore {
     const cols = new Set((this.db.prepare('PRAGMA table_info(companies)').all() as Array<{ name: string }>).map((c) => c.name));
     if (!cols.has('model_key')) this.db.exec('ALTER TABLE companies ADD COLUMN model_key TEXT');
     if (!cols.has('model_key_hint')) this.db.exec('ALTER TABLE companies ADD COLUMN model_key_hint TEXT');
+    // 2.3: signed receipts, kept whole with the engine's verdict
+    const rcols = new Set((this.db.prepare('PRAGMA table_info(receipts)').all() as Array<{ name: string }>).map((c) => c.name));
+    if (!rcols.has('verified')) this.db.exec('ALTER TABLE receipts ADD COLUMN verified INTEGER NOT NULL DEFAULT 0');
+    if (!rcols.has('doc')) this.db.exec('ALTER TABLE receipts ADD COLUMN doc TEXT');
   }
 
   tx<T>(fn: () => T): T {
@@ -584,17 +590,27 @@ export class CompanyStore {
   // -- receipts ------------------------------------------------------------
 
   addReceipt(r: CompanyReceipt): void {
-    this.db.prepare(`INSERT OR IGNORE INTO receipts (id, company_id, run_id, agent_id, origin, realm, resource, amount, currency, at)
-      VALUES (?,?,?,?,?,?,?,?,?,?)`)
-      .run(r.id, r.company_id, r.run_id, r.agent_id, r.origin, r.realm, r.resource, r.amount, r.currency, r.at);
+    this.db.prepare(`INSERT OR IGNORE INTO receipts (id, company_id, run_id, agent_id, origin, realm, resource, amount, currency, at, verified, doc)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(r.id, r.company_id, r.run_id, r.agent_id, r.origin, r.realm, r.resource, r.amount, r.currency, r.at, r.verified ? 1 : 0, r.doc ? JSON.stringify(r.doc) : null);
+  }
+
+  receipt(companyId: string, id: string): CompanyReceipt | undefined {
+    const row = this.db.prepare('SELECT * FROM receipts WHERE company_id = ? AND id = ?').get(companyId, id) as Record<string, unknown> | undefined;
+    return row ? this.receiptRow(row) : undefined;
   }
 
   receiptsOf(companyId: string, limit = 100): CompanyReceipt[] {
-    return (this.db.prepare('SELECT * FROM receipts WHERE company_id = ? ORDER BY at DESC LIMIT ?').all(companyId, limit) as Record<string, unknown>[]).map((r) => ({
+    return (this.db.prepare('SELECT * FROM receipts WHERE company_id = ? ORDER BY at DESC LIMIT ?').all(companyId, limit) as Record<string, unknown>[]).map((r) => this.receiptRow(r));
+  }
+
+  private receiptRow(r: Record<string, unknown>): CompanyReceipt {
+    return ({
       id: String(r.id), company_id: String(r.company_id), run_id: r.run_id == null ? null : String(r.run_id),
       agent_id: r.agent_id == null ? null : String(r.agent_id), origin: String(r.origin), realm: String(r.realm),
       resource: String(r.resource), amount: Number(r.amount), currency: String(r.currency), at: String(r.at),
-    }));
+      verified: Number(r.verified) === 1, doc: r.doc ? (JSON.parse(String(r.doc)) as Receipt) : null,
+    });
   }
 
   close(): void {

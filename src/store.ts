@@ -1,10 +1,11 @@
 // SQLite state, on the built-in node:sqlite. One file per gateway. WAL mode.
-// Holds: HMAC secret, ledger wallets, holds, receipts, mandate spend counters,
+// Holds: HMAC secret, receipt signing key, ledger wallets, holds, receipts, mandate spend counters,
 // redeemed challenge ids. The catalog uses its own smaller store below.
 
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
 import type { Receipt } from './protocol.js';
+import { newKeyPair, type KeyPair } from './keys.js';
 
 export interface HoldRow {
   id: string;
@@ -31,6 +32,7 @@ export interface HoldRow {
 export class Store {
   private db: DatabaseSync;
   readonly secret: Uint8Array;
+  readonly receiptKey: KeyPair; // Ed25519; signs every receipt, public half in discovery
 
   constructor(public readonly path: string) {
     this.db = new DatabaseSync(path);
@@ -71,6 +73,19 @@ export class Store {
       this.db.exec("ALTER TABLE receipts ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'");
     } catch {
       /* column already exists */
+    }
+    // databases created before signed receipts lack the full signed document
+    try {
+      this.db.exec('ALTER TABLE receipts ADD COLUMN doc TEXT');
+    } catch {
+      /* column already exists */
+    }
+    const keyRow = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('receipt_key') as { value: string } | undefined;
+    if (keyRow) {
+      this.receiptKey = JSON.parse(keyRow.value) as KeyPair;
+    } else {
+      this.receiptKey = newKeyPair();
+      this.db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run('receipt_key', JSON.stringify(this.receiptKey));
     }
     const row = this.db.prepare('SELECT value FROM meta WHERE key = ?').get('secret') as
       | { value: string }
@@ -223,9 +238,9 @@ export class Store {
   addReceipt(r: Receipt): void {
     this.db
       .prepare(
-        'INSERT INTO receipts (id, realm, resource, amount, currency, rail, payer, owner, recipient, ref, at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        'INSERT INTO receipts (id, realm, resource, amount, currency, rail, payer, owner, recipient, ref, at, doc) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
       )
-      .run(r.id, r.realm, r.resource, Number(r.amount), r.currency ?? 'USD', r.rail, r.payer, r.owner, r.recipient, r.ref, r.at);
+      .run(r.id, r.realm, r.resource, Number(r.amount), r.currency ?? 'USD', r.rail, r.payer, r.owner, r.recipient, r.ref, r.at, r.sig ? JSON.stringify(r) : null);
   }
 
   receipts(limit: number, filter: { payer?: string; since?: string } = {}): Receipt[] {
@@ -237,7 +252,8 @@ export class Store {
     const rows = this.db
       .prepare(`SELECT * FROM receipts${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY at DESC, rowid DESC LIMIT ?`)
       .all(...args) as Array<Record<string, unknown>>;
-    return rows.map((r) => ({
+    // a signed receipt is returned exactly as signed, so anyone can check it later
+    return rows.map((r) => r.doc ? JSON.parse(String(r.doc)) as Receipt : ({
       id: String(r.id), realm: String(r.realm), resource: String(r.resource),
       amount: String(r.amount), currency: String(r.currency ?? 'USD'),
       rail: r.rail as Receipt['rail'], payer: String(r.payer), owner: String(r.owner),

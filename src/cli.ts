@@ -275,14 +275,19 @@ async function main(): Promise<void> {
       });
       const method = ((values.method as string) ?? (values.data != null ? 'POST' : 'GET')).toUpperCase();
       try {
-        const res = await client.fetch(positionals[0], {
+        const init = {
           method,
           headers: values.data != null ? { 'content-type': 'application/json' } : undefined,
           body: values.data as string | undefined,
-        });
-        const body = await res.text();
+        };
+        const res = await client.fetch(positionals[0], init);
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        const body = new TextDecoder().decode(bytes);
         const receipt = receiptOf(res);
-        if (receipt) log(`paid ${formatAmount(Number(receipt.amount), receipt.currency)} (${receipt.ref})`);
+        if (receipt) {
+          const check = await client.verify(positionals[0], res, bytes, init);
+          log(`paid ${formatAmount(Number(receipt.amount), receipt.currency)} (${receipt.ref}), receipt ${check?.ok ? 'verified' : `NOT verified: ${check?.reason}`}`);
+        }
         process.stdout.write(body.endsWith('\n') || body === '' ? body : body + '\n');
         process.exit(res.ok ? 0 : 1);
       } catch (err) {

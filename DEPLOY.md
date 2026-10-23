@@ -100,7 +100,7 @@ examples/
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh                   # one-command sandbox
 test/e2e.ts                 # 75 in-process checks, temp DB, ~1-2 min
-test/adversarial.ts         # 24 hostile checks: concurrency, replay, mutation, SSRF, forgery
+test/adversarial.ts         # 37 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts
 test/evm.ts                 # 41 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway, live Robinhood testnet reads
 ```
 
@@ -112,10 +112,10 @@ test/evm.ts                 # 41 checks: crypto vectors, a mock EVM node, rpc fa
 cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
-npm test                    # 70 passed, 0 failed on the dev box
-npm run test:adversarial    # 26 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling
+npm test                    # 75 passed, 0 failed on the dev box
+npm run test:adversarial    # 37 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
 npm run test:evm            # 41 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
-npm run test:company        # 89 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
+npm run test:company        # 92 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
 npm run test:dashboard      # 21 passed, 0 failed: the dashboard in headless Chromium end to end (npx playwright install chromium first); --live also loads the public site and app
 ```
 
@@ -677,7 +677,7 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 
 ## 18. What is not built yet
 
-From the README roadmap, so you do not go looking for it: x402 client compatibility, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4; companies of agents, with a company earning through its own gateway, in 2.1; bring-your-own model keys and the API-based claude adapter in 2.2.)
+From the README roadmap, so you do not go looking for it: x402 client compatibility, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4; companies of agents, with a company earning through its own gateway, in 2.1; bring-your-own model keys and the API-based claude adapter in 2.2; signed receipts in 2.3.)
 
 Starter credits are not a wallet product: they live in one gateway's ledger and cannot be moved, topped up with a card, or spent on another gateway. The path from starter credits to real money is still the evm rail with a funded owner account.
 

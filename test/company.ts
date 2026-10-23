@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { newKeyPair, type KeyPair } from '../src/keys.js';
-import { usdToMicro } from '../src/protocol.js';
+import { usdToMicro, verifyReceipt } from '../src/protocol.js';
 import { Store } from '../src/store.js';
 import { createGateway, type Spec } from '../src/gateway.js';
 import { TabClient, receiptOf } from '../src/client.js';
@@ -64,6 +64,7 @@ async function main(): Promise<void> {
   const D = newKeyPair(); keys[D.publicKey] = D;
   const modes: Record<string, string> = {};
   let lastPacket: any = null;
+  let toolReceiptVerified: unknown = null;
   const stub = createServer(async (req, res) => {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
@@ -121,7 +122,7 @@ async function main(): Promise<void> {
     if (turn === 1) return reply([{ type: 'tool_use', id: 'tu_2', name: 'tab_fetch', input: { url: `${GW}/quote` } }]);
     const last = body.messages[body.messages.length - 1].content;
     let receipt = '';
-    try { receipt = JSON.parse(last[0].content).receipt.id; } catch { /* no receipt in the tool result */ }
+    try { const out = JSON.parse(last[0].content); receipt = out.receipt.id; toolReceiptVerified = out.receipt_verified; } catch { /* no receipt in the tool result */ }
     return reply([{ type: 'tool_use', id: 'tu_3', name: 'finish', input: { status: 'done', summary: 'bought a quote through the api', evidence: [{ kind: 'receipt', value: receipt }], comment: 'done via finish' } }]);
   });
   const ANT = `http://127.0.0.1:${await listen(anthropic)}`;
@@ -213,6 +214,10 @@ async function main(): Promise<void> {
   check('the mandate was the minimum of company, agent and ticket caps, scoped to the gateway realm', run.mandate.budget === '0.02' && run.mandate.allow[0] === 'quotes.local');
   check('spend booked against the company', v.company.spent.tab === '0.01' && v.company.spent.total === '0.01' && v.company.spent.remaining === '4.99');
   check('receipts attributed to the run', v.receipts.length === 1 && v.receipts[0].run_id === run.id && v.receipts[0].agent === 'ant' && v.receipts[0].amount === '0.01');
+  check('the booked receipt is signed and verified against the gateway key and the run mandate', v.receipts[0].signed === true && v.receipts[0].verified === true && v.receipts[0].doc === undefined);
+  const oneReceipt = await api('GET', `/api/companies/${cid}/receipts/${v.receipts[0].id}`);
+  check('one receipt comes back exactly as the gateway signed it', oneReceipt.status === 200 && oneReceipt.body.verified === true
+    && verifyReceipt(oneReceipt.body.receipt, { mandate: run.mandate.id }).ok && oneReceipt.body.receipt.response.status === 200);
   check('events tell the story', v.events.some((e: any) => e.kind === 'run-started') && v.events.some((e: any) => e.kind === 'run' && e.body.status === 'done') && v.events.some((e: any) => e.kind === 'evidence'));
   check('the packet carries the contract and the mandate for this agent', lastPacket.ver === 'tab-company/0' && lastPacket.budget.mandate.agent === A.publicKey
     && lastPacket.contract.status && /Nothing closes without evidence/.test(lastPacket.prompt) && lastPacket.ticket.title === 'buy a quote');
@@ -378,6 +383,7 @@ async function main(): Promise<void> {
   const first = antCalls.find((c) => c.status === 200)!;
   check('the claude adapter paid at the gateway through tab_fetch and finished with the receipt', tk.state === 'done' && tk.evidence[0].kind === 'receipt' && tk.evidence[0].value.length > 10
     && run.state === 'done' && run.spent === '0.01' && run.result.status === 'done' && v.receipts.some((r: any) => r.agent === 'owl'));
+  check('tab_fetch checked the receipt before the model saw it', toolReceiptVerified === true);
   check('model usage is priced into the run', usdToMicro(run.model_cost) === priceUsage('claude-sonnet-5-5', { input_tokens: 3000, output_tokens: 300 }) && usdToMicro(run.model_cost) === 9_000);
   check('the request carried the company key, the tab tools and finish, and the packet as the user turn', first.headers['x-api-key'] === GOOD_KEY && first.headers['anthropic-version'] === '2023-06-01'
     && first.body.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,finish' && /You are owl/.test(first.body.messages[0].content) && /call finish/.test(first.body.system));

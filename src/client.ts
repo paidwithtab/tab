@@ -1,14 +1,17 @@
 // The buyer side: a payment-aware fetch. On 402 it parses the challenge, signs
 // a credential (and on the evm rail builds and signs the payment transaction),
-// and retries exactly once.
+// and retries exactly once. verify() checks the signed receipt of a paid
+// response against the gateway's published receipt key and the bytes received.
 
 import {
+  bodyDigest,
   encodeCredentialHeader,
   microToUsd,
   parseChallengeHeader,
   parseReceiptHeader,
   signCredential,
   usdToMicro,
+  verifyReceipt,
   type Challenge,
   type Receipt,
 } from './protocol.js';
@@ -55,6 +58,7 @@ export interface TabClientOptions {
 export class TabClient {
   private maxPerCallMicro: number | null;
   private accepts: string;
+  private receiptKeys = new Map<string, string | null>();
 
   constructor(private opts: TabClientOptions) {
     this.maxPerCallMicro = opts.maxPerCallUsd != null ? usdToMicro(opts.maxPerCallUsd) : null;
@@ -120,6 +124,42 @@ export class TabClient {
     const headers = new Headers(init.headers);
     headers.set('authorization', encodeCredentialHeader(cred));
     return doFetch(url, { ...init, headers });
+  }
+
+  /**
+   * Check the receipt of a paid response: signed by the key the gateway
+   * publishes, for this client's mandate, committing to the request sent and
+   * to exactly `body`, the bytes read from `res`. Null when there is no receipt.
+   */
+  async verify(url: string | URL, res: Response, body: string | Uint8Array, sent: RequestInit = {}): Promise<{ ok: boolean; reason?: string } | null> {
+    const receipt = receiptOf(res);
+    if (!receipt) return null;
+    const sentBody = sent.body;
+    if (sentBody != null && typeof sentBody !== 'string' && !(sentBody instanceof Uint8Array)) {
+      return { ok: false, reason: 'cannot check a request body that is not a string or bytes' };
+    }
+    return verifyReceipt(receipt, {
+      key: await this.receiptKey(new URL(url).origin),
+      body,
+      status: res.status,
+      mandate: this.opts.mandate.id,
+      request: { query: new URL(url).search, body_sha256: bodyDigest(sentBody) },
+    });
+  }
+
+  /** The gateway's published receipt key, from its discovery document; cached per origin once known. */
+  private async receiptKey(origin: string): Promise<string | null> {
+    if (this.receiptKeys.has(origin)) return this.receiptKeys.get(origin)!;
+    try {
+      const r = await (this.opts.fetch ?? fetch)(`${origin}/.well-known/tab`, { signal: AbortSignal.timeout(10_000) });
+      if (!r.ok) return null;
+      const key = ((await r.json()) as { receipt_key?: unknown }).receipt_key;
+      const found = typeof key === 'string' ? key : null;
+      this.receiptKeys.set(origin, found);
+      return found;
+    } catch {
+      return null; // not cached: a gateway that was briefly unreachable gets asked again
+    }
   }
 }
 

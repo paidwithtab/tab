@@ -216,7 +216,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       runs: store.runsOf(c.id, 50).map((r) => ({ ...r, agent: nameOf(r.agent_id), spent: microToUsd(r.spent), model_cost: microToUsd(r.model_cost), mandate: r.mandate ? { id: r.mandate.id, budget: microToUsd(Number(r.mandate.budget)), allow: r.mandate.allow } : null, output: undefined })),
       events: store.events(c.id, { limit: 100 }).map((e) => ({ ...e, by: nameOf(e.agent_id) })),
       board: store.board(c.id).map((b) => ({ ...b, verified: verifyBoardAction(c.owner_pub, { ver: 'tab-board/0', company: b.company_id, seq: b.seq, action: b.action as BoardActionKind, payload: b.payload, at: b.at, id: b.id, sig: b.sig }).ok })),
-      receipts: store.receiptsOf(c.id, 50).map((r) => ({ ...r, agent: r.agent_id ? nameOf(r.agent_id) : null, amount: microToUsd(r.amount) })),
+      receipts: store.receiptsOf(c.id, 50).map((r) => ({ ...r, agent: r.agent_id ? nameOf(r.agent_id) : null, amount: microToUsd(r.amount), signed: r.doc != null, doc: undefined })),
     };
   }
 
@@ -495,6 +495,14 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
           const run = store.run(rm[1]);
           if (!run || run.company_id !== c.id) { sendJson(res, 404, { error: 'no such run' }); return; }
           sendJson(res, 200, { run: { ...run, spent: microToUsd(run.spent), model_cost: microToUsd(run.model_cost) } });
+          return;
+        }
+        // one receipt exactly as the gateway signed it, for anyone to check offline
+        const rcm = /^receipts\/([A-Za-z0-9_-]+)$/.exec(sub);
+        if (rcm) {
+          const r = store.receipt(c.id, rcm[1]);
+          if (!r) { sendJson(res, 404, { error: 'no such receipt' }); return; }
+          sendJson(res, 200, { origin: r.origin, verified: r.verified, receipt: r.doc ?? { ...r, verified: undefined, doc: undefined } });
           return;
         }
         const tm = /^tickets\/([A-Za-z0-9_-]+)$/.exec(sub);

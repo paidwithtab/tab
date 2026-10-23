@@ -499,16 +499,19 @@ export function createCatalog(opts: CatalogOptions): Server {
           return;
         }
         try {
-          const r = await tryClient.fetch(url, {
+          const init = {
             method: m,
             headers: body.body != null ? { 'content-type': 'application/json' } : undefined,
             body: body.body != null ? (typeof body.body === 'string' ? body.body : JSON.stringify(body.body)) : undefined,
-          });
-          const text = await r.text();
+          };
+          const r = await tryClient.fetch(url, init);
+          const bytes = new Uint8Array(await r.arrayBuffer());
+          const check = await tryClient.verify(url, r, bytes, init);
           sendJson(res, 200, {
             status: r.status,
             receipt: receiptOf(r),
-            body: text.slice(0, 65_536),
+            receipt_verified: check ? check.ok : null,
+            body: new TextDecoder().decode(bytes).slice(0, 65_536),
           });
         } catch (err) {
           if (err instanceof PaymentRefused) {

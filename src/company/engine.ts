@@ -6,7 +6,7 @@
 
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { microToUsd, randomId, usdToMicro, type Receipt } from '../protocol.js';
+import { microToUsd, randomId, usdToMicro, verifyReceipt, type Receipt } from '../protocol.js';
 import { issueMandate, type Mandate } from '../mandate.js';
 import { addressFromSeed } from '../evm/secp256k1.js';
 import type { KeyPair } from '../keys.js';
@@ -239,9 +239,15 @@ export class Engine {
 
     // what the mandate spent, as the gateways booked it
     let spent = 0;
-    const receipts: Array<Receipt & { origin: string }> = [];
+    const receipts: Array<Receipt & { origin: string; verified: boolean }> = [];
     if (mandate) {
       for (const origin of company.gateways) {
+        // the key this gateway signs receipts with; a receipt only counts as verified against it
+        let key: string | null = null;
+        try {
+          const d = await this.doFetch(`${origin}/.well-known/tab`, { signal: AbortSignal.timeout(10_000) });
+          if (d.ok) { const k = ((await d.json()) as { receipt_key?: unknown }).receipt_key; if (typeof k === 'string') key = k; }
+        } catch { /* unverified then */ }
         try {
           const r = await this.doFetch(`${origin}/.well-known/tab/mandate/${mandate.id}/spent`, { signal: AbortSignal.timeout(10_000) });
           if (r.ok) spent += Number(((await r.json()) as { micro?: number }).micro ?? 0);
@@ -250,7 +256,9 @@ export class Engine {
         }
         try {
           const r = await this.doFetch(`${origin}/.well-known/tab/receipts?payer=${encodeURIComponent(agent.agent_pub)}&since=${encodeURIComponent(run.started_at)}&limit=200`, { signal: AbortSignal.timeout(10_000) });
-          if (r.ok) for (const rec of ((await r.json()) as { receipts?: Receipt[] }).receipts ?? []) receipts.push({ ...rec, origin });
+          if (r.ok) for (const rec of ((await r.json()) as { receipts?: Receipt[] }).receipts ?? []) {
+            receipts.push({ ...rec, origin, verified: verifyReceipt(rec, { key, mandate: mandate.id }).ok });
+          }
         } catch { /* receipts are optional on a gateway */ }
       }
     }
@@ -263,7 +271,7 @@ export class Engine {
   /** Apply a finished run to the books: run row, events, ticket state, sub-tickets, requests, mentions, budget flags. */
   private book(
     company: CompanyRow, agent: AgentRow, ticketBefore: TicketRow | null, run: RunRow,
-    o: { text: string; result: AgentResult | null; modelCost: number; spent: number; error: string | null; receipts: Array<Receipt & { origin: string }> },
+    o: { text: string; result: AgentResult | null; modelCost: number; spent: number; error: string | null; receipts: Array<Receipt & { origin: string; verified: boolean }> },
   ): void {
     const now = new Date();
     const ticket = ticketBefore ? this.store.ticket(ticketBefore.id) ?? null : null;
@@ -284,6 +292,7 @@ export class Engine {
       this.store.addReceipt({
         id: r.id, company_id: company.id, run_id: run.id, agent_id: agent.id, origin: r.origin, realm: r.realm,
         resource: r.resource, amount: Number(r.amount), currency: r.currency ?? 'USD', at: r.at,
+        verified: r.verified, doc: r.sig ? { ...r, origin: undefined, verified: undefined } as Receipt : null,
       });
     }
     if (ticket && o.spent) this.store.updateTicket(ticket.id, { addSpent: o.spent }, now);

@@ -412,7 +412,7 @@
       : '<tr><td class="dim">No board actions yet.</td></tr>';
 
     $('receipts').querySelector('tbody').innerHTML = v.receipts.length
-      ? '<tr><th>When</th><th>Agent</th><th>Resource</th><th>Amount</th><th>Realm</th></tr>' + v.receipts.map((r) => `<tr><td class="dim">${when(r.at)}</td><td>${esc(r.agent || '')}</td><td class="mono">${esc(r.resource)}</td><td class="mono">${esc(r.amount)} ${esc(r.currency)}</td><td class="dim">${esc(r.realm)}</td></tr>`).join('')
+      ? '<tr><th>When</th><th>Agent</th><th>Resource</th><th>Amount</th><th>Realm</th><th>Proof</th></tr>' + v.receipts.map((r) => `<tr><td class="dim">${when(r.at)}</td><td>${esc(r.agent || '')}</td><td class="mono">${esc(r.resource)}</td><td class="mono">${esc(r.amount)} ${esc(r.currency)}</td><td class="dim">${esc(r.realm)}</td><td>${!r.signed ? '<span class="dim">unsigned</span>' : `<a class="${r.verified ? 'ok' : 'bad'}" href="/api/companies/${esc(state.company)}/receipts/${esc(r.id)}" target="_blank" rel="noopener">${r.verified ? 'signed' : 'NOT VERIFIED'}</a>`}</td></tr>`).join('')
       : '<tr><td class="dim">No receipts yet.</td></tr>';
 
     $('events').querySelector('tbody').innerHTML = '<tr><th>When</th><th>Who</th><th>What</th></tr>' + v.events.slice(0, 40).map((e) => `<tr><td class="dim">${when(e.at)}</td><td>${esc(e.by)}</td><td>${esc(e.kind)}${e.ticket_id ? ` <span class="mono">#${esc(e.ticket_id)}</span>` : ''} <span class="dim">${esc(summarize(e.body))}</span></td></tr>`).join('');

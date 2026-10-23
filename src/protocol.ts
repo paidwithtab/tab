@@ -272,6 +272,59 @@ export interface Receipt {
   recipient: string;
   ref: string; // "ledger:<hold>" or "evm:<tx hash>"
   at: string; // ISO 8601
+  // signed receipts (draft 0.5); absent on receipts from older gateways
+  mandate?: string; // the mandate id the payment ran under
+  challenge?: string; // the challenge id, which commits to price, route and recipient
+  request?: RequestCommitment; // what the agent signed: query string and body digest
+  credential?: string; // the agent's signature over that commitment
+  response?: ResponseCommitment; // what the gateway delivered
+  gateway?: string; // the gateway's receipt key, as published in discovery
+  sig?: string; // gateway signature over the canonical receipt minus sig
+}
+
+/** What a paid call delivered: the upstream status and the SHA-256 of the body bytes relayed, base64url. */
+export interface ResponseCommitment {
+  status: number;
+  body_sha256: string;
+}
+
+export function receiptMessage(r: Receipt): Uint8Array {
+  return Buffer.from(canonicalJson({ ...r, sig: undefined }));
+}
+
+/** Sign a receipt with the gateway's receipt key; sets `gateway` and `sig`. */
+export function signReceipt(key: KeyPair, r: Receipt): Receipt {
+  const body = { ...r, gateway: key.publicKey, sig: undefined };
+  return { ...body, sig: signBytes(key, receiptMessage(body)) };
+}
+
+export interface ReceiptExpectations {
+  key?: string | null; // the receipt key the gateway publishes; required for a pass
+  body?: string | Uint8Array; // the response body as received
+  status?: number;
+  mandate?: string; // the mandate id this client paid under
+  request?: RequestCommitment; // what this client sent
+}
+
+/**
+ * Check a receipt against what the caller knows. Never throws. `ok` means the
+ * gateway's published key signed exactly this receipt and every expectation
+ * given matched; `reason` names the first thing that did not.
+ */
+export function verifyReceipt(r: Receipt, want: ReceiptExpectations = {}): { ok: boolean; reason?: string } {
+  const fail = (reason: string) => ({ ok: false, reason });
+  if (!r || typeof r.sig !== 'string' || typeof r.gateway !== 'string') return fail('unsigned receipt');
+  if (!r.response || !r.request || !r.mandate || !r.challenge) return fail('receipt lacks its commitments');
+  if (!verifyBytes(r.gateway, receiptMessage(r), r.sig)) return fail('receipt signature does not verify');
+  if (want.key === null) return fail('the gateway publishes no receipt key');
+  if (want.key !== undefined && want.key !== r.gateway) return fail('receipt was signed by a key the gateway does not publish');
+  if (want.mandate !== undefined && want.mandate !== r.mandate) return fail('receipt names a different mandate');
+  if (want.request && (want.request.query !== r.request.query || want.request.body_sha256 !== r.request.body_sha256)) {
+    return fail('receipt commits to a different request');
+  }
+  if (want.status !== undefined && want.status !== r.response.status) return fail('receipt names a different status');
+  if (want.body !== undefined && bodyDigest(want.body) !== r.response.body_sha256) return fail('response body does not match the receipt');
+  return { ok: true };
 }
 
 export function encodeReceiptHeader(r: Receipt): string {

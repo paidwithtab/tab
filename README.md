@@ -12,10 +12,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/spec-draft%200.4-1f6feb?style=flat-square" alt="Spec draft 0.4">
+  <img src="https://img.shields.io/badge/spec-draft%200.5-1f6feb?style=flat-square" alt="Spec draft 0.5">
   <img src="https://img.shields.io/badge/wire-tab%2F0-1f6feb?style=flat-square" alt="Wire protocol tab/0">
   <img src="https://img.shields.io/badge/node-22.13%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 22.13+">
-  <img src="https://img.shields.io/badge/checks-226-2da44e?style=flat-square" alt="226 automated checks">
+  <img src="https://img.shields.io/badge/checks-245-2da44e?style=flat-square" alt="245 automated checks">
   <img src="https://img.shields.io/badge/settlement-USDG-2775ca?style=flat-square" alt="USDG settlement">
   <img src="https://img.shields.io/badge/license-MIT-24292f?style=flat-square" alt="MIT license">
 </p>
@@ -157,6 +157,8 @@ The gateway then runs the full lifecycle:
 
 If the upstream service fails, the payment is voided.
 
+The receipt is signed by a key the gateway publishes, and it binds the whole purchase together: the mandate that allowed it, the exact request the agent signed, a hash of the response body that came back, the seller, and the payment (on Robinhood Chain, the transaction hash). So a receipt proves what was bought, not just that money moved. The client checks it against the bytes it received, and any edit breaks it.
+
 ## Quickstart
 
 > **Requires** Node.js 22.13 or newer.
@@ -273,9 +275,12 @@ const client = new TabClient({
   maxPerCallUsd: '0.05',
 });
 
-const res = await client.fetch('https://api.example.com/v1/things/42');
+const url = 'https://api.example.com/v1/things/42';
+const res = await client.fetch(url);
+const body = new Uint8Array(await res.arrayBuffer());
 
 console.log(receiptOf(res)?.ref);
+console.log(await client.verify(url, res, body)); // { ok: true }
 ```
 
 Or skip the key handling: `npx paidwithtab init` does all three steps and claims starter credits on the public gateway.
@@ -355,14 +360,14 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 226 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator, plus 21 browser checks of the dashboard.
+tab currently runs 245 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator, plus 21 browser checks of the dashboard.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
-| `npm test` | 70 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate |
-| `npm run test:adversarial` | 26 | Concurrency, replay, mutation, SSRF, persistence, body smuggling |
+| `npm test` | 75 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate |
+| `npm run test:adversarial` | 37 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts |
 | `npm run test:evm` | 41 | Cryptography, EVM transactions, Robinhood Chain |
-| `npm run test:company` | 89 | Accounts and the trust boundary, runs that pay at a real gateway, evidence, budgets, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary |
+| `npm run test:company` | 92 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary |
 | `npm run test:dashboard` | 21 | The dashboard in a real browser (Playwright, `npx playwright install chromium` once): sign up, found from a template, add a model key, claim credits, a ticket runs to done, evidence and run log, log out; `--live` also loads the public site and app |
 
 > The concurrency suite fires 150 simultaneous $0.01 requests at a $1.00 mandate. Exactly 100 settle.
