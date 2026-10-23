@@ -447,6 +447,22 @@ async function main(): Promise<void> {
   check('catalog.json?services=0 gives counts without the route lists', slimGw && slimGw.services === undefined
     && slimGw.route_count === full.services.reduce((n: number, sv: any) => n + sv.routes.length, 0) && slimGw.service_count === full.services.length);
 
+  const health = await fetch(`${CAT}/v1/health`);
+  const hBody = await health.json() as any;
+  check('health reports 503 while a gateway fails, with the routes it serves and the version', health.status === 503 && hBody.ok === false && hBody.routes === 9
+    && hBody.version === JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version);
+  // a refresh that fails keeps the last good routes in search, for a while
+  const goodRow = catStore.all().find((r) => r.origin === GW)!;
+  catStore.put({ origin: GW, ok: false, error: 'discovery document too large', payload: null, fetched_at: new Date().toISOString() });
+  const stale = await (await fetch(`${CAT}/v1/search`)).json() as any;
+  const staleGw = (await (await fetch(`${CAT}/v1/catalog.json?services=0`)).json() as any).gateways.find((g: any) => g.origin === GW);
+  check('a gateway that fails a refresh stays searchable on its last good document, marked stale', stale.total === 9 && staleGw.ok === false && staleGw.stale === true);
+  catStore.put({ ...goodRow, fetched_at: new Date(Date.now() - 7 * 3_600_000).toISOString() });
+  catStore.put({ origin: GW, ok: false, error: 'down', payload: null, fetched_at: new Date().toISOString() });
+  check('after six hours of failures its routes leave search', ((await (await fetch(`${CAT}/v1/search`)).json()) as any).total === 0);
+  await fetch(`${CAT}/v1/announce`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ origin: GW }) });
+  check('the next good refresh brings them back', ((await (await fetch(`${CAT}/v1/search`)).json()) as any).total === 9);
+
   const mv1 = await (await fetch(`${CAT}/v1/mandate/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mandate, realm: 'quotes.local' }) })).json() as any;
   const mv2 = await (await fetch(`${CAT}/v1/mandate/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mandate: { ...mandate, budget: '9' }, realm: 'quotes.local' }) })).json() as any;
   check('mandate verify endpoint', mv1.ok === true && mv1.mandate.budget_usd === '1.00' && mv2.ok === false);

@@ -275,6 +275,7 @@ export interface GatewayRow {
   error: string | null;
   payload: Record<string, unknown> | null; // the /.well-known/tab document
   fetched_at: string;
+  last_ok_at?: string | null; // the last fetch that succeeded; the payload is from then
 }
 
 export class CatalogStore {
@@ -289,16 +290,24 @@ export class CatalogStore {
         payload TEXT, fetched_at TEXT NOT NULL
       );
     `);
+    // catalogs created before stale serving lack last_ok_at
+    try {
+      this.db.exec('ALTER TABLE gateways ADD COLUMN last_ok_at TEXT');
+      this.db.exec('UPDATE gateways SET last_ok_at = fetched_at WHERE ok = 1');
+    } catch {
+      /* column already exists */
+    }
   }
 
   put(row: GatewayRow): void {
     this.db
       .prepare(
-        `INSERT INTO gateways (origin, ok, error, payload, fetched_at) VALUES (?,?,?,?,?)
+        `INSERT INTO gateways (origin, ok, error, payload, fetched_at, last_ok_at) VALUES (?,?,?,?,?,?)
          ON CONFLICT(origin) DO UPDATE SET ok=excluded.ok, error=excluded.error,
-           payload=COALESCE(excluded.payload, gateways.payload), fetched_at=excluded.fetched_at`,
+           payload=COALESCE(excluded.payload, gateways.payload), fetched_at=excluded.fetched_at,
+           last_ok_at=COALESCE(excluded.last_ok_at, gateways.last_ok_at)`,
       )
-      .run(row.origin, row.ok ? 1 : 0, row.error, row.payload ? JSON.stringify(row.payload) : null, row.fetched_at);
+      .run(row.origin, row.ok ? 1 : 0, row.error, row.payload ? JSON.stringify(row.payload) : null, row.fetched_at, row.ok ? row.fetched_at : null);
   }
 
   all(): GatewayRow[] {
@@ -311,6 +320,7 @@ export class CatalogStore {
       error: r.error == null ? null : String(r.error),
       payload: r.payload == null ? null : JSON.parse(String(r.payload)),
       fetched_at: String(r.fetched_at),
+      last_ok_at: r.last_ok_at == null ? null : String(r.last_ok_at),
     }));
   }
 

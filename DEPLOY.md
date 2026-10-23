@@ -99,7 +99,7 @@ examples/
   spec-evm.json             # same routes on the evm rail (Robinhood Chain testnet)
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh                   # one-command sandbox
-test/e2e.ts                 # 75 in-process checks, temp DB, ~1-2 min
+test/e2e.ts                 # 79 in-process checks, temp DB, ~1-2 min
 test/adversarial.ts         # 37 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts
 test/evm.ts                 # 41 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway, live Robinhood testnet reads
 ```
@@ -112,7 +112,7 @@ test/evm.ts                 # 41 checks: crypto vectors, a mock EVM node, rpc fa
 cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
-npm test                    # 75 passed, 0 failed on the dev box
+npm test                    # 79 passed, 0 failed on the dev box
 npm run test:adversarial    # 37 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
 npm run test:evm            # 41 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
 npm run test:company        # 92 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
@@ -521,6 +521,7 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 | `GET /v1/search?q=&max_price=` | route search, route-level text matches outrank service-level, cheapest first; results carry the full URL to call |
 | `POST /v1/announce {origin}` | fetch and verify `<origin>/.well-known/tab`, store it |
 | `POST /v1/refresh` | re-fetch every stored gateway now (also runs every 60 s) |
+| `GET /v1/health` | `{ok, version, routes, gateways}`; 503 when search would be empty or any gateway is failing. Point an uptime monitor at it |
 | `POST /v1/mandate/verify {mandate, realm}` | check a mandate's signature, expiry and realm, return it decoded |
 | `GET /v1/wallet?origin=&wallet=` | proxy a balance lookup to a gateway |
 | `GET /v1/receipts?limit=` | receipts aggregated from every gateway with `public_receipts` |
@@ -646,6 +647,7 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 | 402 `verification-failed: request does not match the signed commitment` | body or query string changed between signing and sending | send exactly the bytes the credential signed (the built-in client does) |
 | 402 `mandate-invalid: mandate has no evm_owner` on the evm rail | mandate issued before the evm rail existed | re-issue with `tab mandate issue` (it embeds the owner's 0x address automatically) |
 | 402 `insufficient-funds: agent account cannot cover gas` | the agent's EVM account has no ETH | `tab evm fund --from keys/owner.json --to keys/agent.json --eth 0.005` |
+| catalog search finds nothing, `/v1/health` says `discovery document too large` | the catalog process is an older build than its gateways (an older build capped discovery documents at 1 MB) | restart the catalog after every deploy, before or with the gateways; a failing gateway keeps its last good routes in search for six hours, so this shows in `/v1/health` before it shows in search |
 | 402 `payment-expired: stale nonce` on the evm rail | another payment from this agent landed in between | just retry; the client fetches a fresh nonce per attempt |
 | 402 `mandate-denied: realm … not in mandate allow list` | mandate `--allow` does not match the spec's `realm` | issue a mandate with `--allow <realm>` or `*` |
 | 402 `mandate-exceeded` | per-call cap or window budget hit | wait for the next UTC day, or issue a bigger mandate |

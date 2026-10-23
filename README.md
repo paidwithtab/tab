@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/spec-draft%200.5-1f6feb?style=flat-square" alt="Spec draft 0.5">
   <img src="https://img.shields.io/badge/wire-tab%2F0-1f6feb?style=flat-square" alt="Wire protocol tab/0">
   <img src="https://img.shields.io/badge/node-22.13%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 22.13+">
-  <img src="https://img.shields.io/badge/checks-245-2da44e?style=flat-square" alt="245 automated checks">
+  <img src="https://img.shields.io/badge/checks-249-2da44e?style=flat-square" alt="249 automated checks">
   <img src="https://img.shields.io/badge/settlement-USDG-2775ca?style=flat-square" alt="USDG settlement">
   <img src="https://img.shields.io/badge/license-MIT-24292f?style=flat-square" alt="MIT license">
 </p>
@@ -360,11 +360,11 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 245 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator, plus 21 browser checks of the dashboard.
+tab currently runs 249 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator, plus 21 browser checks of the dashboard.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
-| `npm test` | 75 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate |
+| `npm test` | 79 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate, catalog health and stale serving |
 | `npm run test:adversarial` | 37 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts |
 | `npm run test:evm` | 41 | Cryptography, EVM transactions, Robinhood Chain |
 | `npm run test:company` | 92 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary |

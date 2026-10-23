@@ -14,6 +14,18 @@ import { TabClient, PaymentRefused, receiptOf } from './client.js';
 import type { CatalogStore, GatewayRow } from './store.js';
 import { renderDocsPage, DOC_GROUPS } from './markdown.js';
 
+// the package version, for /v1/health; src/ and dist/src/ sit at different depths
+const VERSION_PKG = (() => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  for (const p of [join(here, '..', 'package.json'), join(here, '..', '..', 'package.json')]) {
+    try {
+      const v = (JSON.parse(readFileSync(p, 'utf8')) as { name?: string; version?: string });
+      if (v.name === 'paidwithtab' && v.version) return v.version;
+    } catch { /* try the next */ }
+  }
+  return 'unknown';
+})();
+
 export interface CatalogOptions {
   store: CatalogStore;
   tryAgent?: KeyPair;
@@ -150,8 +162,20 @@ function staticFile(uiDir: string, path: string): [file: string, type: string] |
   return null;
 }
 
+// A gateway that fails a refresh keeps its last good routes in search this long, so one
+// timeout or a catalog older than its gateways does not empty the catalog. Calls to a
+// gateway that is really down still fail at the gateway, before any payment.
+export const STALE_MS = 6 * 3_600_000;
+
+/** Is this row's payload still served: fetched fine, or failing for less than STALE_MS? */
+export function servable(row: GatewayRow, now = Date.now()): boolean {
+  if (!row.payload) return false;
+  if (row.ok) return true;
+  return !!row.last_ok_at && now - Date.parse(row.last_ok_at) < STALE_MS;
+}
+
 function routesOf(row: GatewayRow): CatalogRoute[] {
-  if (!row.ok || !row.payload) return [];
+  if (!servable(row)) return [];
   const doc = row.payload as any;
   const out: CatalogRoute[] = [];
   for (const s of doc.services ?? []) {
@@ -309,6 +333,19 @@ export function createCatalog(opts: CatalogOptions): Server {
         return;
       }
 
+      // for uptime monitors: 503 when search would find nothing or a gateway is failing
+      if (method === 'GET' && path === '/v1/health') {
+        const rows = store.all();
+        const gateways = rows.map((r) => ({
+          origin: r.origin, ok: r.ok, error: r.error, fetched_at: r.fetched_at, last_ok_at: r.last_ok_at ?? null,
+          routes: routesOf(r).length,
+        }));
+        const routes = gateways.reduce((n, g) => n + g.routes, 0);
+        const ok = routes > 0 && gateways.every((g) => g.ok);
+        sendJson(res, ok ? 200 : 503, { ok, version: VERSION_PKG, routes, gateways });
+        return;
+      }
+
       if (method === 'GET' && path === '/v1/catalog.json') {
         // ?services=0 leaves out each gateway's service list, so a page that only needs counts
         // does not download every route of every gateway
@@ -322,6 +359,8 @@ export function createCatalog(opts: CatalogOptions): Server {
               ok: r.ok,
               error: r.error,
               fetched_at: r.fetched_at,
+              last_ok_at: r.last_ok_at ?? null,
+              ...(!r.ok && servable(r) ? { stale: true } : {}),
               ...rest,
               service_count: list.length,
               route_count: list.reduce((n, s) => n + (Array.isArray(s.routes) ? s.routes.length : 0), 0),
