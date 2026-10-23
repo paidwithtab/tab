@@ -158,6 +158,16 @@ interface Match {
   rest: string; // the path forwarded upstream (prefix stripped)
 }
 
+/** Every segment decodes cleanly and none encodes a separator or a dot segment. */
+function safePath(path: string): boolean {
+  for (const seg of path.split('/')) {
+    let d: string;
+    try { d = decodeURIComponent(seg); } catch { return false; }
+    if (d === '.' || d === '..' || /[/\\?#]/.test(d)) return false;
+  }
+  return true;
+}
+
 function pathMatches(pattern: string, actual: string): boolean {
   const p = pattern.split('/');
   const a = actual.split('/');
@@ -229,6 +239,11 @@ export interface GatewayOptions {
 }
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
+
+const HOP_BY_HOP = new Set([
+  'content-length', 'content-encoding', 'transfer-encoding', 'connection', 'keep-alive', 'upgrade', 'te', 'trailer',
+  'proxy-authenticate', 'proxy-authorization', 'proxy-connection',
+]);
 
 const CORS = {
   'access-control-allow-origin': '*',
@@ -467,6 +482,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       if (v === undefined) continue;
       const key = k.toLowerCase();
       if (['host', 'connection', 'content-length', 'transfer-encoding', 'authorization', 'expect', 'keep-alive'].includes(key)) continue;
+      if (key.startsWith('tab-')) continue; // only the gateway names the payer, owner and hold
       headers[key] = Array.isArray(v) ? v.join(', ') : v;
     }
     for (const [k, v] of Object.entries(match.service.upstream_headers ?? {})) headers[k.toLowerCase()] = v;
@@ -491,11 +507,14 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     extra: Record<string, string>,
     read?: Buffer, // the body, when the caller already read it to commit to it
   ): Promise<void> {
-    const headers: Record<string, string> = { ...CORS, ...extra };
+    // the upstream may not speak for the gateway: its tab-* headers (a forged receipt) and the
+    // hop-by-hop set are dropped, and the gateway's own headers are applied last
+    const headers: Record<string, string> = {};
     upstream.headers.forEach((v, k) => {
-      if (['content-length', 'content-encoding', 'transfer-encoding', 'connection'].includes(k)) return;
+      if (HOP_BY_HOP.has(k) || k.startsWith('tab-') || k.startsWith('access-control-')) return;
       headers[k] = v;
     });
+    Object.assign(headers, CORS, extra);
     const body = read ?? Buffer.from(await upstream.arrayBuffer());
     res.writeHead(upstream.status, headers);
     res.end(body);
@@ -505,8 +524,14 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     const started = Date.now();
     const method = (req.method ?? 'GET').toUpperCase();
     const u = new URL(req.url ?? '/', 'http://localhost');
-    const pathname = decodeURIComponent(u.pathname);
+    // routes match and requests forward on the path as sent, still percent-encoded: decoding
+    // first let a :param carry ..%2F and walk the upstream to paths nobody priced
+    const pathname = u.pathname;
     try {
+      if (!safePath(pathname)) {
+        sendJson(res, 400, { error: 'path segments may not encode /, \\, ?, #, . or ..' });
+        return;
+      }
       if (method === 'OPTIONS') {
         res.writeHead(204, {
           ...CORS,
@@ -642,6 +667,11 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       const cred = parseCredentialHeader(auth);
       if (!cred) {
         await respondChallenge(res, 'malformed-credential', 'Authorization header is not a Tab credential', priceMicro, resource);
+        return;
+      }
+      // only a challenge this gateway issued may spend a rate-limit token; the check is stateless
+      if (!cred.challenge || typeof cred.challenge.id !== 'string' || !verifyChallengeId(store.secret, cred.challenge)) {
+        await respondChallenge(res, 'invalid-challenge', 'challenge was not issued by this gateway', priceMicro, resource);
         return;
       }
       // over the service's upstream rate limit: refuse before any hold, so the buyer pays nothing

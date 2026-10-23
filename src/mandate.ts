@@ -98,12 +98,26 @@ export function mandateExpired(m: Mandate, now = new Date()): boolean {
 
 /** Glob over realms: *, *.example.com, quotes.local. */
 export function realmAllowed(m: Mandate, realm: string): boolean {
-  return m.allow.some((glob) => {
-    const re = new RegExp(
-      '^' + glob.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$',
-    );
-    return re.test(realm);
-  });
+  return m.allow.some((glob) => typeof glob === 'string' && globMatch(glob, realm));
+}
+
+/** * matches any run of characters. Linear time: a regex here let one signed mandate with a
+ *  long run of stars hold a gateway's event loop for minutes. */
+function globMatch(glob: string, s: string): boolean {
+  if (glob.length > 253) return false;
+  const parts = glob.split('*');
+  if (parts.length === 1) return glob === s;
+  const first = parts[0], last = parts[parts.length - 1];
+  if (!s.startsWith(first) || s.length < first.length + last.length || !s.endsWith(last)) return false;
+  let at = first.length;
+  const end = s.length - last.length;
+  for (let i = 1; i < parts.length - 1; i++) {
+    if (!parts[i]) continue;
+    const j = s.indexOf(parts[i], at);
+    if (j < 0 || j + parts[i].length > end) return false;
+    at = j + parts[i].length;
+  }
+  return true;
 }
 
 export function saveMandate(path: string, m: Mandate): void {

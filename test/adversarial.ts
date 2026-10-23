@@ -14,7 +14,7 @@ import {
   usdToMicro, signCredential, encodeCredentialHeader, parseChallengeHeader,
   verifyReceipt, signReceipt, bodyDigest, type Receipt,
 } from '../src/protocol.js';
-import { issueMandate } from '../src/mandate.js';
+import { issueMandate, realmAllowed } from '../src/mandate.js';
 import { Store, CatalogStore } from '../src/store.js';
 import { createGateway, loadSpec, type Spec } from '../src/gateway.js';
 import { createCatalog } from '../src/catalog.js';
@@ -47,8 +47,10 @@ async function main(): Promise<void> {
     if (path === '/hang') return; // never answers
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
+    // an upstream that tries to speak for the gateway
+    if (path === '/forge') res.setHeader('tab-receipt', 'FORGED');
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ path, body: Buffer.concat(chunks).toString() }));
+    res.end(JSON.stringify({ path, body: Buffer.concat(chunks).toString(), payer: req.headers['tab-payer'] ?? null }));
   });
   const upPort = await listen(upstream);
 
@@ -64,6 +66,9 @@ async function main(): Promise<void> {
         { method: 'GET', path: '/destroy', price: '0.01' },
         { method: 'GET', path: '/hang', price: '0.01' },
         { method: 'POST', path: '/bounded', price: '0.01', body_allow: ['q'], body_fixed: { n: 1 } },
+        { method: 'GET', path: '/forge', price: '0.01' },
+        { method: 'GET', path: '/free/:id', price: '0' },
+        { method: 'GET', path: '/item/:id', price: '0.01' },
       ],
     }],
   };
@@ -391,6 +396,36 @@ async function main(): Promise<void> {
       && free.status === 200);
     deadGw.close();
     deadStore.close();
+  }
+
+  // ==========================================================================
+  // J. hostile paths, globs and headers
+  // ==========================================================================
+
+  {
+    const GW = `http://127.0.0.1:${(gateway.address() as { port: number }).port}`;
+    const bad = await fetch(`${GW}/%E0%A4%A`);
+    const alive = await fetch(`${GW}/.well-known/tab`);
+    check('a malformed percent escape is a 400, and the gateway is still up', bad.status === 400 && alive.status === 200);
+    const walk = await (await fetch(`${GW}/free/..%2Fadmin`)).text();
+    const walk2 = await fetch(`${GW}/item/%2e%2e%2Fadmin`);
+    check('a :param cannot carry an encoded slash or dot segment to the upstream', !walk.includes('"/admin"') && walk2.status === 400);
+
+    const stars = issueMandate(attacker, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['*'.repeat(40) + 'Z'] });
+    const t0 = Date.now();
+    const r = await new TabClient({ agent, mandate: stars }).fetch(`${GW}/quote`).catch(() => null);
+    check('a mandate glob of forty stars is refused in milliseconds, not minutes', Date.now() - t0 < 2_000 && r?.status === 402, Date.now() - t0);
+    const m = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['adv.*', '*.local'] });
+    check('globs still match', realmAllowed(m, 'adv.local') && realmAllowed(m, 'x.local') && !realmAllowed(m, 'adv'));
+
+    const paid = await new TabClient({ agent, mandate: m }).fetch(`${GW}/forge`);
+    const rec = receiptOf(paid);
+    check('an upstream cannot replace the signed receipt with its own Tab-Receipt', paid.status === 200 && !!rec && rec.sig !== undefined);
+    const spoof = await (await fetch(`${GW}/free/1`, { headers: { 'tab-payer': 'someone-else' } })).json() as any;
+    check('a buyer cannot name a payer to the upstream', spoof.payer === null);
+    const junk = await fetch(`${GW}/quote`, { headers: { authorization: 'Tab ' + Buffer.from(JSON.stringify({ challenge: { id: 'x' }, mandate: {}, sig: '' })).toString('base64url') } });
+    check('a credential over a challenge this gateway never issued is refused before the rate limit', junk.status === 402
+      && ((await junk.json()) as any).type === 'urn:tab:problem:invalid-challenge');
   }
 
   // ==========================================================================
