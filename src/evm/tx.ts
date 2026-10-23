@@ -67,6 +67,8 @@ function cat(...parts: Uint8Array[]): Uint8Array {
 export const erc20 = {
   transferFrom: (from: string, to: string, amount: bigint): Uint8Array =>
     cat(selector('transferFrom(address,address,uint256)'), abiAddress(from), abiAddress(to), abiUint(amount)),
+  transfer: (to: string, amount: bigint): Uint8Array =>
+    cat(selector('transfer(address,uint256)'), abiAddress(to), abiUint(amount)),
   approve: (spender: string, amount: bigint): Uint8Array =>
     cat(selector('approve(address,uint256)'), abiAddress(spender), abiUint(amount)),
   balanceOf: (owner: string): Uint8Array =>

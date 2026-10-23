@@ -101,7 +101,7 @@ examples/
   demo.sh                   # one-command sandbox
 test/e2e.ts                 # 81 in-process checks, temp DB, ~1-2 min
 test/adversarial.ts         # 48 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts
-test/evm.ts                 # 46 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway, live Robinhood testnet reads
+test/evm.ts                 # 59 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway, live Robinhood testnet reads
 ```
 
 ---
@@ -114,7 +114,7 @@ npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 81 passed, 0 failed on the dev box
 npm run test:adversarial    # 48 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
-npm run test:evm            # 46 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
+npm run test:evm            # 59 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
 npm run test:company        # 94 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
 npm run test:dashboard      # 21 passed, 0 failed: the dashboard in headless Chromium end to end (npx playwright install chromium first); --live also loads the public site and app
 ```
@@ -486,7 +486,18 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 - The wallet endpoint (`/.well-known/tab/wallet/<id>`) takes a 0x address on this rail.
 - Only type-2 transactions and empty access lists. Tokens may have 0 to 18 decimals since draft 0.4; the wire amount stays in micro units and is scaled to the token on chain.
 
-`npm run test:evm` runs 46 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, the same flow against an 18-decimal token priced in its own currency (scaling, the client's currency refusal, decimals checked against the contract), and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
+`npm run test:evm` runs 59 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, the same flow against an 18-decimal token priced in its own currency (scaling, the client's currency refusal, decimals checked against the contract), x402 both ways (the EIP-712 signing checked against the x402 spec's own example payment, an x402 buyer paying the gateway with every refusal code, a tab client paying a version 1 and a version 2 x402 site within its mandate), and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
+
+**Taking x402 payments.** A gateway on the evm rail can also be paid by any [x402](https://github.com/coinbase/x402) client (SPEC section 5.3), if its token implements EIP-3009; USDG on Robinhood Chain does, the testnet's mock USDC does not. Three steps:
+
+```sh
+tab key new --out keys/x402-settler.json                      # pays gas for settlement, holds nothing else
+tab evm fund --from keys/mainnet-owner.json --to keys/x402-settler.json --eth 0.0004 --rpc https://rpc.mainnet.chain.robinhood.com
+# in the spec: "evm": { ..., "eip712": { "name": "Global Dollar", "version": "1" } }
+tab serve --spec examples/spec-mainnet.json ... --origin https://mainnet.paidwithtab.com --x402-settler keys/x402-settler.json
+```
+
+Discovery then has an `x402` member, every 402 carries a `PAYMENT-REQUIRED` header next to the tab challenge, and a paid x402 call answers with `PAYMENT-RESPONSE` and a signed `Tab-Receipt`. A settlement costs about 0.00001 ETH of gas at Robinhood Chain prices; 0.0004 ETH covers dozens. Watch the settler's balance: when it cannot pay gas, x402 buyers get `unexpected_verify_error` and tab buyers are unaffected. `examples/tab-gateway-mainnet.service` runs the public mainnet gateway this way.
 
 **Charging in your own token.** A gateway settles in one ERC-20, and it need not be a dollar. Set `currency` to the token's symbol and `evm.token` and `evm.decimals` to the contract; prices are then amounts of that token (`"price": "0.5"` is half a token), and every challenge, receipt and catalog listing names the currency so nothing is mistaken for dollars. The reference deployment runs one such gateway next to the dollar ones, with the same routes:
 
@@ -543,7 +554,7 @@ The front end is static files under `web/` with no build step and no external sc
 | `GET /.well-known/tab/receipts?payer=&since=` | the same, filtered to one payer wallet and/or receipts at or after an ISO time |
 | `GET /.well-known/tab/mandate/<id>/spent` | what one mandate has spent here, total and per window; a mandate id is the hash of a document only its owner and agent hold |
 | `OPTIONS /.well-known/tab*` | CORS preflight |
-| any priced route | 402 with `WWW-Authenticate: Tab …` until paid; then proxied |
+| any priced route | 402 with `WWW-Authenticate: Tab …` (and `PAYMENT-REQUIRED` with x402 on) until paid; then proxied |
 | any unpriced path | 404 `not-found`, never proxied |
 
 Every 402 body is an RFC 9457 problem with `type: urn:tab:problem:<code>` and a fresh challenge in `WWW-Authenticate`. Codes: `payment-required`, `malformed-credential`, `invalid-challenge`, `payment-expired`, `verification-failed`, `mandate-invalid`, `mandate-denied`, `mandate-exceeded`, `insufficient-funds`. A body that breaks a route's `body_allow` or `body_fixed` rule (section 8.3) is 400 `bad-request` before any challenge. Upstream unreachable is 502 `upstream-failed`, nothing charged. Upstream non-2xx is passed through with a `Tab-Void` header and the hold released.
@@ -679,7 +690,7 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 
 ## 18. What is not built yet
 
-From the README roadmap, so you do not go looking for it: x402 client compatibility, per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4; companies of agents, with a company earning through its own gateway, in 2.1; bring-your-own model keys and the API-based claude adapter in 2.2; signed receipts in 2.3.)
+From the README roadmap, so you do not go looking for it: per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4; companies of agents, with a company earning through its own gateway, in 2.1; bring-your-own model keys and the API-based claude adapter in 2.2; signed receipts in 2.3; x402 in both directions in 2.4.)
 
 Starter credits are not a wallet product: they live in one gateway's ledger and cannot be moved, topped up with a card, or spent on another gateway. The path from starter credits to real money is still the evm rail with a funded owner account.
 

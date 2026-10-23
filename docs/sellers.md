@@ -87,6 +87,21 @@ npx paidwithtab evm balance --wallet seller.json \
 
 Every paid call also returns the buyer a `Tab-Receipt` whose ref is the settlement transaction; your payout address is visible on the [Robinhood Chain explorer](https://explorer.testnet.chain.robinhood.com).
 
+## Take x402 payments too
+
+On the evm rail with a token that implements EIP-3009 (USDG on Robinhood Chain does), the same gateway can be paid by any [x402](https://github.com/coinbase/x402) client, which reaches the agents and wallets built on Coinbase's standard without them installing anything. Add the token's EIP-712 domain to the spec and give the gateway a small gas wallet that settles the transfers:
+
+```json
+"evm": { "...": "...", "eip712": { "name": "Global Dollar", "version": "1" } }
+```
+
+```sh
+npx paidwithtab key new --out settler.json      # fund its 0x address with about 0.0004 ETH
+npx paidwithtab serve --spec spec.json --origin https://pay.example.com --x402-settler settler.json
+```
+
+Every 402 then carries x402 requirements next to the tab challenge. The money still goes straight from the buyer to your payout address; the settler only pays gas, about 0.00001 ETH a call on Robinhood Chain. Calls are settled after your API answered, and a payment that does not settle withholds the response, exactly as for tab buyers. SPEC section 5.3 has the details.
+
 ## Attribution, refund-free by design
 
 Your upstream receives three extra headers on paid calls: `Tab-Payer` (the agent), `Tab-Owner` (whose money), `Tab-Hold` (the payment id). Log them and you have per-caller usage accounting with zero integration work. There is no refund flow to build because failed calls are never charged in the first place.

@@ -28,7 +28,9 @@ import {
 } from './protocol.js';
 import { mandateExpired, realmAllowed, verifyMandate } from './mandate.js';
 import { checkAndSpend, windowKey } from './rails/budget.js';
-import { createRail, type Rail } from './rails/index.js';
+import { createRail, EvmRail, type Rail } from './rails/index.js';
+import type { KeyPair } from './keys.js';
+import { encodeX402, decodeX402, X402_VERSION, type X402PaymentPayload, type X402SettlementResponse } from './x402.js';
 import type { HoldRow, Store } from './store.js';
 
 // ---------------------------------------------------------------------------
@@ -81,7 +83,7 @@ export interface Spec {
   rail?: 'ledger' | 'evm';
   /** What prices are denominated in: "USD" (default) or the symbol of the token the evm rail settles in. */
   currency?: string;
-  evm?: { rpc: string; chain_id: number; token: string; decimals: number; recipient: string; explorer?: string };
+  evm?: { rpc: string; chain_id: number; token: string; decimals: number; recipient: string; explorer?: string; eip712?: { name: string; version: string } };
   public_receipts?: boolean;
   services: ServiceSpec[];
   /** Services dropped at load time because a variable in their `requires` list was not set. */
@@ -236,6 +238,10 @@ export interface GatewayOptions {
    */
   faucetUsd?: string;
   faucetPerIpPerDay?: number; // default 20
+  /** evm rail only: also take x402 payments (EIP-3009), settled by this key, which pays the gas. */
+  x402Settler?: KeyPair;
+  /** This gateway's public origin, for the resource URL in x402 requirements. Default: from the Host header. */
+  origin?: string;
 }
 
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
@@ -247,7 +253,7 @@ const HOP_BY_HOP = new Set([
 
 const CORS = {
   'access-control-allow-origin': '*',
-  'access-control-expose-headers': 'Tab-Receipt, Tab-Void, WWW-Authenticate',
+  'access-control-expose-headers': 'Tab-Receipt, Tab-Void, WWW-Authenticate, PAYMENT-REQUIRED, PAYMENT-RESPONSE',
 };
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -278,6 +284,22 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   const faucetMicro = opts.faucetUsd != null ? usdToMicro(opts.faucetUsd) : 0;
   if (faucetMicro > 0 && rail.name !== 'ledger') throw new Error('the faucet only works on the ledger rail');
   const faucetPerIpPerDay = opts.faucetPerIpPerDay ?? 20;
+  let x402: EvmRail | null = null;
+  if (opts.x402Settler) {
+    if (!(rail instanceof EvmRail)) throw new Error('x402 needs the evm rail');
+    rail.enableX402(opts.x402Settler);
+    x402 = rail;
+  }
+  // the x402 requirements for a priced call, sent next to tab's own challenge on every 402
+  const x402Required = (req: IncomingMessage, priceMicro: number, error: string, description?: string): string | null => {
+    if (!x402) return null;
+    const origin = (opts.origin ?? `http://${req.headers.host ?? 'localhost'}`).replace(/\/$/, '');
+    return encodeX402({
+      x402Version: X402_VERSION, error,
+      resource: { url: origin + (req.url ?? '/'), description, mimeType: 'application/json' },
+      accepts: [x402.x402Requirements(priceMicro)],
+    });
+  };
 
   const discovery = () => ({
     ver: VERSION,
@@ -287,6 +309,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     currency: spec.currency,
     recipient: spec.recipient,
     receipt_key: store.receiptKey.publicKey,
+    x402: x402?.x402Info() ?? undefined,
     faucet: faucetMicro > 0 ? microToUsd(faucetMicro) : undefined,
     services: spec.services.map((s) => ({
       name: s.name,
@@ -323,20 +346,22 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     detail: string,
     status: number,
     challenge?: Challenge,
+    extra: Record<string, string> = {},
   ): Promise<void> {
-    const headers: Record<string, string> = { 'content-type': 'application/problem+json', ...CORS };
+    const headers: Record<string, string> = { 'content-type': 'application/problem+json', ...CORS, ...extra };
     if (challenge) headers['www-authenticate'] = encodeChallengeHeader(challenge);
     res.writeHead(status, headers);
     res.end(problemBody(code, detail, status));
   }
 
-  /** A 402 with a fresh challenge — or 502 if the rail cannot mint one (e.g. dead RPC). */
+  /** A 402 with a fresh challenge, or 502 if the rail cannot mint one (e.g. dead RPC). */
   async function respondChallenge(
     res: ServerResponse,
     code: ProblemCode,
     detail: string,
     priceMicro: number,
     resource: string,
+    extra: Record<string, string> = {},
   ): Promise<void> {
     let chal: Challenge;
     try {
@@ -345,7 +370,9 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       await respondProblem(res, 'upstream-failed', `payment rail unavailable: ${(err as Error).message}`, 502);
       return;
     }
-    await respondProblem(res, code, detail, 402, chal);
+    const req = (res as ServerResponse & { req?: IncomingMessage }).req;
+    const offer = req ? x402Required(req, priceMicro, detail) : null;
+    await respondProblem(res, code, detail, 402, chal, { ...(offer ? { 'payment-required': offer } : {}), ...extra });
   }
 
   /** All the checks before money moves. Throws PayError. Returns the hold. */
@@ -541,7 +568,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         res.writeHead(204, {
           ...CORS,
           'access-control-allow-methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-          'access-control-allow-headers': 'Authorization, Content-Type',
+          'access-control-allow-headers': 'Authorization, Content-Type, PAYMENT-SIGNATURE',
           'access-control-max-age': '86400',
         });
         res.end();
@@ -664,6 +691,93 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         } catch (err) {
           await respondProblem(res, 'upstream-failed', `upstream unreachable: ${(err as Error).message}`, 502);
         }
+        return;
+      }
+
+      // an x402 buyer: a signed EIP-3009 transfer instead of a tab credential
+      const x402Header = req.headers['payment-signature'];
+      if (x402 && typeof x402Header === 'string' && !req.headers.authorization) {
+        const network = x402.x402Requirements(priceMicro).network;
+        const refuse = async (code: string, detail: string, status = 402) => {
+          const settle: X402SettlementResponse = { success: false, errorReason: code, transaction: '', network };
+          const offer = x402Required(req, priceMicro, detail);
+          await respondProblem(res, 'verification-failed', detail, status, undefined, { ...(offer ? { 'payment-required': offer } : {}), 'payment-response': encodeX402(settle) });
+          log(`${method} ${pathname} -> ${status} x402 ${code}: ${detail}`);
+        };
+        const payload = decodeX402<X402PaymentPayload>(x402Header);
+        if (!payload) { await refuse('invalid_payload', 'PAYMENT-SIGNATURE is not base64 JSON', 400); return; }
+        const wait = takeRate(match.service);
+        if (wait) { await respondRateLimited(res, match.service, wait); return; }
+        let accepted;
+        try {
+          accepted = await x402.x402Verify(payload, priceMicro);
+        } catch (err) {
+          const m = /^([a-z0-9_]+): (.*)$/.exec(err instanceof PayError ? err.detail : String((err as Error).message));
+          await refuse(m?.[1] ?? 'unexpected_verify_error', m?.[2] ?? String(err));
+          return;
+        }
+        const nonce = accepted.authorization.nonce.toLowerCase();
+        const now = new Date();
+        const hold: HoldRow = {
+          id: randomId(), challenge_id: `x402:${nonce}`, amount: priceMicro, payer: accepted.payer, owner: accepted.payer,
+          recipient: spec.recipient, resource, realm: spec.realm, rail: 'evm', mandate_id: 'x402', window_key: '',
+          state: 'reserved', ref: null, tx: null, tx_hash: null, tx_slot: `x402:${accepted.payer}:${nonce}`, created_at: now.toISOString(),
+        };
+        try {
+          store.tx(() => {
+            if (!store.redeem(`x402:${accepted.payer}:${nonce}`, now.toISOString())) throw new Error('authorization already used');
+            store.createHold(hold);
+          });
+        } catch (err) {
+          await refuse('invalid_transaction_state', String((err as Error).message).includes('UNIQUE') ? 'authorization already in flight' : String((err as Error).message));
+          return;
+        }
+        let upstream: Response;
+        try {
+          upstream = await forwardUpstream(req, forwardBody, match, u.search, hold);
+        } catch (err) {
+          await releaseHold(hold);
+          await respondProblem(res, 'upstream-failed', `upstream unreachable: ${(err as Error).message}`, 502);
+          return;
+        }
+        if (upstream.status < 200 || upstream.status >= 300) {
+          await releaseHold(hold);
+          await relayResponse(res, upstream, { 'tab-void': hold.id });
+          log(`${method} ${pathname} -> ${upstream.status} x402 voided ${hold.id}`);
+          return;
+        }
+        let delivered: Buffer;
+        try {
+          delivered = Buffer.from(await upstream.arrayBuffer());
+        } catch (err) {
+          await releaseHold(hold);
+          await respondProblem(res, 'upstream-failed', `upstream body failed: ${(err as Error).message}`, 502);
+          return;
+        }
+        let hash: string;
+        try {
+          hash = await x402.x402Settle(accepted);
+        } catch (err) {
+          // not settled: nothing charged, and the response is withheld, as on the tab path
+          await releaseHold(hold);
+          res.setHeader('tab-void', hold.id);
+          await refuse('invalid_transaction_state', `payment did not settle (${(err as Error).message}); nothing was charged and the response is withheld`);
+          return;
+        }
+        const ref = `evm:${hash}`;
+        const receipt: Receipt = signReceipt(store.receiptKey, {
+          id: hold.id, realm: spec.realm, resource, amount: String(priceMicro), currency: spec.currency ?? 'USD', rail: 'evm',
+          payer: accepted.payer, owner: accepted.payer, recipient: hold.recipient, ref, at: new Date().toISOString(),
+          // an x402 buyer has no mandate: the authorization is the policy, its nonce the challenge
+          mandate: `x402:${accepted.payer}`, challenge: nonce,
+          request: { query: u.search, body_sha256: sha256b64url(body) }, credential: accepted.signature,
+          response: { status: upstream.status, body_sha256: sha256b64url(delivered) },
+        });
+        store.setHoldState(hold.id, 'captured', ref);
+        store.addReceipt(receipt);
+        const settled: X402SettlementResponse = { success: true, transaction: hash, network, payer: accepted.payer, amount: accepted.amount.toString() };
+        await relayResponse(res, upstream, { 'tab-receipt': encodeReceiptHeader(receipt), 'payment-response': encodeX402(settled) }, delivered);
+        log(`${method} ${pathname} -> ${upstream.status} x402 paid ${microToUsd(priceMicro)} ${ref} ${Date.now() - started}ms`);
         return;
       }
 

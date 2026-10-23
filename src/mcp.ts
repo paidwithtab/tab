@@ -21,6 +21,7 @@ export interface McpOptions {
   maxPerCallUsd?: string;
   currency?: string; // what this agent pays in; default USD
   catalog?: string; // catalog origin
+  x402Ledger?: string; // where x402 spend against the mandate is kept between runs
 }
 
 const PROTOCOL_VERSION = '2024-11-05';

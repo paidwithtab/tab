@@ -12,10 +12,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/spec-draft%200.5-1f6feb?style=flat-square" alt="Spec draft 0.5">
+  <img src="https://img.shields.io/badge/spec-draft%200.6-1f6feb?style=flat-square" alt="Spec draft 0.6">
   <img src="https://img.shields.io/badge/wire-tab%2F0-1f6feb?style=flat-square" alt="Wire protocol tab/0">
   <img src="https://img.shields.io/badge/node-22.13%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 22.13+">
-  <img src="https://img.shields.io/badge/checks-269-2da44e?style=flat-square" alt="269 automated checks">
+  <img src="https://img.shields.io/badge/checks-282-2da44e?style=flat-square" alt="282 automated checks">
   <img src="https://img.shields.io/badge/settlement-USDG-2775ca?style=flat-square" alt="USDG settlement">
   <img src="https://img.shields.io/badge/license-MIT-24292f?style=flat-square" alt="MIT license">
 </p>
@@ -49,6 +49,7 @@
 [For agent developers](#for-agent-developers) ·
 [Companies](#companies) ·
 [Settlement](#settlement) ·
+[x402](#x402) ·
 [Security model](#security-model) ·
 [Testing](#testing) ·
 [Architecture](#architecture) ·
@@ -344,6 +345,16 @@ settle
 receipt
 ```
 
+## x402
+
+tab speaks [x402](https://github.com/coinbase/x402), the HTTP 402 payment standard that Coinbase started and Cloudflare, Visa and Mastercard build on, in both directions.
+
+**x402 buyers can pay a tab gateway.** On the evm rail, every 402 carries x402 requirements (a `PAYMENT-REQUIRED` header) next to tab's own challenge. An x402 client signs an EIP-3009 transfer of exactly the price to the seller, sends it as `PAYMENT-SIGNATURE`, and gets the response with `PAYMENT-RESPONSE` and a signed tab receipt. The gateway checks the signature, the amount, the recipient and the time window, dry-runs the transfer, calls the upstream, and only then settles the transfer on chain from a small gas wallet of its own (`--x402-settler`). If it does not settle, the response is withheld. The public mainnet gateway takes x402 payments in USDG on Robinhood Chain (`eip155:4663`) today, so all of its routes are open to any x402 agent with no tab software at all.
+
+**tab agents can pay x402 sites.** When a site answers 402 with only x402 requirements, the tab client pays it within the owner's mandate: realm (the site's hostname), per-call cap, budget and expiry, in a token it knows (USDG on Robinhood Chain, USDC on Base). x402 has the payer sign the transfer itself, so the owner funds the agent's own address with a small amount (`tab evm fund --amount 5.00 --token 0x...`), and that balance is a hard ceiling on top of the mandate. The client counts what it signs against the mandate in `x402-spent.json` next to the agent's keys, since an x402 site keeps no tab budget.
+
+A gateway that speaks both is paid the tab way by a tab client, so owners keep custody and the mandate is enforced on both sides.
+
 ## Security model
 
 tab is built around bounded authority.
@@ -360,13 +371,13 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 269 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator, plus 21 browser checks of the dashboard.
+tab currently runs 282 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator, plus 21 browser checks of the dashboard.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
 | `npm test` | 81 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate, catalog health and stale serving |
 | `npm run test:adversarial` | 48 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts |
-| `npm run test:evm` | 46 | Cryptography, EVM transactions, Robinhood Chain |
+| `npm run test:evm` | 59 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways |
 | `npm run test:company` | 94 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary |
 | `npm run test:dashboard` | 21 | The dashboard in a real browser (Playwright, `npx playwright install chromium` once): sign up, found from a template, add a model key, claim credits, a ticket runs to done, evidence and run log, log out; `--live` also loads the public site and app |
 
@@ -425,13 +436,12 @@ DEPLOY.md     deployment and operations
 
 The specification lives in [SPEC.md](SPEC.md).
 
-**Current version:** Draft 0.3 · **Wire protocol:** `tab/0`
+**Current version:** Draft 0.6 · **Wire protocol:** `tab/0`, and x402 version 2
 
 ## Roadmap
 
 Areas currently under exploration:
 
-- x402 compatibility
 - Metered pricing and payment channels
 - Windowed onchain budgets
 - Header binding and subscriptions

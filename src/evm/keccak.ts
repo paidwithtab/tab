@@ -1,4 +1,4 @@
-// Keccak-256 (the pre-NIST padding Ethereum uses — NOT sha3-256), hand-written
+// Keccak-256 (the pre-NIST padding Ethereum uses, NOT sha3-256), hand-written
 // on BigInt lanes. Node's crypto has no keccak. Verified against the standard
 // test vectors in test/evm.ts.
 

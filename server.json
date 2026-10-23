@@ -2,22 +2,48 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.paidwithtab/tab",
   "title": "tab",
-  "description": "Agents pay per call over HTTP 402: 8,600+ API routes, owner-signed budgets, signed receipts.",
+  "description": "Agents pay per call over HTTP 402 and x402: 8,600+ API routes, signed budgets and receipts.",
   "websiteUrl": "https://paidwithtab.com",
-  "repository": { "url": "https://github.com/paidwithtab/tab", "source": "github" },
-  "version": "2.3.2",
+  "repository": {
+    "url": "https://github.com/paidwithtab/tab",
+    "source": "github"
+  },
+  "version": "2.4.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "paidwithtab",
-      "version": "2.3.2",
-      "transport": { "type": "stdio" },
-      "packageArguments": [{ "type": "positional", "value": "mcp" }],
+      "version": "2.4.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ],
       "environmentVariables": [
-        { "name": "TAB_AGENT", "description": "Agent key file. Default ~/.tab/agent.json, which `npx paidwithtab init` creates with a mandate and starter credits.", "isRequired": false },
-        { "name": "TAB_MANDATE", "description": "Owner-signed mandate file. Default ~/.tab/mandate.json.", "isRequired": false },
-        { "name": "TAB_MAX_PER_CALL", "description": "Refuse any single call priced above this many dollars, e.g. 0.05.", "isRequired": false },
-        { "name": "TAB_CATALOG", "description": "Catalog to search. Default https://paidwithtab.com.", "isRequired": false }
+        {
+          "name": "TAB_AGENT",
+          "description": "Agent key file. Default ~/.tab/agent.json, which `npx paidwithtab init` creates with a mandate and starter credits.",
+          "isRequired": false
+        },
+        {
+          "name": "TAB_MANDATE",
+          "description": "Owner-signed mandate file. Default ~/.tab/mandate.json.",
+          "isRequired": false
+        },
+        {
+          "name": "TAB_MAX_PER_CALL",
+          "description": "Refuse any single call priced above this many dollars, e.g. 0.05.",
+          "isRequired": false
+        },
+        {
+          "name": "TAB_CATALOG",
+          "description": "Catalog to search. Default https://paidwithtab.com.",
+          "isRequired": false
+        }
       ]
     }
   ]

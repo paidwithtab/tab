@@ -196,6 +196,21 @@ Exit codes: 0 paid and served, 1 the API answered non-2xx and nothing was charge
 
 **Implement the protocol.** A credential is a small JSON object signed with the agent key. [SPEC.md](../SPEC.md) has the fields and the verification rules; the TypeScript client in `src/client.ts` is about a hundred lines and is the reference.
 
+## Paying x402 sites
+
+Many paid APIs speak [x402](https://github.com/coinbase/x402) instead of tab: they answer 402 with a `PAYMENT-REQUIRED` header and take a signed USDC or USDG transfer. The tab client (and so `tab fetch` and the MCP tools) pays them too, under the same mandate: the site's hostname must be in `--allow` (or `*`), each price must fit `--max-per-call`, and the total stays inside the budget. It pays in tokens it knows: USDG on Robinhood Chain, USDC on Base.
+
+The difference is where the money sits. x402 has the payer sign the transfer, so the agent pays from its **own** address, not the owner's allowance. Fund it with what you are prepared to see spent:
+
+```sh
+npx paidwithtab evm address ~/.tab/agent.json        # the agent's 0x address
+npx paidwithtab evm fund --from ~/.tab/owner.json --to ~/.tab/agent.json \
+  --amount 5.00 --token 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 \
+  --rpc https://rpc.mainnet.chain.robinhood.com      # 5 USDG on Robinhood Chain
+```
+
+The client keeps what it has signed to x402 sites in `x402-spent.json` next to the mandate and refuses past the budget, since an x402 site keeps no tab budget of its own. A site that offers both tab and x402 (tab's own gateways do) is paid the tab way. In code, `x402ResponseOf(res)` reads the settlement the site reported, and turning it off is `new TabClient({ ..., x402: false })`.
+
 ## Where the keys live
 
 | Where the agent runs | Agent key and mandate | Owner key |

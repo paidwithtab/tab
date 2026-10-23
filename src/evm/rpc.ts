@@ -24,7 +24,7 @@ class EvmTransportError extends Error {
   }
 }
 
-/** An eth_call revert — distinguishable from transport failures. */
+/** An eth_call revert, distinguishable from transport failures. */
 export class EvmRevert extends Error {
   constructor(message: string) {
     super(message);

@@ -1,4 +1,4 @@
-// RLP encoding/decoding — the minimum Ethereum transactions need.
+// RLP encoding/decoding: the minimum Ethereum transactions need.
 
 export type RlpItem = Uint8Array | RlpItem[];
 

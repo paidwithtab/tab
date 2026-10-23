@@ -8,6 +8,7 @@
   "token": "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168",
   "decimals": 6,
   "recipient": "0xcce49b5F24b08195Bc121810C9df2484c92aa1F3",
+  "eip712": { "name": "Global Dollar", "version": "1" },
   "explorer": "https://robinhoodchain.blockscout.com"
  },
  "public_receipts": true,

@@ -5,18 +5,18 @@ import { parseArgs } from 'node:util';
 import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
 import { newKeyPair, saveKey, loadKey, resolvePublicKey, type KeyPair } from './keys.js';
 import { issueMandate, loadMandate, saveMandate, verifyMandate } from './mandate.js';
 import { usdToMicro, microToUsd, formatAmount, microToBaseUnits, baseUnitsToMicro } from './protocol.js';
 import { Store, CatalogStore } from './store.js';
 import { loadSpec, createGateway, announce } from './gateway.js';
 import { createCatalog } from './catalog.js';
-import { TabClient, PaymentRefused, receiptOf } from './client.js';
+import { TabClient, PaymentRefused, receiptOf, x402ResponseOf } from './client.js';
 import { runMcpServer } from './mcp.js';
 import { scalarFromSeed, addressFromSeed, checksumAddress } from './evm/secp256k1.js';
 import { EvmRpc } from './evm/rpc.js';
-import { signTx, erc20 } from './evm/tx.js';
+import { signTx, erc20, isAddress } from './evm/tx.js';
 import { companyCommand, COMPANY_USAGE } from './company/cli.js';
 
 // Node's fetch tries each address of a host for 250 ms before moving to the next (happy eyeballs). From far
@@ -34,7 +34,7 @@ const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed man
                     [--window total|day] [--max-per-call 0.05] [--allow realm]... [--days 7] [--out file]
   tab mint    --wallet <pub|file> --amount 5.00 [--db tab.db]
   tab balance --wallet <pub|file> [--db tab.db]
-  tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin url]
+  tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin url] [--x402-settler key.json]
               [--faucet 1.00]   ledger rail: starter credits any wallet can claim once
   tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
                     [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
@@ -43,6 +43,8 @@ const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed man
   tab evm revoke  --owner key.json --agent <key.json|0x> --token <0x> [--rpc url]
   tab evm balance --wallet <key.json|0x> --token <0x> [--agent <key.json|0x>] [--rpc url]
   tab evm fund    --from key.json --to <key.json|0x> --eth 0.005 [--rpc url]  gas for the agent
+  tab evm fund    --from key.json --to <key.json|0x> --amount 5.00 --token <0x> [--decimals 6]
+                                                    tokens to the agent itself, for paying x402 sites
   tab fetch [--agent key.json --mandate mandate.json] [--max-per-call 0.05] [--currency USD] [-X POST] [-d body] <url>
   tab mcp   (env: TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CURRENCY], [TAB_CATALOG])
   tab company serve|signup|login|new|fund|hire|ticket|comment|approve|pause|resume|budget|status|key
@@ -185,15 +187,20 @@ async function main(): Promise<void> {
         announce: { type: 'string' },
         origin: { type: 'string' },
         faucet: { type: 'string' },
+        'x402-settler': { type: 'string' },
       });
       if (!values.spec) die('--spec is required');
       const spec = loadSpec(values.spec as string);
       for (const name of spec.skipped ?? []) log(`skipping service ${name}: set it in the environment and restart`);
       const store = new Store(values.db as string);
-      const server = createGateway(spec, { store, log, faucetUsd: values.faucet as string | undefined });
+      const x402Settler = values['x402-settler'] ? loadKey(values['x402-settler'] as string) : undefined;
+      const server = createGateway(spec, {
+        store, log, faucetUsd: values.faucet as string | undefined, x402Settler,
+        origin: values.origin as string | undefined,
+      });
       const port = Number(values.port);
       server.listen(port, () => {
-        log(`gateway for realm ${spec.realm} (${spec.rail ?? 'ledger'} rail) listening on :${port}, db ${values.db}${values.faucet ? `, faucet ${values.faucet}` : ''}`);
+        log(`gateway for realm ${spec.realm} (${spec.rail ?? 'ledger'} rail) listening on :${port}, db ${values.db}${values.faucet ? `, faucet ${values.faucet}` : ''}${x402Settler ? `, x402 settled by ${addressFromSeed(new Uint8Array(Buffer.from(x402Settler.privateKey, 'base64url')))}` : ''}`);
         if (values.announce) {
           const origin = (values.origin as string) ?? `http://127.0.0.1:${port}`;
           void announce(values.announce as string, origin, log);
@@ -272,6 +279,7 @@ async function main(): Promise<void> {
         mandate: loadMandate(files.mandate),
         maxPerCallUsd: values['max-per-call'] as string | undefined,
         currency: values.currency as string | undefined,
+        x402Ledger: join(dirname(files.mandate), 'x402-spent.json'),
       });
       const method = ((values.method as string) ?? (values.data != null ? 'POST' : 'GET')).toUpperCase();
       try {
@@ -284,6 +292,8 @@ async function main(): Promise<void> {
         const bytes = new Uint8Array(await res.arrayBuffer());
         const body = new TextDecoder().decode(bytes);
         const receipt = receiptOf(res);
+        const settled = x402ResponseOf(res);
+        if (settled?.success) log(`paid an x402 site on ${settled.network} (${settled.transaction})`);
         if (receipt) {
           const check = await client.verify(positionals[0], res, bytes, init);
           log(`paid ${formatAmount(Number(receipt.amount), receipt.currency)} (${receipt.ref}), receipt ${check?.ok ? 'verified' : `NOT verified: ${check?.reason}`}`);
@@ -312,6 +322,7 @@ async function main(): Promise<void> {
         maxPerCallUsd: process.env.TAB_MAX_PER_CALL,
         currency: process.env.TAB_CURRENCY || undefined,
         catalog: process.env.TAB_CATALOG || PUBLIC_CATALOG,
+        x402Ledger: join(dirname(files.mandate), 'x402-spent.json'),
       });
       return;
     }
@@ -545,12 +556,23 @@ async function evmCommand(rest: string[]): Promise<void> {
         from: { type: 'string' },
         to: { type: 'string' },
         eth: { type: 'string', default: '0.005' },
+        // send a token instead of ETH: an agent paying x402 sites spends from its own address
+        amount: { type: 'string' },
+        token: { type: 'string' },
+        decimals: { type: 'string', default: '6' },
         rpc: { type: 'string', default: EVM_RPC_DEFAULT },
       });
       if (!values.from || !values.to) die('--from and --to are required');
       const rpc = new EvmRpc(values.rpc as string);
       const from = loadKey(values.from as string);
       const to = evmAddressOf(values.to as string);
+      if (values.amount != null) {
+        if (!values.token || !isAddress(values.token as string)) die('--amount needs --token <0x contract>');
+        const base = microToBaseUnits(BigInt(usdToMicro(values.amount as string)), Number(values.decimals));
+        const hash = await evmSend(rpc, from, (values.token as string).toLowerCase(), 0n, erc20.transfer(to, base));
+        console.log(`sent ${values.amount} of ${values.token} to ${checksumAddress(to)} (${hash})`);
+        return;
+      }
       const wei = BigInt(Math.round(Number(values.eth) * 1e6)) * 10n ** 12n;
       const hash = await evmSend(rpc, from, to, wei, new Uint8Array(0));
       console.log(`sent ${values.eth} ETH to ${checksumAddress(to)} (${hash})`);

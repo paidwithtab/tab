@@ -1,6 +1,6 @@
 // The evm rail (built for Robinhood Chain): offline crypto vectors, a mock
-// EVM node with real ERC-20 semantics, the full 402 flow, and — when the
-// network allows — read-only checks against the live Robinhood Chain testnet.
+// EVM node with real ERC-20 semantics, the full 402 flow, and, when the
+// network allows, read-only checks against the live Robinhood Chain testnet.
 //   npm run test:evm
 
 import { createServer, type Server } from 'node:http';
@@ -16,7 +16,7 @@ import { signCredential, encodeCredentialHeader, parseChallengeHeader, encodeCha
 import { issueMandate } from '../src/mandate.js';
 import { Store } from '../src/store.js';
 import { createGateway, loadSpec, type Spec } from '../src/gateway.js';
-import { TabClient, PaymentRefused, receiptOf } from '../src/client.js';
+import { TabClient, PaymentRefused, receiptOf, x402ResponseOf } from '../src/client.js';
 import { EvmRail } from '../src/rails/evm.js';
 import { keccak256Hex } from '../src/evm/keccak.js';
 import {
@@ -29,6 +29,7 @@ import {
 } from '../src/evm/tx.js';
 import { EvmRpc } from '../src/evm/rpc.js';
 import { buildSignedPaymentTxEvm } from '../src/evm/pay.js';
+import { authorizationSigner, signAuthorization, encodeX402, decodeX402, transferWithAuthorizationData } from '../src/x402.js';
 
 let passed = 0;
 let failed = 0;
@@ -70,6 +71,8 @@ class MockChain {
   nonce = new Map<string, bigint>();
   receipts = new Map<string, '0x1' | '0x0'>();
   broadcasts = 0;
+  used = new Set<string>(); // EIP-3009 authorizations spent
+  eip712 = { name: 'Mock USD', version: '1' };
 
   private key = (owner: string, spender: string) => `${owner}|${spender}`;
 
@@ -86,6 +89,21 @@ class MockChain {
     }
     if (sel === bytesToHex(selector('approve(address,uint256)'))) {
       this.allowance.set(this.key(from, addr(0)), uint(1));
+      return { ok: true, result: ret(1n) };
+    }
+    if (sel === bytesToHex(selector('transferWithAuthorization(address,address,uint256,uint256,uint256,bytes32,uint8,bytes32,bytes32)'))) {
+      // EIP-3009, as USDG and USDC implement it: signature by `from`, a time window, one use per nonce
+      const a = { from: addr(0), to: addr(1), value: uint(2).toString(), validAfter: uint(3).toString(), validBefore: uint(4).toString(), nonce: bytesToHex(word(5)) };
+      const sig = '0x' + bytesToHex(word(7)).slice(2) + bytesToHex(word(8)).slice(2) + Number(uint(6)).toString(16).padStart(2, '0');
+      const signer = authorizationSigner({ name: this.eip712.name, version: this.eip712.version, chainId: Number(CHAIN_ID), token: this.token }, a, sig);
+      if (signer !== a.from) return { ok: false, result: '0x', error: 'invalid signature' };
+      const t = BigInt(Math.floor(Date.now() / 1000));
+      if (t <= BigInt(a.validAfter) || t >= BigInt(a.validBefore)) return { ok: false, result: '0x', error: 'authorization not valid now' };
+      if (this.used.has(`${a.from}|${a.nonce}`)) return { ok: false, result: '0x', error: 'authorization is used' };
+      if ((this.bal.get(a.from) ?? 0n) < BigInt(a.value)) return { ok: false, result: '0x', error: 'transfer amount exceeds balance' };
+      this.bal.set(a.from, this.bal.get(a.from)! - BigInt(a.value));
+      this.bal.set(a.to, (this.bal.get(a.to) ?? 0n) + BigInt(a.value));
+      this.used.add(`${a.from}|${a.nonce}`);
       return { ok: true, result: ret(1n) };
     }
     if (sel === bytesToHex(selector('transferFrom(address,address,uint256)'))) {
@@ -105,10 +123,11 @@ class MockChain {
   /** eth_call: run read-only against a copy of state. */
   call(from: string | undefined, to: string, data: Uint8Array): { ok: boolean; result: string; error?: string } {
     if (to !== this.token) return { ok: false, result: '0x', error: 'no contract' };
-    const snapshot = { bal: new Map(this.bal), allowance: new Map(this.allowance) };
+    const snapshot = { bal: new Map(this.bal), allowance: new Map(this.allowance), used: new Set(this.used) };
     const out = this.execToken(from ?? '0x' + '0'.repeat(40), data);
     this.bal = snapshot.bal;
     this.allowance = snapshot.allowance;
+    this.used = snapshot.used;
     return out;
   }
 
@@ -257,12 +276,15 @@ async function main(): Promise<void> {
 
   // -- 3. a gateway on the evm rail -----------------------------------------
 
+  let drainTarget = '';
   const upstream = createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     if (path === '/boom') { res.writeHead(500); res.end('{"error":"boom"}'); return; }
     if (path === '/slow') await new Promise((r) => setTimeout(r, 300));
     // the agent spends its nonce elsewhere while the upstream works, so the payment cannot land
     if (path === '/sabotage') chain.nonce.set(agentAddr, (chain.nonce.get(agentAddr) ?? 0n) + 1n);
+    // an x402 buyer moves its funds out while the upstream works
+    if (path === '/drain' && drainTarget) chain.bal.set(drainTarget, 0n);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ path, payer: req.headers['tab-payer'] ?? null }));
   });
@@ -283,6 +305,7 @@ async function main(): Promise<void> {
         { method: 'GET', path: '/free', price: '0', description: 'free' },
         { method: 'GET', path: '/slow', price: '0.01', description: 'takes a moment' },
         { method: 'GET', path: '/sabotage', price: '0.01', description: 'the agent moves its nonce mid call' },
+        { method: 'GET', path: '/drain', price: '0.01', description: 'an x402 buyer empties its wallet mid call' },
       ],
     }],
   };
@@ -343,6 +366,138 @@ async function main(): Promise<void> {
     // give back the 0.01 the one-nonce check spent, so the allowance arithmetic below holds
     const k = `${ownerAddr}|${agentAddr}`;
     chain.allowance.set(k, (chain.allowance.get(k) ?? 0n) + 10_000n);
+  }
+
+  // -- 3c. x402: the same gateway answers x402 buyers, and a tab agent pays x402 sites ---------------
+  {
+    // the arithmetic, anchored outside this code: the x402 spec's own example payment
+    const specAuth = { from: '0x857b06519E91e3A54538791bDbb0E22373e36b66', to: '0x209693Bc6afc0C5328bA36FaF03C514EF312287C', value: '10000', validAfter: '1740672089', validBefore: '1740672154', nonce: '0xf3746613c2d920b5fdabc0856f2aeb2d4f88ee6037b8cc5d04a71a4462f13480' };
+    const specSig = '0x2d6a7588d6acca505cbf0d9a4a227e0c52c6c34008c8e8986a1283259764173608a2ce6496642e377d6da8dbbf5836e9bd15092f9ecab05ded3d6293af148b571c';
+    check('EIP-3009 signing matches the x402 spec example (recovers its payer)',
+      authorizationSigner({ name: 'USDC', version: '2', chainId: 84532, token: '0x036CbD53842c5426634e7929541eC2318f3dCF7e' }, specAuth, specSig) === specAuth.from.toLowerCase());
+
+    const settler = newKeyPair();
+    const settlerAddr = addressFromSeed(seed(settler));
+    chain.eth.set(settlerAddr, 10n ** 17n);
+    const specX: Spec = { ...spec, realm: 'x402.local', evm: { ...spec.evm!, eip712: { name: 'Mock USD', version: '1' } } };
+    const storeX = new Store(join(scratch, 'tab-x402.db'));
+    const gwX = createGateway(specX, { store: storeX, x402Settler: settler, origin: 'https://x402.local' });
+    const GX = `http://127.0.0.1:${await listen(gwX)}`;
+    const disc = await (await fetch(`${GX}/.well-known/tab`)).json() as any;
+    const r402 = await fetch(`${GX}/quote`);
+    const offer = decodeX402<any>(r402.headers.get('payment-required'));
+    const req = offer?.accepts?.[0];
+    check('a 402 carries x402 requirements next to the tab challenge', r402.status === 402 && !!r402.headers.get('www-authenticate')
+      && offer?.x402Version === 2 && req?.scheme === 'exact' && req?.network === `eip155:${CHAIN_ID}` && req?.amount === '10000'
+      && req?.asset === TOKEN && req?.payTo === sellerAddr && req?.extra?.name === 'Mock USD' && offer?.resource?.url === 'https://x402.local/quote'
+      && disc.x402?.network === `eip155:${CHAIN_ID}`);
+
+    // an x402 buyer that knows nothing of tab: the spec's pieces only
+    const buyer = newKeyPair();
+    const buyerAddr = addressFromSeed(seed(buyer));
+    chain.bal.set(buyerAddr, 1_000_000n);
+    const auth = (over: Partial<Record<string, string>> = {}) => {
+      const now = Math.floor(Date.now() / 1000);
+      return { from: buyerAddr, to: sellerAddr, value: '10000', validAfter: String(now - 60), validBefore: String(now + 120), nonce: '0x' + randomBytes(32).toString('hex'), ...over };
+    };
+    const pay = async (path: string, a = auth(), key = buyer, accepted = req) => {
+      const signature = signAuthorization({ name: 'Mock USD', version: '1', chainId: Number(CHAIN_ID), token: TOKEN }, a as any, scalarFromSeed(seed(key)));
+      const header = encodeX402({ x402Version: 2, resource: offer.resource, accepted, payload: { signature, authorization: a } });
+      return fetch(`${GX}${path}`, { headers: { 'payment-signature': header } });
+    };
+    const sellerBefore = chain.bal.get(sellerAddr) ?? 0n;
+    const a1 = auth();
+    const paid = await pay('/quote', a1);
+    const settledHdr = decodeX402<any>(paid.headers.get('payment-response'));
+    const rec = receiptOf(paid);
+    check('an x402 buyer pays: served, settled on chain by the gateway, with a signed tab receipt', paid.status === 200
+      && settledHdr?.success === true && /^0x[0-9a-f]{64}$/.test(settledHdr?.transaction) && settledHdr?.payer === buyerAddr
+      && (chain.bal.get(sellerAddr) ?? 0n) - sellerBefore === 10_000n && rec?.ref === `evm:${settledHdr?.transaction}` && !!rec?.sig, settledHdr);
+    const again = await pay('/quote', a1);
+    check('the same authorization twice: refused, not served', again.status === 402 && (chain.bal.get(sellerAddr) ?? 0n) - sellerBefore === 10_000n);
+    const codes: string[] = [];
+    for (const [path, a, key] of [
+      ['/quote', auth({ value: '5000' }), buyer],
+      ['/quote', auth({ to: ownerAddr }), buyer],
+      ['/quote', auth(), owner],
+      ['/quote', auth({ validBefore: String(Math.floor(Date.now() / 1000) + 5) }), buyer],
+      ['/premium', auth(), buyer],
+    ] as Array<[string, any, any]>) {
+      const r = await pay(path, a, key);
+      codes.push(`${r.status}:${decodeX402<any>(r.headers.get('payment-response'))?.errorReason}`);
+    }
+    check('wrong amount, wrong recipient, wrong signer, about to expire, underpaying another route: all refused with the x402 codes', codes.join(',') ===
+      '402:invalid_exact_evm_payload_authorization_value_mismatch,402:invalid_exact_evm_payload_recipient_mismatch,402:invalid_exact_evm_payload_signature,402:invalid_exact_evm_payload_authorization_valid_before,402:invalid_exact_evm_payload_authorization_value_mismatch', codes);
+    const poor = newKeyPair();
+    const poorAuth = { ...auth(), from: addressFromSeed(seed(poor)) };
+    const broke = await pay('/quote', poorAuth, poor);
+    check('a buyer without the funds is refused before the upstream is called', broke.status === 402 && decodeX402<any>(broke.headers.get('payment-response'))?.errorReason === 'insufficient_funds');
+    const boom = await pay('/boom');
+    check('an upstream error settles nothing', boom.status === 500 && (chain.bal.get(sellerAddr) ?? 0n) - sellerBefore === 10_000n);
+    drainTarget = buyerAddr;
+    const drained = await pay('/drain');
+    drainTarget = '';
+    const drainedText = await drained.text();
+    check('a buyer who empties its wallet mid call gets a 402, not the response', drained.status === 402 && !drainedText.includes('/drain')
+      && (chain.bal.get(sellerAddr) ?? 0n) - sellerBefore === 10_000n);
+    chain.bal.set(buyerAddr, 1_000_000n);
+
+    // a tab agent paying an x402 site: a minimal x402 server, the spec's pieces only
+    const siteSeller = newKeyPair();
+    const siteAddr = addressFromSeed(seed(siteSeller));
+    let siteAsset = TOKEN;
+    let siteVersion = 2;
+    const site = createServer((rq, rs) => {
+      const reqs = { scheme: 'exact', network: `eip155:${CHAIN_ID}`, amount: '5000', asset: siteAsset, payTo: siteAddr, maxTimeoutSeconds: 60, extra: { name: 'Mock USD', version: '1' } };
+      const sig = rq.headers['payment-signature'] ?? rq.headers['x-payment'];
+      if (!sig) {
+        if (siteVersion === 1) { rs.writeHead(402, { 'content-type': 'application/json' }); rs.end(JSON.stringify({ x402Version: 1, accepts: [{ ...reqs, maxAmountRequired: '5000', resource: 'http://site/x' }] })); return; }
+        rs.writeHead(402, { 'payment-required': encodeX402({ x402Version: 2, resource: { url: 'http://site/x' }, accepts: [reqs] }) }); rs.end('{}'); return;
+      }
+      const p = decodeX402<any>(String(sig));
+      const a = p.payload.authorization;
+      const out = chain.execToken(siteAddr, transferWithAuthorizationData(a, p.payload.signature));
+      if (!out.ok || a.to !== siteAddr || a.value !== '5000') { rs.writeHead(402); rs.end(out.error ?? 'bad'); return; }
+      rs.writeHead(200, { 'payment-response': encodeX402({ success: true, transaction: '0x' + '11'.repeat(32), network: `eip155:${CHAIN_ID}`, payer: a.from }) });
+      rs.end(JSON.stringify({ ok: true, version: p.x402Version }));
+    });
+    const SITE = `http://127.0.0.1:${await listen(site)}`;
+    chain.bal.set(agentAddr, (chain.bal.get(agentAddr) ?? 0n) + 1_000_000n); // the owner funds the agent's own address
+    const xm = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '0.012', maxPerCallUsd: '0.01', allow: ['127.0.0.1'], days: 1, evmOwner: ownerAddr });
+    const ledger = join(scratch, 'x402-spent.json');
+    const xc = new TabClient({ agent, mandate: xm, x402Ledger: ledger });
+    const s1 = await xc.fetch(`${SITE}/x`);
+    const s1body = await s1.json() as any;
+    check('a tab agent pays an x402 site from its own address, within the mandate', s1.status === 200 && s1body.version === 2
+      && x402ResponseOf(s1)?.success === true && (chain.bal.get(siteAddr) ?? 0n) === 5_000n);
+    siteVersion = 1;
+    const s2 = await xc.fetch(`${SITE}/x`);
+    siteVersion = 2;
+    check('and a version 1 site (body requirements, X-PAYMENT)', s2.status === 200 && ((await s2.json()) as any).version === 1 && (chain.bal.get(siteAddr) ?? 0n) === 10_000n);
+    const reasons: string[] = [];
+    const tryPay = async (c: TabClient) => { try { await c.fetch(`${SITE}/x`); reasons.push('paid'); } catch (e) { reasons.push(e instanceof PaymentRefused ? e.reason : String(e)); } };
+    await tryPay(xc); // 0.010 spent of 0.012: a third 0.005 passes the budget
+    await tryPay(new TabClient({ agent, mandate: issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1', maxPerCallUsd: '0.001', allow: ['127.0.0.1'], evmOwner: ownerAddr }) }));
+    await tryPay(new TabClient({ agent, mandate: issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1', allow: ['elsewhere.example'], evmOwner: ownerAddr }) }));
+    siteAsset = '0x' + 'ab'.repeat(20);
+    await tryPay(new TabClient({ agent, mandate: issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1', allow: ['*'], evmOwner: ownerAddr }) }));
+    siteAsset = TOKEN;
+    check('the client refuses past the budget, past the per-call cap, off the allow list, and in a token it does not know',
+      /budget/.test(reasons[0]) && /per-call cap/.test(reasons[1]) && /allow list/.test(reasons[2]) && /nothing this client pays in/.test(reasons[3])
+      && (chain.bal.get(siteAddr) ?? 0n) === 10_000n, reasons);
+    const fresh = new TabClient({ agent, mandate: xm, x402Ledger: ledger });
+    let afterRestart = '';
+    try { await fresh.fetch(`${SITE}/x`); afterRestart = 'paid'; } catch (e) { afterRestart = (e as PaymentRefused).reason; }
+    check('the x402 spend survives a restart through the ledger file', /budget/.test(afterRestart));
+
+    const bothMandate = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '0.05', allow: ['x402.local'], days: 1, evmOwner: ownerAddr });
+    const allowanceKey = `${ownerAddr}|${agentAddr}`;
+    chain.allowance.set(allowanceKey, (chain.allowance.get(allowanceKey) ?? 0n) + 10_000n); // this payment's own, so the allowance checks below still add up
+    const both = await new TabClient({ agent, mandate: bothMandate }).fetch(`${GX}/quote`);
+    check('a gateway that speaks both is paid the tab way by a tab client', both.status === 200 && receiptOf(both)?.mandate === bothMandate.id);
+    site.close();
+    gwX.close();
+    storeX.close();
   }
 
   // -- 3b. a gateway that lies in its challenge, and payments with more than one encoding --------

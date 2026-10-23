@@ -5,7 +5,7 @@
 import { microToUsd, formatAmount } from './protocol.js';
 import type { Mandate } from './mandate.js';
 import type { KeyPair } from './keys.js';
-import { TabClient, PaymentRefused, receiptOf } from './client.js';
+import { TabClient, PaymentRefused, receiptOf, x402ResponseOf } from './client.js';
 
 export interface TabToolOptions {
   agent: KeyPair;
@@ -14,6 +14,7 @@ export interface TabToolOptions {
   currency?: string; // what this agent pays in; default USD
   catalog?: string; // catalog origin
   fetch?: typeof fetch;
+  x402Ledger?: string; // where x402 spend against the mandate is kept between runs
 }
 
 export interface ToolSpec {
@@ -61,7 +62,7 @@ export const TAB_TOOLS: ToolSpec[] = [
   {
     name: 'tab_fetch',
     description:
-      'Fetch a URL, paying per request over HTTP 402 within the mandate. Returns status, the payment receipt (if any) and the body.',
+      'Fetch a URL, paying per request over HTTP 402 within the mandate: tab gateways, and x402 sites (USDG on Robinhood Chain, USDC on Base) from the agent\'s own funded address. Returns status, the payment receipt or x402 settlement (if any) and the body.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -95,6 +96,7 @@ export function createTabTools(opts: TabToolOptions): { list: ToolSpec[]; call: 
     maxPerCallUsd: opts.maxPerCallUsd,
     currency: opts.currency,
     fetch: opts.fetch,
+    x402Ledger: opts.x402Ledger,
   });
   const currency = opts.currency ?? 'USD';
   const text = (value: unknown, isError = false): ToolResult => ({
@@ -156,6 +158,8 @@ export function createTabTools(opts: TabToolOptions): { list: ToolSpec[]; call: 
               receipt,
               receipt_verified: check ? check.ok : null,
               ...(check && !check.ok ? { receipt_problem: check.reason } : {}),
+              // paid to an x402 site: what it reports settling (its transaction on chain is the record)
+              ...(x402ResponseOf(r) ? { x402: x402ResponseOf(r) } : {}),
               body: bodyText.slice(0, 50_000),
             });
           } catch (err) {

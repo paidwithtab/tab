@@ -1,6 +1,6 @@
-# The tab protocol, draft 0.4
+# The tab protocol, draft 0.6
 
-How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail for Robinhood Chain and the `evm_owner` mandate field, draft 0.3 made `evm` the sole settlement rail, draft 0.4 let a gateway charge in a token of any decimals and name it in `currency`, draft 0.5 made receipts signed statements that bind the policy, the request, the response and the payment).
+How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail for Robinhood Chain and the `evm_owner` mandate field, draft 0.3 made `evm` the sole settlement rail, draft 0.4 let a gateway charge in a token of any decimals and name it in `currency`, draft 0.5 made receipts signed statements that bind the policy, the request, the response and the payment, draft 0.6 added x402 in both directions, §5.3).
 
 ## 1. Model and terms
 
@@ -158,6 +158,18 @@ Setup, once: the owner calls ERC-20 `approve(agentAddress, amount)` on the token
 
 Per payment the agent builds an EIP-1559 transaction from the challenge (to = token, value 0, calldata `transferFrom(evm_owner, challenge.evm.recipient, amount × 10^(decimals − 6))` with `decimals` from the challenge, fees and gas limit verbatim from the challenge), choosing only the nonce, which it reads from the gateway (`GET /.well-known/tab/evm/nonce/<0xaddress>`), so clients still need no RPC of their own. The gateway parses the transaction, recovers the sender, checks every field, enforces raw-tx-hash uniqueness, dry-runs the transfer, forwards upstream, and broadcasts only on 2xx. Receipt `ref` is `evm:<tx hash>`; `rail_info.explorer` (e.g. explorer.testnet.chain.robinhood.com) tells front ends where a ref can be viewed.
 
+### 5.3 x402 (version 2, `exact`, EIP-3009)
+
+A gateway on the evm rail whose token implements EIP-3009 `transferWithAuthorization` (USDG and USDC do) may also take [x402](https://github.com/coinbase/x402) payments. It is configured with the token's EIP-712 domain (`evm.eip712: {name, version}`; USDG on Robinhood Chain is `Global Dollar`, `1`) and a **settler** key that pays gas for settlement and holds nothing else.
+
+- **Offer.** Every 402 also carries `PAYMENT-REQUIRED`: base64 JSON `{x402Version: 2, error, resource: {url, mimeType}, accepts: [{scheme: "exact", network: "eip155:<chain id>", amount, asset, payTo, maxTimeoutSeconds: 120, extra: {name, version}}]}` with `amount` in the token's atomic units and `payTo` the seller's payout address.
+- **Payment.** The buyer retries with `PAYMENT-SIGNATURE`: base64 JSON `{x402Version: 2, resource, accepted, payload: {signature, authorization: {from, to, value, validAfter, validBefore, nonce}}}`, the EIP-712 signature by `from` over `TransferWithAuthorization`. No `Authorization` header is sent.
+- **Checks, in order:** version 2, scheme `exact`, network, asset, transfer method `eip3009`, the authorization's shape, `to` is the payout address, `value` equals the price exactly, `validAfter` is past, `validBefore` is at least 30 s away, the signature recovers to `from` with low s, the settler can pay gas, `from` holds the amount, and an `eth_call` of `transferWithAuthorization` from the settler succeeds (the authorization unused, the signature accepted by the token). Then `(from, nonce)` is redeemed and held, so one authorization backs at most one call. Failures are a 402 with `PAYMENT-RESPONSE` `{success: false, errorReason}` using x402's error codes.
+- **Settlement** follows step 12: upstream first, then the settler submits `transferWithAuthorization`; the response carries `PAYMENT-RESPONSE` `{success: true, transaction, network, payer, amount}` and a signed tab receipt whose `mandate` is `x402:<payer>` and `challenge` the authorization nonce. A transfer that does not settle voids the hold and withholds the response.
+- An x402 buyer carries no mandate: its signed authorization is the whole policy, one call at a time.
+
+**A tab client paying an x402 site.** When a 402 has x402 requirements and no tab challenge (`PAYMENT-REQUIRED`, or a version 1 body `{x402Version: 1, accepts}`), the client picks the first `exact` / `eip3009` entry in a token it knows and its own currency, converts the amount to micro units rounding up, and refuses before signing unless the mandate allows it: not expired, the site's hostname in `allow`, within `max_per_call`, the client cap, and the budget less what the client has already signed to x402 sites under this mandate and window (kept by the client, since an x402 site keeps no tab budget). It signs from the **agent's own address**, which the owner funds; that balance bounds it too. A signed authorization counts as spent when it is sent. A 402 with both a tab challenge and x402 requirements is paid the tab way.
+
 ## 6. Discovery
 
 `GET /.well-known/tab` on a gateway:
@@ -165,6 +177,7 @@ Per payment the agent builds an EIP-1559 transaction from the challenge (to = to
 ```json
 { "ver": "tab/0", "realm": "…", "rail": "ledger", "rail_info": { … },
   "recipient": "<wallet id>", "receipt_key": "<Ed25519 public key, base64url>",
+  "x402": { "x402Version": 2, "scheme": "exact", "network": "eip155:4663", "asset": "0x…", "payTo": "0x…", "eip712": { "name": "…", "version": "…" } },
   "services": [ { "name": "…", "prefix": "…", "description": "…",
       "routes": [ { "method": "GET", "path": "/v1/things/:id", "price": "0.01", "description": "…" } ] } ] }
 ```
@@ -197,10 +210,12 @@ The catalog's own API (`/v1/catalog.json`, `/v1/search`, `/v1/announce`, `/v1/re
 - **Outbound fetches to named addresses** (catalog announces, wallet and receipt lookups, the try-it agent, and on a hosted company server every gateway, http agent and URL an agent asks for): only global unicast addresses, judged after resolving and checked again at connect time (so DNS rebinding between a check and the fetch gets nowhere), IPv4-mapped IPv6 judged as the IPv4 it carries, no redirects, capped size and time. Local development opts out with `--allow-private-origins`. Discovery documents are capped at 16 MB. A gateway's route prefix must keep every route on its own origin, and receipts relayed by the catalog are shape-checked.
 - **What a receipt proves** (new in draft 0.5): that this gateway, under its published key, served a response with this status and body hash for this exact request, under this mandate, and booked this payment (on the evm rail, the named transaction). It does not prove the upstream produced that body: the gateway signs what it relayed, and a dishonest gateway can sign a body it made up. Closing that needs the upstream to sign its own responses, which most public APIs do not. Receipts also do not hash response headers.
 - **Receipt key loss**: a new database means a new receipt key, and receipts from the old one no longer match discovery. Operators who rotate on purpose should keep the old public key on record for audits.
+- **x402 settlement holds a key.** The settler key pays gas for `transferWithAuthorization` and can move nothing else: the transfer's amount and recipient are fixed by the buyer's signature. Keep a small ETH balance on it. A buyer who empties its wallet during the upstream call gets nothing (the response is withheld); the gateway loses the gas of one failed transaction at most, after a dry run that passed.
+- **x402 on the client side** is bounded by the mandate as the client counts it and by the agent address's balance; fund that address with what you are prepared to see spent.
 - **A mandate's budget is counted per gateway.** Each gateway keeps its own spend counter, so a `total` mandate that allows several realms can be spent up to its budget at each of them. Scope `allow` to the realms you mean, or issue one mandate per gateway, when the sum matters (hosted companies do: one mandate per run, read back from every gateway).
 - **Public receipts** expose payer and owner wallet ids; leave `public_receipts` off if that linkage matters.
 - The web try-it agent is a deliberate hole: anyone who can reach the catalog can spend that mandate. Give it a budget you are happy to lose.
 
-## Not in draft 0.5
+## Not in draft 0.6
 
-x402 client compatibility · agents acting as sellers · per-token / metered pricing and payment channels · windowed budgets enforced on-chain · header binding · upstream-signed responses · subscriptions · fee splits · EIP-4337 / gas sponsorship · dispute windows.
+x402 schemes other than `exact`, transfer methods other than EIP-3009 (Permit2, ERC-7710), version 1 on the gateway side · agents acting as sellers · per-token / metered pricing and payment channels · windowed budgets enforced on-chain · header binding · upstream-signed responses · subscriptions · fee splits · EIP-4337 / gas sponsorship · dispute windows.
