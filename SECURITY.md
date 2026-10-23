@@ -11,6 +11,7 @@ Anything that violates the guarantees in [SPEC.md §9](SPEC.md#9-security-consid
 - redeeming one challenge or one signed payment more than once
 - getting a paid response without a capture, or a capture without a response, outside the documented one-call trust bounds
 - forging or mutating mandates, credentials, or request commitments
+- making a receipt verify for a request, response, mandate, or payment it does not describe, or under a key the gateway does not publish
 - making the catalog fetch internal addresses (SSRF) or crash the accounting
 
 ## How to report

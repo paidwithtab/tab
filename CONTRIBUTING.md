@@ -11,7 +11,7 @@ easiest to land.
    argument; the crypto (Ed25519, keccak-256, secp256k1, RLP, EIP-1559) is
    hand-written and vector-verified, and stays that way.
 2. **The payment path is guilty until proven innocent.** Any change touching
-   verification, budgets, holds, or settlement must keep every suite green and
+   verification, budgets, holds, settlement, or receipts must keep every suite green and
    should usually *add* an adversarial check proving the thing it claims.
 3. **Docs are part of the change.** SPEC.md is normative; DEPLOY.md states
    verifiable facts (test counts, line counts, behavior). If your change makes
@@ -21,11 +21,13 @@ easiest to land.
 
 ```sh
 git clone https://github.com/paidwithtab/tab && cd tab
-npm install            # typescript, tsx, @types/node: dev tooling only
+npm install            # typescript, tsx, @types/node, playwright: dev tooling only
 npx tsc --noEmit       # must stay clean
-npm test               # 51 end-to-end checks, in-process, temp DB
-npm run test:adversarial   # 24 hostile checks: the money invariants
-npm run test:evm       # 31 checks: crypto vectors, mock EVM node, live testnet reads
+npm test               # 79 end-to-end checks, in-process, temp DB
+npm run test:adversarial   # 37 hostile checks: the money invariants and receipt forgery
+npm run test:evm       # 41 checks: crypto vectors, mock EVM node, live testnet reads
+npm run test:company   # 92 checks: the company orchestrator against a real gateway
+npm run test:dashboard # 21 checks in headless Chromium (npx playwright install chromium once)
 npm run demo           # full local sandbox: gateway :1402, catalog + site :1403
 ```
 
@@ -35,7 +37,9 @@ npm run demo           # full local sandbox: gateway :1402, catalog + site :1403
 ## Pull requests
 
 - Small and focused beats large and mixed.
-- State which suites you ran. If you touched the payment path, all three.
+- State which suites you ran. If you touched the payment path or receipts, run e2e,
+  adversarial and evm; if you touched `src/company/` or `web/app.html`, company and
+  dashboard too.
 - Match the existing style: plain Node built-ins, comments that state
   constraints rather than narrate code.
 
