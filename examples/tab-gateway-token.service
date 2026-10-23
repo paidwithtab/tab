@@ -8,7 +8,7 @@ Wants=network-online.target
 [Service]
 WorkingDirectory=%h/tab
 EnvironmentFile=-%h/tab/.env
-ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js serve --spec %h/tab/examples/spec-token.json --db %h/tab/token.db --port 1407 --announce http://127.0.0.1:1403 --origin https://token.paidwithtab.com
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js serve --spec %h/tab/examples/spec-token.json --db %h/tab/token.db --port 1408 --announce http://127.0.0.1:1403 --origin https://token.paidwithtab.com
 Restart=always
 RestartSec=3
 
