@@ -39,6 +39,38 @@ export interface ChallengeRequest {
   rail: string;
 }
 
+/**
+ * A token this client will sign payments in: the chain, the contract, its decimals and the
+ * currency a gateway must name for it. A challenge carries its own token and decimals, so
+ * without a pin a hostile gateway could name 18 decimals for a 6-decimal token (a 0.01
+ * charge becoming the whole allowance) or name another token the owner approved.
+ */
+export interface EvmTokenPin {
+  chainId: number;
+  token: string; // 0x contract address
+  decimals: number;
+  currency: string; // "USD" for dollar stablecoins
+}
+
+/** The tokens tab's own gateways settle in. More come from options or TAB_EVM_TOKENS. */
+export const KNOWN_EVM_TOKENS: EvmTokenPin[] = [
+  { chainId: 4663, token: '0x5fc5360d0400a0fd4f2af552add042d716f1d168', decimals: 6, currency: 'USD' }, // USDG, Robinhood Chain
+  { chainId: 46630, token: '0x5b6c7caf7f99f99154fd8375ec935fcf03f326f5', decimals: 6, currency: 'USD' }, // USDC, Robinhood Chain testnet
+  { chainId: 46630, token: '0x8f6fe411e76b79d6eb6521872340c37c3210ee47', decimals: 18, currency: 'TTT' }, // tab's test token
+];
+
+/** TAB_EVM_TOKENS="chainId:currency:0xtoken:decimals,..." */
+export function parseEvmTokens(spec: string | undefined): EvmTokenPin[] {
+  if (!spec) return [];
+  return spec.split(',').map((s) => s.trim()).filter(Boolean).map((entry) => {
+    const [chainId, currency, token, decimals] = entry.split(':');
+    if (!/^\d+$/.test(chainId ?? '') || !currency || !/^0x[0-9a-fA-F]{40}$/.test(token ?? '') || !/^\d+$/.test(decimals ?? '')) {
+      throw new Error(`TAB_EVM_TOKENS entry must be chainId:currency:0xtoken:decimals, got ${JSON.stringify(entry)}`);
+    }
+    return { chainId: Number(chainId), currency, token: token.toLowerCase(), decimals: Number(decimals) };
+  });
+}
+
 export interface TabClientOptions {
   agent: KeyPair;
   mandate: Mandate;
@@ -53,16 +85,20 @@ export interface TabClientOptions {
   /** Optional veto; amounts in micro-USD. Return false to refuse. */
   onChallenge?: (challenge: Challenge, request: ChallengeRequest) => boolean | Promise<boolean>;
   fetch?: typeof fetch;
+  /** Extra tokens to pay in on the evm rail, beside KNOWN_EVM_TOKENS and TAB_EVM_TOKENS. */
+  evmTokens?: EvmTokenPin[];
 }
 
 export class TabClient {
   private maxPerCallMicro: number | null;
   private accepts: string;
   private receiptKeys = new Map<string, string | null>();
+  private evmTokens: EvmTokenPin[];
 
   constructor(private opts: TabClientOptions) {
     this.maxPerCallMicro = opts.maxPerCallUsd != null ? usdToMicro(opts.maxPerCallUsd) : null;
     this.accepts = opts.currency ?? 'USD';
+    this.evmTokens = [...KNOWN_EVM_TOKENS, ...parseEvmTokens(process.env.TAB_EVM_TOKENS), ...(opts.evmTokens ?? [])];
     if (opts.mandate.agent !== opts.agent.publicKey) {
       throw new Error('mandate is not for this agent key');
     }
@@ -105,6 +141,14 @@ export class TabClient {
     if (chal.rail === 'evm') {
       const evmOwner = this.opts.mandate.evm_owner;
       if (!evmOwner) throw new PaymentRefused('mandate has no evm_owner; re-issue it for the evm rail', chal);
+      const info = chal.evm;
+      const pin = info && this.evmTokens.find((t) => t.chainId === Number(info.chain_id) && t.token === String(info.token).toLowerCase() && t.currency === currency);
+      if (!info || !pin) {
+        throw new PaymentRefused(`gateway asks for a token this client does not know (${info?.token} on chain ${info?.chain_id} as ${currency}); pin it with evmTokens or TAB_EVM_TOKENS`, chal);
+      }
+      if (Number(info.decimals) !== pin.decimals) {
+        throw new PaymentRefused(`gateway says ${info.token} has ${info.decimals} decimals; it has ${pin.decimals}`, chal);
+      }
       const agentAddr = addressFromSeed(new Uint8Array(Buffer.from(this.opts.agent.privateKey, 'base64url')));
       const origin = new URL(url).origin;
       const nonceRes = await doFetch(`${origin}/.well-known/tab/evm/nonce/${agentAddr}`);

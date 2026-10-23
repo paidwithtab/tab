@@ -4,7 +4,7 @@
 
 import { keccak256 } from './keccak.js';
 import { rlpEncode, rlpDecode, type RlpItem } from './rlp.js';
-import { sign, recover, pubToAddress, bigToBytes, bytesToBig, type Signature } from './secp256k1.js';
+import { sign, recover, pubToAddress, bigToBytes, bytesToBig, N, type Signature } from './secp256k1.js';
 
 // -- hex helpers ------------------------------------------------------------
 
@@ -136,6 +136,9 @@ export function parseTx(raw: Uint8Array): ParsedTx {
   const decoded = rlpDecode(raw.slice(1));
   if (!Array.isArray(decoded) || decoded.length !== 12) throw new Error('bad transaction shape');
   const f = decoded as Uint8Array[];
+  for (const i of [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11]) {
+    if (!(f[i] instanceof Uint8Array)) throw new Error('transaction field is a list, not a byte string');
+  }
   const accessList = decoded[8];
   if (!Array.isArray(accessList) || accessList.length !== 0) throw new Error('access lists are not supported');
   const tx: Eip1559Tx = {
@@ -152,6 +155,12 @@ export function parseTx(raw: Uint8Array): ParsedTx {
   const yParityB = bytesToBig(f[9]);
   if (yParityB !== 0n && yParityB !== 1n) throw new Error('bad yParity');
   const sig: Signature = { r: bytesToBig(f[10]), s: bytesToBig(f[11]), yParity: Number(yParityB) as 0 | 1 };
+  // nodes refuse high-s signatures (EIP-2), and a signed payment must have exactly one encoding:
+  // any other form of the same fields would pass every check here, carry a different hash, and
+  // fail at broadcast after the call was served
+  if (sig.s > N / 2n) throw new Error('high-s signature');
+  const canonical = cat(Uint8Array.of(0x02), rlpEncode([...txFields(tx), bigToMinimal(yParityB), bigToMinimal(sig.r), bigToMinimal(sig.s)]));
+  if (canonical.length !== raw.length || canonical.some((b, i) => b !== raw[i])) throw new Error('non-canonical transaction encoding');
   const from = pubToAddress(recover(signingDigest(tx), sig));
   return { ...tx, sig, from, hash: bytesToHex(keccak256(raw)) };
 }

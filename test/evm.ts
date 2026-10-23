@@ -12,7 +12,7 @@ import { promisify } from 'node:util';
 import { createHash, randomBytes } from 'node:crypto';
 
 import { newKeyPair, saveKey } from '../src/keys.js';
-import { signCredential, encodeCredentialHeader, parseChallengeHeader, microToBaseUnits, baseUnitsToMicro } from '../src/protocol.js';
+import { signCredential, encodeCredentialHeader, parseChallengeHeader, encodeChallengeHeader, microToBaseUnits, baseUnitsToMicro } from '../src/protocol.js';
 import { issueMandate } from '../src/mandate.js';
 import { Store } from '../src/store.js';
 import { createGateway, loadSpec, type Spec } from '../src/gateway.js';
@@ -316,6 +316,50 @@ async function main(): Promise<void> {
   const freeRes = await fetch(`${GW}/free`);
   check('free route needs no payment', freeRes.status === 200 && receiptOf(freeRes) === null);
 
+  // -- 3b. a gateway that lies in its challenge, and payments with more than one encoding --------
+  {
+    // a hostile gateway: the real challenge, re-served with the token's decimals or the token itself changed
+    const lie = (edit: (c: any) => void) => createServer(async (req, res) => {
+      const r = await fetch(`${GW}${req.url}`, { headers: req.headers.authorization ? { authorization: req.headers.authorization } : {} });
+      const c = parseChallengeHeader(r.headers.get('www-authenticate'));
+      if (r.status !== 402 || !c) { res.writeHead(r.status); res.end(await r.text()); return; }
+      edit(c);
+      res.writeHead(402, { 'www-authenticate': encodeChallengeHeader(c), 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    const before = chain.broadcasts;
+    const outcomes: string[] = [];
+    for (const edit of [(c: any) => { c.evm.decimals = 18; }, (c: any) => { c.evm.token = '0x' + 'cd'.repeat(20); }]) {
+      const srv = lie(edit);
+      const port = await listen(srv);
+      try { await client.fetch(`http://127.0.0.1:${port}/quote`); outcomes.push('paid'); } catch (e) { outcomes.push(e instanceof PaymentRefused ? e.reason : String(e)); }
+      srv.close();
+    }
+    check('the client refuses a challenge that inflates the token decimals, before signing', /has 6/.test(outcomes[0]) && chain.broadcasts === before);
+    check('the client refuses a token it does not know, before signing', /does not know/.test(outcomes[1]) && chain.broadcasts === before);
+
+    // one signed payment, re-encoded: high s, an integer with a leading zero byte
+    const chal = parseChallengeHeader((await fetch(`${GW}/quote`)).headers.get('www-authenticate'))!;
+    const nonceNow = BigInt(((await (await fetch(`${GW}/.well-known/tab/evm/nonce/${agentAddr}`)).json()) as any).nonce);
+    const good = buildSignedPaymentTxEvm(chal, ownerAddr, agent, nonceNow);
+    const f = rlpDecode(hexToBytes(good).slice(1)) as Uint8Array[];
+    const N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n;
+    const sHigh = N - BigInt(bytesToHex(f[11]));
+    const variants = [
+      [...f.slice(0, 9), f[9].length ? new Uint8Array(0) : Uint8Array.of(1), f[10], hexToBytes('0x' + sHigh.toString(16).padStart(64, '0'))],
+      [f[0], Uint8Array.from([0, ...f[1].length ? f[1] : [0]]), ...f.slice(2)],
+    ];
+    const refusals: number[] = [];
+    for (const v of variants) {
+      const raw = '0x02' + bytesToHex(rlpEncode(v as any)).slice(2);
+      const cred = encodeCredentialHeader(signCredential(agent, chal, mandate, { evm: { tx: raw } }));
+      const r = await fetch(`${GW}/quote`, { headers: { authorization: cred } });
+      refusals.push(r.status);
+    }
+    check('a high-s or non-canonical payment is refused, so no call is served on a payment the chain would reject',
+      refusals.every((st) => st === 402) && chain.broadcasts === before, refusals);
+  }
+
   // -- 4. voids broadcast nothing -------------------------------------------
 
   const broadcastsBefore = chain.broadcasts;
@@ -462,7 +506,7 @@ async function main(): Promise<void> {
     check('a client that pays in USD refuses a token-priced gateway before signing', /charges in TTT/.test(refused)
       && chainT.broadcasts === before);
   }
-  const clientT = new TabClient({ agent, mandate: mandateT, currency: 'TTT' });
+  const clientT = new TabClient({ agent, mandate: mandateT, currency: 'TTT', evmTokens: [{ chainId: Number(CHAIN_ID), token: TTT, decimals: 18, currency: 'TTT' }] });
   const paidT = await clientT.fetch(`${GWT}/quote`);
   const receiptT = receiptOf(paidT);
   check('a client told to pay in TTT settles 0.01 TTT as 10^16 base units', paidT.status === 200
