@@ -5,12 +5,12 @@
   "description": "Agents pay per call over HTTP 402: 8,600+ API routes, owner-signed budgets, signed receipts.",
   "websiteUrl": "https://paidwithtab.com",
   "repository": { "url": "https://github.com/paidwithtab/tab", "source": "github" },
-  "version": "2.3.1",
+  "version": "2.3.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "paidwithtab",
-      "version": "2.3.1",
+      "version": "2.3.2",
       "transport": { "type": "stdio" },
       "packageArguments": [{ "type": "positional", "value": "mcp" }],
       "environmentVariables": [
