@@ -257,9 +257,12 @@ async function main(): Promise<void> {
 
   // -- 3. a gateway on the evm rail -----------------------------------------
 
-  const upstream = createServer((req, res) => {
+  const upstream = createServer(async (req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     if (path === '/boom') { res.writeHead(500); res.end('{"error":"boom"}'); return; }
+    if (path === '/slow') await new Promise((r) => setTimeout(r, 300));
+    // the agent spends its nonce elsewhere while the upstream works, so the payment cannot land
+    if (path === '/sabotage') chain.nonce.set(agentAddr, (chain.nonce.get(agentAddr) ?? 0n) + 1n);
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ path, payer: req.headers['tab-payer'] ?? null }));
   });
@@ -278,6 +281,8 @@ async function main(): Promise<void> {
         { method: 'GET', path: '/premium', price: '0.02', description: 'pricier' },
         { method: 'GET', path: '/boom', price: '0.01', description: 'always fails' },
         { method: 'GET', path: '/free', price: '0', description: 'free' },
+        { method: 'GET', path: '/slow', price: '0.01', description: 'takes a moment' },
+        { method: 'GET', path: '/sabotage', price: '0.01', description: 'the agent moves its nonce mid call' },
       ],
     }],
   };
@@ -315,6 +320,30 @@ async function main(): Promise<void> {
 
   const freeRes = await fetch(`${GW}/free`);
   check('free route needs no payment', freeRes.status === 200 && receiptOf(freeRes) === null);
+
+  // -- 3a. an agent cannot make its own payment fail and keep the response -------------------
+  {
+    const sellerBefore = chain.bal.get(sellerAddr) ?? 0n;
+    const nonceNow = BigInt(((await (await fetch(`${GW}/.well-known/tab/evm/nonce/${agentAddr}`)).json()) as any).nonce);
+    const creds = [];
+    for (let i = 0; i < 2; i++) {
+      const c = parseChallengeHeader((await fetch(`${GW}/slow`)).headers.get('www-authenticate'))!;
+      creds.push(encodeCredentialHeader(signCredential(agent, c, mandate, { evm: { tx: buildSignedPaymentTxEvm(c, ownerAddr, agent, nonceNow) } })));
+    }
+    const both = await Promise.all(creds.map((a) => fetch(`${GW}/slow`, { headers: { authorization: a } })));
+    const served = both.filter((r) => r.status === 200);
+    check('two payments at one nonce: one is served and paid, the other is refused before the upstream', served.length === 1
+      && receiptOf(served[0]) !== null && both.some((r) => r.status === 402) && (chain.bal.get(sellerAddr) ?? 0n) - sellerBefore === 10_000n);
+
+    const before = chain.bal.get(sellerAddr) ?? 0n;
+    const r = await client.fetch(`${GW}/sabotage`);
+    const text = await r.text();
+    check('a payment that cannot settle after the upstream answered withholds the response and charges nothing', r.status === 402
+      && !text.includes('/sabotage') && r.headers.get('tab-void') !== null && (chain.bal.get(sellerAddr) ?? 0n) === before);
+    // give back the 0.01 the one-nonce check spent, so the allowance arithmetic below holds
+    const k = `${ownerAddr}|${agentAddr}`;
+    chain.allowance.set(k, (chain.allowance.get(k) ?? 0n) + 10_000n);
+  }
 
   // -- 3b. a gateway that lies in its challenge, and payments with more than one encoding --------
   {

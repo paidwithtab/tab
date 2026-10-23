@@ -74,7 +74,7 @@ export class EvmRail implements Rail {
   }
 
   /** Parse the agent's transaction and check every field against the challenge. */
-  reserveLocal(ctx: ReserveContext): { tx: string | null; txHash?: string } {
+  reserveLocal(ctx: ReserveContext): { tx: string | null; txHash?: string; txSlot?: string } {
     const txHex = ctx.cred.evm?.tx;
     if (!txHex || !/^0x[0-9a-fA-F]+$/.test(txHex)) {
       throw new PayError('malformed-credential', 'credential carries no evm transaction');
@@ -104,7 +104,7 @@ export class EvmRail implements Rail {
     }
     // parseTx already recovered the sender from the signature; whoever signed
     // is the spender the token contract will check the allowance of.
-    return { tx: txHex, txHash: parsed.hash };
+    return { tx: txHex, txHash: parsed.hash, txSlot: `${parsed.from}:${parsed.nonce}` };
   }
 
   /** Chain-state checks + dry run. Nothing is broadcast here. */
@@ -131,10 +131,29 @@ export class EvmRail implements Rail {
     }
   }
 
-  /** Broadcast and wait for the receipt; only called after the upstream answered 2xx. */
+  /**
+   * Broadcast and wait for the receipt; only called after the upstream answered 2xx. Throws when
+   * the payment did not settle (refused, reverted). The hash is computed here, not taken from the
+   * node, and a transaction the network already has counts as broadcast (a failover node after a
+   * timed out first try). Once broadcast, a receipt that is merely slow does not void the hold:
+   * the transfer may still land, and refunding it would let total spend pass the mandate.
+   */
   async capture(hold: HoldRow): Promise<string> {
-    const hash = await this.rpc.sendRawTransaction(hexToBytes(hold.tx!));
-    await this.rpc.waitForReceipt(hash);
+    const raw = hexToBytes(hold.tx!);
+    const hash = parseTx(raw).hash;
+    try {
+      const said = await this.rpc.sendRawTransaction(raw);
+      if (typeof said === 'string' && said.toLowerCase() !== hash) throw new Error(`node returned hash ${said}, expected ${hash}`);
+    } catch (err) {
+      const known = await this.rpc.call('eth_getTransactionByHash', [hash]).catch(() => null);
+      if (!known) throw err;
+    }
+    try {
+      await this.rpc.waitForReceipt(hash);
+    } catch (err) {
+      if (/reverted|receipt of/.test((err as Error).message)) throw err;
+      // still pending after the wait: booked as paid; the chain is the record (ref names the tx)
+    }
     return `evm:${hash}`;
   }
 

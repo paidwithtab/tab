@@ -131,6 +131,9 @@ export class EvmRpc {
     for (;;) {
       const receipt = await this.call('eth_getTransactionReceipt', [hash]);
       if (receipt) {
+        if (typeof receipt.transactionHash === 'string' && receipt.transactionHash.toLowerCase() !== hash.toLowerCase()) {
+          throw new EvmRpcError(`node answered with the receipt of ${receipt.transactionHash}, not ${hash}`);
+        }
         if (receipt.status === '0x1') return;
         throw new EvmRpcError(`transaction ${hash} reverted on-chain`);
       }

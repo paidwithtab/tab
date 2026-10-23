@@ -26,6 +26,9 @@ export interface HoldRow {
   // payment can never back two served calls; a voided hold frees its hash
   // (after a void the same nonce legitimately produces the same bytes).
   tx_hash: string | null;
+  // evm: "sender:nonce". UNIQUE over reserved holds: two payments at one nonce can both pass every
+  // check while only one can ever mine, so the second waits until the first settles
+  tx_slot?: string | null;
   created_at: string;
 }
 
@@ -68,6 +71,13 @@ export class Store {
     } catch {
       /* column already exists */
     }
+    // databases created before one-payment-per-nonce lack tx_slot
+    try {
+      this.db.exec('ALTER TABLE holds ADD COLUMN tx_slot TEXT');
+    } catch {
+      /* column already exists */
+    }
+    this.db.exec("CREATE UNIQUE INDEX IF NOT EXISTS holds_tx_slot ON holds (tx_slot) WHERE tx_slot IS NOT NULL AND state = 'reserved'");
     // databases created before gateways could charge in their own token lack the currency column
     try {
       this.db.exec("ALTER TABLE receipts ADD COLUMN currency TEXT NOT NULL DEFAULT 'USD'");
@@ -218,12 +228,12 @@ export class Store {
     this.db
       .prepare(
         `INSERT INTO holds (id, challenge_id, amount, payer, owner, recipient, resource, realm, rail,
-         mandate_id, window_key, state, ref, tx, tx_hash, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         mandate_id, window_key, state, ref, tx, tx_hash, tx_slot, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         row.id, row.challenge_id, row.amount, row.payer, row.owner, row.recipient, row.resource,
         row.realm, row.rail, row.mandate_id, row.window_key, row.state, row.ref, row.tx, row.tx_hash,
-        row.created_at,
+        row.tx_slot ?? null, row.created_at,
       );
   }
 

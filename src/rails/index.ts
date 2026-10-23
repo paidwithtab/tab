@@ -27,7 +27,7 @@ export interface Rail {
    * txHash, when set, is stored UNIQUE so one signed payment can never back
    * two holds.
    */
-  reserveLocal(ctx: ReserveContext): { tx: string | null; txHash?: string };
+  reserveLocal(ctx: ReserveContext): { tx: string | null; txHash?: string; txSlot?: string };
   /** Asynchronous reservation step, outside the transaction (simulate / dry run). */
   reserveRemote?(hold: HoldRow): Promise<void>;
   /** Settle a reserved hold after the upstream answered 2xx. Returns the receipt ref. */

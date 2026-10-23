@@ -398,7 +398,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         throw new PayError('invalid-challenge', 'challenge already redeemed');
       }
       const key = checkAndSpend(store, cred.mandate, priceMicro, now);
-      const { tx, txHash } = rail.reserveLocal({ cred, chal, priceMicro, holdId, now });
+      const { tx, txHash, txSlot } = rail.reserveLocal({ cred, chal, priceMicro, holdId, now });
       const hold: HoldRow = {
         id: holdId,
         challenge_id: chal.id,
@@ -415,12 +415,17 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         ref: null,
         tx,
         tx_hash: txHash ?? null,
+        tx_slot: txSlot ?? null,
         created_at: now.toISOString(),
       };
       try {
         store.createHold(hold);
       } catch (err) {
-        if (String((err as Error).message).includes('UNIQUE')) {
+        const msg = String((err as Error).message);
+        if (msg.includes('UNIQUE') && msg.includes('tx_slot')) {
+          throw new PayError('payment-expired', 'another payment from this agent at the same nonce is in flight; retry when it settles');
+        }
+        if (msg.includes('UNIQUE')) {
           throw new PayError('invalid-challenge', 'payment transaction already used for another call');
         }
         throw err;
@@ -728,9 +733,12 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         try {
           ref = await rail.capture(hold);
         } catch (err) {
-          // The buyer got the response; worst case they were not charged.
+          // The payment did not settle (a broadcast the chain refused, a transfer that reverted):
+          // nobody is charged and the response is withheld, so an agent cannot make its own
+          // payment fail and keep what it bought.
           await releaseHold(hold);
-          await relayResponse(res, upstream, { 'tab-void': hold.id }, delivered);
+          res.setHeader('tab-void', hold.id);
+          await respondProblem(res, 'payment-expired', `payment did not settle (${(err as Error).message}); nothing was charged and the response is withheld`, 402);
           log(`${method} ${pathname} -> ${upstream.status} capture FAILED, voided ${hold.id}: ${(err as Error).message}`);
           return;
         }
