@@ -1,7 +1,8 @@
 {
   "name": "paidwithtab",
-  "version": "2.3.0",
-  "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402, spending capped by signed mandates, settled in USDC on Robinhood Chain. Zero runtime dependencies.",
+  "version": "2.3.1",
+  "mcpName": "io.github.paidwithtab/tab",
+  "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402, spending capped by signed mandates, settled in USDG on Robinhood Chain. Zero runtime dependencies.",
   "type": "module",
   "bin": {
     "tab": "bin/tab.js"
@@ -47,7 +48,10 @@
     "payments",
     "http-402",
     "mandates",
-    "usdc",
+    "usdg",
+    "x402",
+    "micropayments",
+    "mcp-server",
     "robinhood-chain",
     "api-monetization",
     "mcp",
