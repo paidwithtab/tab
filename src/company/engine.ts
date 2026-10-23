@@ -33,6 +33,8 @@ export interface EngineOptions {
 const ACTIVE: ReadonlySet<string> = new Set(['open', 'in_progress']);
 // a ticket in review can still be worked by the colleague it was handed to
 const WAKEABLE: ReadonlySet<string> = new Set(['open', 'in_progress', 'review']);
+// runs on one ticket in an hour before it is blocked for the owner to look at
+const MAX_RUNS_PER_TICKET_HOUR = 12;
 
 export class Engine {
   private store: CompanyStore;
@@ -148,7 +150,9 @@ export class Engine {
   /** Budget left for the company in micro, and whether it just got paused for being out. */
   private remaining(company: CompanyRow): number {
     const spent = this.store.companySpent(company.id);
-    return company.budget - spent.tab - spent.model;
+    // runs in flight have not booked yet: their mandates' ceilings are spoken for
+    const reserved = this.store.runningRuns(company.id).reduce((n, r) => n + (r.mandate ? Number(r.mandate.budget) : 0), 0);
+    return company.budget - spent.tab - spent.model - reserved;
   }
 
   private ownerKey(company: CompanyRow): KeyPair {
@@ -182,6 +186,12 @@ export class Engine {
         return null;
       }
       ceiling = Math.min(ceiling, left);
+      // two agents that keep handing a ticket back and forth would run forever on the owner's model key
+      if (this.store.runsOnTicketSince(ticket.id, new Date(now.getTime() - 3_600_000).toISOString()) >= MAX_RUNS_PER_TICKET_HOUR) {
+        this.store.updateTicket(ticket.id, { state: 'blocked' });
+        this.store.addEvent({ company_id: company.id, ticket_id: ticket.id, agent_id: null, kind: 'state', body: { from: ticket.state, to: 'blocked', reason: `${MAX_RUNS_PER_TICKET_HOUR} runs on this ticket in the last hour; the owner should look at it` } });
+        return null;
+      }
     }
     let mandate: Mandate | null = null;
     if (company.realms.length && ceiling > 0) {
@@ -192,7 +202,7 @@ export class Engine {
         window: 'total',
         maxPerCallUsd: typeof agent.config.max_per_call === 'string' ? agent.config.max_per_call : undefined,
         allow: company.realms,
-        days: 1,
+        expiresInMs: this.runTimeoutMs + 60_000,
         evmOwner: addressFromSeed(new Uint8Array(Buffer.from(owner.privateKey, 'base64url'))),
         now,
       });
@@ -228,7 +238,7 @@ export class Engine {
         agent, packet, mandate, currency: company.currency, catalog: company.catalog, workDir,
         agentKey: agent.agent_priv ? { publicKey: agent.agent_pub, privateKey: agent.agent_priv } : null,
         modelKey: agent.adapter === 'claude' ? this.modelKeyFor(company) : null, anthropicUrl: this.opts.anthropicUrl,
-        timeoutMs: this.runTimeoutMs, fetch: this.doFetch, log: this.log,
+        timeoutMs: this.runTimeoutMs, maxModelCostMicro: Math.max(0, remaining), fetch: this.doFetch, log: this.log,
       });
       text = out.text;
       result = out.result;
@@ -250,13 +260,14 @@ export class Engine {
         } catch { /* unverified then */ }
         try {
           const r = await this.doFetch(`${origin}/.well-known/tab/mandate/${mandate.id}/spent`, { signal: AbortSignal.timeout(10_000) });
-          if (r.ok) spent += Number(((await r.json()) as { micro?: number }).micro ?? 0);
+          if (r.ok) spent += bookable(((await r.json()) as { micro?: unknown }).micro, Number(mandate.budget));
         } catch (err) {
           this.log(`spend lookup at ${origin} failed: ${(err as Error).message}`);
         }
         try {
           const r = await this.doFetch(`${origin}/.well-known/tab/receipts?payer=${encodeURIComponent(agent.agent_pub)}&since=${encodeURIComponent(run.started_at)}&limit=200`, { signal: AbortSignal.timeout(10_000) });
           if (r.ok) for (const rec of ((await r.json()) as { receipts?: Receipt[] }).receipts ?? []) {
+            if (!wellFormedReceipt(rec)) continue;
             receipts.push({ ...rec, origin, verified: verifyReceipt(rec, { key, mandate: mandate.id }).ok });
           }
         } catch { /* receipts are optional on a gateway */ }
@@ -264,8 +275,37 @@ export class Engine {
     }
 
     this.store.tx(() => this.book(company, agent, ticket, run, { text, result, modelCost, spent, error, receipts }));
+    if (mandate) this.reconcileLater(company, run.id, ticket?.id ?? null, mandate, spent);
     this.log(`run ${run.id}: ${error ? `failed (${error})` : result ? result.status : 'no result'}, spent ${microToUsd(spent)}, model ${microToUsd(modelCost)}`);
     return this.store.run(run.id) ?? null;
+  }
+
+  /**
+   * The mandate outlives the run by a minute, and an http agent holds its own key: anything it
+   * spends after the run was booked is read once the mandate has expired and booked as late spend.
+   */
+  private reconcileLater(company: CompanyRow, runId: string, ticketId: string | null, mandate: Mandate, booked: number): void {
+    const wait = Math.max(0, Date.parse(mandate.expires_at) - Date.now()) + 5_000;
+    const t = setTimeout(async () => {
+      let total = 0;
+      for (const origin of company.gateways) {
+        try {
+          const r = await this.doFetch(`${origin}/.well-known/tab/mandate/${mandate.id}/spent`, { signal: AbortSignal.timeout(10_000) });
+          if (r.ok) total += bookable(((await r.json()) as { micro?: unknown }).micro, Number(mandate.budget));
+        } catch { /* the next look is the owner's */ }
+      }
+      const late = Math.min(total, Number(mandate.budget)) - booked;
+      if (late <= 0) return;
+      this.store.tx(() => {
+        this.store.addRunSpend(runId, late);
+        if (ticketId) this.store.updateTicket(ticketId, { addSpent: late });
+        this.store.addEvent({ company_id: company.id, ticket_id: ticketId, agent_id: null, kind: 'late-spend', body: { run_id: runId, spent: microToUsd(late), mandate_id: mandate.id } });
+      });
+      this.log(`run ${runId}: ${microToUsd(late)} spent after the run, booked late`);
+      const c = this.store.company(company.id);
+      if (c && this.remaining(c) <= 0) this.pauseForBudget(c);
+    }, wait);
+    t.unref();
   }
 
   /** Apply a finished run to the books: run row, events, ticket state, sub-tickets, requests, mentions, budget flags. */
@@ -399,4 +439,17 @@ export class Engine {
       this.store.wake(ticket.assignee_id, ticket.id, by ? 'comment' : 'owner comment');
     }
   }
+}
+
+/** A spend figure from a gateway, as something safe to book: a whole number between 0 and the mandate budget. */
+function bookable(micro: unknown, ceiling: number): number {
+  const n = Number(micro);
+  return Number.isSafeInteger(n) && n > 0 ? Math.min(n, ceiling) : 0;
+}
+
+/** Receipts come from gateways the owner named; one malformed one must not abort booking the run. */
+function wellFormedReceipt(r: Receipt): boolean {
+  return !!r && typeof r.id === 'string' && r.id.length <= 64 && typeof r.realm === 'string' && typeof r.resource === 'string'
+    && Number.isSafeInteger(Number(r.amount)) && Number(r.amount) >= 0 && typeof r.at === 'string' && !Number.isNaN(Date.parse(r.at))
+    && (r.currency === undefined || typeof r.currency === 'string');
 }

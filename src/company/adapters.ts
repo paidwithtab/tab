@@ -34,6 +34,7 @@ export interface AdapterContext {
   modelKey: string | null; // the company's Anthropic API key (or the host's), for the claude adapter
   anthropicUrl?: string; // tests point the claude adapter at a stub
   timeoutMs: number;
+  maxModelCostMicro?: number; // what the company has left; the claude adapter stops there
   fetch?: typeof fetch;
   log?: (msg: string) => void;
 }
@@ -118,7 +119,7 @@ async function runModel(ctx: AdapterContext): Promise<AdapterOutput> {
     system: cfg.system ? String(cfg.system) : undefined,
     packet: ctx.packet, agentKey: ctx.agentKey, mandate: ctx.mandate, catalog: ctx.catalog, currency: ctx.currency,
     maxPerCallUsd: typeof cfg.max_per_call === 'string' ? cfg.max_per_call : undefined,
-    timeoutMs: ctx.timeoutMs, fetch: ctx.fetch, log: ctx.log,
+    timeoutMs: ctx.timeoutMs, maxCostMicro: ctx.maxModelCostMicro, fetch: ctx.fetch, log: ctx.log,
   });
   const head = `[${out.model}: ${out.usage.turns} turns, ${out.usage.input} tokens in, ${out.usage.output} out${out.usage.cache_read ? `, ${out.usage.cache_read} cached` : ''}]`;
   ctx.log?.(`${ctx.agent.name} ${head}`);

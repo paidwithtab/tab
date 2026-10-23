@@ -211,6 +211,24 @@ export class CompanyStore {
     const rcols = new Set((this.db.prepare('PRAGMA table_info(receipts)').all() as Array<{ name: string }>).map((c) => c.name));
     if (!rcols.has('verified')) this.db.exec('ALTER TABLE receipts ADD COLUMN verified INTEGER NOT NULL DEFAULT 0');
     if (!rcols.has('doc')) this.db.exec('ALTER TABLE receipts ADD COLUMN doc TEXT');
+    // receipt ids are unique per gateway, not across tenants: a gateway one company names must not
+    // be able to claim, and so drop, another company's receipt ids
+    const pk = (this.db.prepare('PRAGMA table_info(receipts)').all() as Array<{ name: string; pk: number }>).filter((c) => c.pk > 0).map((c) => c.name);
+    if (pk.length === 1) {
+      this.db.exec(`
+        BEGIN;
+        CREATE TABLE receipts_v2 (
+          id TEXT NOT NULL, company_id TEXT NOT NULL, run_id TEXT, agent_id TEXT, origin TEXT NOT NULL,
+          realm TEXT NOT NULL, resource TEXT NOT NULL, amount INTEGER NOT NULL, currency TEXT NOT NULL, at TEXT NOT NULL,
+          verified INTEGER NOT NULL DEFAULT 0, doc TEXT, PRIMARY KEY (company_id, id)
+        );
+        INSERT INTO receipts_v2 (id, company_id, run_id, agent_id, origin, realm, resource, amount, currency, at, verified, doc)
+          SELECT id, company_id, run_id, agent_id, origin, realm, resource, amount, currency, at, verified, doc FROM receipts;
+        DROP TABLE receipts;
+        ALTER TABLE receipts_v2 RENAME TO receipts;
+        COMMIT;
+      `);
+    }
   }
 
   tx<T>(fn: () => T): T {
@@ -509,6 +527,15 @@ export class CompanyStore {
   runsOf(companyId: string, limit = 50): RunRow[] {
     return (this.db.prepare('SELECT * FROM runs WHERE company_id = ? ORDER BY started_at DESC LIMIT ?').all(companyId, limit) as Record<string, unknown>[])
       .map((r) => this.rowToRun(r));
+  }
+
+  runsOnTicketSince(ticketId: string, since: string): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM runs WHERE ticket_id = ? AND started_at >= ?').get(ticketId, since) as { n: number }).n);
+  }
+
+  /** Spend a gateway booked against a run's mandate after the run was booked. */
+  addRunSpend(id: string, micro: number): void {
+    this.db.prepare('UPDATE runs SET spent = spent + ? WHERE id = ?').run(micro, id);
   }
 
   runningRuns(companyId?: string): RunRow[] {

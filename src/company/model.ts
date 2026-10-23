@@ -20,6 +20,7 @@ export interface ModelRunOptions {
   baseUrl?: string; // default ANTHROPIC_URL; tests point it at a stub
   model?: string;
   maxTurns?: number; // model calls per run; default 20
+  maxCostMicro?: number; // stop calling the model once this run's model cost reaches it
   maxTokens?: number; // per reply; default 4096
   system?: string; // appended to the system prompt
   packet: Packet;
@@ -133,6 +134,11 @@ export async function runModelAgent(o: ModelRunOptions): Promise<ModelRunOutput>
       cost += priceUsage(res.model ?? model, res.usage);
     }
     if (res.model) reportedModel = res.model;
+    if (o.maxCostMicro !== undefined && cost >= o.maxCostMicro) {
+      transcript += '[stopped: the company has no budget left for more model calls]\n';
+      for (const b of res.content ?? []) if (b.type === 'text' && b.text) transcript += b.text + '\n';
+      break;
+    }
     const content = res.content ?? [];
     messages.push({ role: 'assistant', content });
     const toolUses = content.filter((b) => b.type === 'tool_use');

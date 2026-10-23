@@ -8,6 +8,7 @@ import { dirname, join, resolve } from 'node:path';
 import { CompanyStore } from './store.js';
 import { Engine } from './engine.js';
 import { createCompanyServer } from './server.js';
+import { guardedFetch } from '../net.js';
 import { Secrets } from './secrets.js';
 import { signBoardAction, type BoardActionKind } from './board.js';
 import type { AdapterName } from './adapters.js';
@@ -15,7 +16,7 @@ import { loadKey } from '../keys.js';
 
 export const COMPANY_USAGE = `  tab company serve  [--db company.db] [--port 1407] [--host app.example.com]... [--gateway https://pay.paidwithtab.com]
                      [--catalog https://paidwithtab.com] [--work company.work] [--allow-private-origins] [--tick 3]
-                     [--host-model-key] (companies without a key use $ANTHROPIC_API_KEY) [--local-claude] (allow claude-code agents)
+                     [--listen 127.0.0.1] [--host-model-key] (companies without a key use $ANTHROPIC_API_KEY) [--local-claude] (allow claude-code agents)
   tab company signup --email you@example.com --password ... [--server http://127.0.0.1:1407]
   tab company login  --email you@example.com --password ... [--server http://127.0.0.1:1407]
   tab company new    --name "Acme Research" [--mission "..."] [--budget 5.00] [--gateway origin]... [--template file.json]
@@ -98,6 +99,7 @@ export async function companyCommand(rest: string[]): Promise<void> {
       const { values } = opts(args, {
         db: { type: 'string', default: 'company.db' },
         port: { type: 'string', default: '1407' },
+        listen: { type: 'string', default: '127.0.0.1' },
         host: { type: 'string', multiple: true },
         gateway: { type: 'string', default: 'https://pay.paidwithtab.com' },
         catalog: { type: 'string', default: 'https://paidwithtab.com' },
@@ -116,8 +118,10 @@ export async function companyCommand(rest: string[]): Promise<void> {
       if (values['host-model-key'] && !hostModelKey) die('--host-model-key needs ANTHROPIC_API_KEY in the environment');
       const anthropicUrl = process.env.TAB_ANTHROPIC_URL || undefined;
       const adapters: AdapterName[] = ['claude', 'http', ...(values['local-claude'] ? ['claude-code' as const] : [])];
+      // runs reach only public addresses: http agents, gateways and the URLs a model asks for
+      const egress = values['allow-private-origins'] ? undefined : guardedFetch();
       const engine = new Engine({
-        store, workDir: (values.work as string | undefined) ?? db + '.work', log, secrets, hostModelKey: hostModelKey || null, anthropicUrl,
+        fetch: egress, store, workDir: (values.work as string | undefined) ?? db + '.work', log, secrets, hostModelKey: hostModelKey || null, anthropicUrl,
         tickMs: Math.max(1, Number(values.tick)) * 1000, runTimeoutMs: Math.max(10, Number(values['run-timeout'])) * 1000,
       });
       const hosts = (values.host as string[] | undefined) ?? [];
@@ -129,8 +133,8 @@ export async function companyCommand(rest: string[]): Promise<void> {
         secureCookies: values['insecure-cookies'] ? false : undefined,
       });
       const port = Number(values.port);
-      server.listen(port, () => {
-        log(`company server listening on :${port}, db ${db}, hosts ${hosts.length ? hosts.join(', ') : 'loopback only'}, default gateway ${values.gateway}, adapters ${adapters.join(', ')}${hostModelKey ? ', host model key set' : ''}`);
+      server.listen(port, values.listen as string, () => {
+        log(`company server listening on ${values.listen}:${port}, db ${db}, hosts ${hosts.length ? hosts.join(', ') : 'loopback only'}, default gateway ${values.gateway}, adapters ${adapters.join(', ')}${hostModelKey ? ', host model key set' : ''}`);
         engine.start();
       });
       return;

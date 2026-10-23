@@ -41,6 +41,7 @@ export interface IssueOptions {
   maxPerCallUsd?: string;
   allow?: string[];
   days?: number;
+  expiresInMs?: number; // overrides days: a mandate for one run lives as long as the run may
   evmOwner?: string; // the owner's 0x address, for the evm rail
   now?: Date;
 }
@@ -57,7 +58,7 @@ export function issueMandate(owner: KeyPair, opts: IssueOptions): Mandate {
     max_per_call: opts.maxPerCallUsd != null ? String(usdToMicro(opts.maxPerCallUsd)) : null,
     allow: opts.allow && opts.allow.length ? opts.allow : ['*'],
     issued_at: now.toISOString(),
-    expires_at: new Date(now.getTime() + days * 86_400_000).toISOString(),
+    expires_at: new Date(now.getTime() + (opts.expiresInMs ?? days * 86_400_000)).toISOString(),
     evm_owner: opts.evmOwner ? opts.evmOwner.toLowerCase() : undefined,
   };
   const canonical = canonicalJson(body);

@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { microToUsd, usdToMicro, isCurrency, type Receipt } from '../protocol.js';
 import { newKeyPair } from '../keys.js';
 import { originIsPublic } from '../catalog.js';
+import { guardedFetch } from '../net.js';
 import { signBoardAction, verifyBoardAction, BOARD_ACTIONS, type SignedBoardAction, type BoardActionKind } from './board.js';
 import { ADAPTERS, type AdapterName } from './adapters.js';
 import { ANTHROPIC_URL } from './model.js';
@@ -81,8 +82,13 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   }
 }
 
+// forwarded headers are believed only from a proxy on this machine (cloudflared); anyone else
+// could set them to dodge the per-address limits
 function clientIp(req: IncomingMessage): string {
-  return String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '').split(',')[0].trim();
+  const peer = req.socket.remoteAddress ?? '';
+  const viaLocalProxy = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+  if (!viaLocalProxy) return peer;
+  return String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? peer).split(',')[0].trim();
 }
 
 function cookies(req: IncomingMessage): Record<string, string> {
@@ -158,18 +164,31 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
     return null;
   }
 
+  // every fetch to an address a user named (gateways, the selling gateway) goes through the egress
+  // guard: public addresses only, no redirects. Tests and local development opt out.
+  const egress: typeof fetch = opts.allowPrivateOrigins ? fetch : guardedFetch({ timeoutMs: 10_000, maxBytes: 4 * 1024 * 1024 });
+
+  /** A bare origin, or null: http(s), no credentials, no path, query or fragment. */
+  function bareOrigin(raw: string): string | null {
+    let u: URL;
+    try { u = new URL(raw); } catch { return null; }
+    if ((u.protocol !== 'http:' && u.protocol !== 'https:') || u.username || u.password || u.search || u.hash || (u.pathname !== '/' && u.pathname !== '')) return null;
+    if (raw.replace(/\/$/, '') !== u.origin) return null;
+    return u.origin;
+  }
+
   async function checkGateways(origins: string[]): Promise<{ realms: string[]; currency: string }> {
     const realms: string[] = [];
     let currency: string | null = null;
     for (const origin of origins) {
-      if (!/^https?:\/\/[^/\s]+$/.test(origin)) throw new HttpError(400, `gateway must be an origin like https://pay.example.com, got ${origin}`);
+      if (!bareOrigin(origin)) throw new HttpError(400, `gateway must be an origin like https://pay.example.com, got ${origin}`);
       if (!opts.allowPrivateOrigins) {
         const pub = await originIsPublic(origin);
         if (!pub.ok) throw new HttpError(400, `gateway ${origin} refused: ${pub.reason}`);
       }
       let doc: { realm?: unknown; currency?: unknown };
       try {
-        const r = await fetch(origin + '/.well-known/tab', { signal: AbortSignal.timeout(8_000), redirect: 'error' });
+        const r = await egress(origin + '/.well-known/tab', { signal: AbortSignal.timeout(8_000), redirect: 'error' });
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         doc = (await r.json()) as typeof doc;
       } catch (err) {
@@ -240,7 +259,10 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         let agent_pub: string;
         let agent_priv: string | null = null;
         if (adapter === 'http') {
-          if (!/^https?:\/\//.test(String(config.url ?? ''))) throw new HttpError(400, 'http adapter needs config.url');
+          let target: URL;
+          try { target = new URL(String(config.url ?? '')); } catch { throw new HttpError(400, 'http adapter needs config.url'); }
+          if ((target.protocol !== 'http:' && target.protocol !== 'https:') || target.username || target.password) throw new HttpError(400, 'http adapter needs an http(s) config.url');
+
           agent_pub = str(p.agent_pub, 64);
           if (!PUB_RE.test(agent_pub)) throw new HttpError(400, 'http adapter needs agent_pub: the public key the endpoint pays with');
         } else {
@@ -306,8 +328,9 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         return { ok: true };
       }
       case 'publish': {
-        const gateway = str(p.gateway, 300).replace(/\/$/, '');
-        if (!/^https?:\/\/[^/\s]+$/.test(gateway)) throw new HttpError(400, 'gateway must be an origin');
+        const gateway = bareOrigin(str(p.gateway, 300));
+        if (!gateway) throw new HttpError(400, 'gateway must be an origin');
+
         store.updateCompany(c.id, { sell_gateway: gateway });
         ev('publish', { gateway });
         return { ok: true };
@@ -322,6 +345,21 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       default:
         throw new HttpError(400, `unknown action ${String(a.action)}`);
     }
+  }
+
+  /** Before a board action that names an address (an http agent's URL, a selling gateway): is it public? Async, so outside the transaction. */
+  async function checkEgress(action: string, payload: unknown): Promise<void> {
+    if (opts.allowPrivateOrigins || !payload || typeof payload !== 'object') return;
+    const p = payload as Record<string, unknown>;
+    let target: string | null = null;
+    if (action === 'hire' && p.adapter === 'http') {
+      try { target = new URL(String((p.config as Record<string, unknown> | undefined)?.url ?? '')).origin; } catch { return; } // applyBoard reports the bad URL
+    } else if (action === 'publish') {
+      target = bareOrigin(String(p.gateway ?? ''));
+    }
+    if (!target || target === 'null') return;
+    const pub = await originIsPublic(target);
+    if (!pub.ok) throw new HttpError(400, `${target} refused: ${pub.reason}`);
   }
 
   /** Sign an action with the custodial owner key and apply it, in one transaction. */
@@ -443,6 +481,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         if (!isCurrency(currency)) throw new HttpError(400, 'currency must be 2 to 10 upper-case letters or digits');
         const owner = newKeyPair();
         const catalog = body.catalog === null ? null : str(body.catalog, 300).replace(/\/$/, '') || opts.defaultCatalog || null;
+        if (catalog && !bareOrigin(catalog)) throw new HttpError(400, 'catalog must be an origin like https://paidwithtab.com');
         const c = store.createCompany({
           user_id: auth.user.id, name, mission: str(body.mission, 20_000), owner_pub: owner.publicKey, owner_priv: owner.privateKey,
           budget, currency, gateways, realms, catalog, sell_gateway: null, state: 'active',
@@ -452,7 +491,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         // a template may hire the first agents and open the first tickets in the same breath
         const hired: unknown[] = [];
         for (const a of Array.isArray(body.agents) ? body.agents.slice(0, 20) : []) {
-          if (a && typeof a === 'object') hired.push(boardAct(c, 'hire', a));
+          if (a && typeof a === 'object') { await checkEgress('hire', a); hired.push(boardAct(c, 'hire', a)); }
         }
         for (const t of Array.isArray(body.tickets) ? body.tickets.slice(0, 50) : []) {
           if (!t || typeof t !== 'object') continue;
@@ -515,7 +554,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         if (sub === 'balances') {
           const balances = await Promise.all(c.gateways.map(async (origin) => {
             try {
-              const r = await fetch(`${origin}/.well-known/tab/wallet/${encodeURIComponent(c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) });
+              const r = await egress(`${origin}/.well-known/tab/wallet/${encodeURIComponent(c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) });
               return { origin, ...((await r.json()) as Record<string, unknown>) };
             } catch (err) { return { origin, error: (err as Error).message }; }
           }));
@@ -525,10 +564,10 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         if (sub === 'earnings') {
           if (!c.sell_gateway) { sendJson(res, 200, { gateway: null, earned: '0.00', receipts: [] }); return; }
           try {
-            const w = await (await fetch(`${c.sell_gateway}/.well-known/tab/wallet/${encodeURIComponent(c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) })).json() as Record<string, unknown>;
+            const w = await (await egress(`${c.sell_gateway}/.well-known/tab/wallet/${encodeURIComponent(c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) })).json() as Record<string, unknown>;
             let receipts: Receipt[] = [];
             try {
-              const r = await fetch(`${c.sell_gateway}/.well-known/tab/receipts?limit=200`, { signal: AbortSignal.timeout(8_000) });
+              const r = await egress(`${c.sell_gateway}/.well-known/tab/receipts?limit=200`, { signal: AbortSignal.timeout(8_000) });
               if (r.ok) receipts = (((await r.json()) as { receipts?: Receipt[] }).receipts ?? []).filter((x) => x.recipient === c.owner_pub);
             } catch { /* receipts may be private */ }
             const earned = receipts.reduce((n, x) => n + Number(x.amount), 0);
@@ -547,6 +586,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       if (sub === 'board') {
         // an action signed offline with the exported owner key; the server only verifies and applies
         const action = body.action as SignedBoardAction;
+        await checkEgress(String(action?.action ?? ''), action?.payload);
         const out = store.tx(() => {
           const v = verifyBoardAction(c.owner_pub, action, { company: c.id, seq: store.boardSeq(c.id) + 1 });
           if (!v.ok) throw new HttpError(400, `board action rejected: ${v.error}`);
@@ -555,12 +595,12 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         sendJson(res, 200, { result: out });
         return;
       }
-      if (sub === 'agents') { sendJson(res, 200, { agent: boardAct(c, 'hire', body) }); return; }
+      if (sub === 'agents') { await checkEgress('hire', body); sendJson(res, 200, { agent: boardAct(c, 'hire', body) }); return; }
       const am = /^agents\/([A-Za-z0-9_-]+)\/retire$/.exec(sub);
       if (am) { sendJson(res, 200, boardAct(c, 'retire', { agent_id: am[1] }) as object); return; }
       if (sub === 'budget') { sendJson(res, 200, boardAct(c, 'budget', { budget: str(body.budget, 20) }) as object); return; }
       if (sub === 'pause' || sub === 'resume') { sendJson(res, 200, boardAct(c, sub, { reason: str(body.reason, 500) }) as object); return; }
-      if (sub === 'publish') { sendJson(res, 200, boardAct(c, 'publish', { gateway: str(body.gateway, 300) }) as object); return; }
+      if (sub === 'publish') { await checkEgress('publish', { gateway: str(body.gateway, 300) }); sendJson(res, 200, boardAct(c, 'publish', { gateway: str(body.gateway, 300) }) as object); return; }
       if (sub === 'model-key') {
         // the company's own Anthropic API key: verified against the API, sealed at rest, never returned
         if (!opts.secrets) throw new HttpError(503, 'this server has no secrets store, so it cannot hold model keys');
@@ -598,7 +638,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         // starter credits where a gateway offers them, for the owner wallet
         const results = await Promise.all(c.gateways.map(async (origin) => {
           try {
-            const r = await fetch(`${origin}/.well-known/tab/faucet`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wallet: c.owner_pub }), signal: AbortSignal.timeout(8_000) });
+            const r = await egress(`${origin}/.well-known/tab/faucet`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wallet: c.owner_pub }), signal: AbortSignal.timeout(8_000) });
             return { origin, status: r.status, ...((await r.json()) as Record<string, unknown>) };
           } catch (err) { return { origin, error: (err as Error).message }; }
         }));
