@@ -20,6 +20,7 @@ import { TabClient, receiptOf } from '../src/client.js';
 import type { Mandate } from '../src/mandate.js';
 import { CompanyStore } from '../src/company/store.js';
 import { Engine } from '../src/company/engine.js';
+import { guardedFetch } from '../src/net.js';
 import { createCompanyServer } from '../src/company/server.js';
 import { Secrets } from '../src/company/secrets.js';
 import { priceUsage } from '../src/company/model.js';
@@ -416,6 +417,21 @@ async function main(): Promise<void> {
   const noSecrets = await fetch(`http://127.0.0.1:${plainPort}/api/companies/${cid}/model-key`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ key: GOOD_KEY }) });
   check('a server without a secrets store refuses to hold keys', noSecrets.status === 503);
   plain.close();
+
+  // a public server: nothing a tenant names may point at this machine or the LAN
+  const pub = createCompanyServer({ store, engine, hosts: ['app.test'], defaultGateway: GW, secureCookies: false });
+  const pubPort = await listen(pub);
+  const pubPost = (path: string, body: unknown) => fetch(`http://127.0.0.1:${pubPort}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify(body) });
+  const ssrfHire = await pubPost(`/api/companies/${cid}/agents`, { name: 'snoop', role: 'x', adapter: 'http', agent_pub: A.publicKey, config: { url: 'http://127.0.0.1:1402/admin' } });
+  const ssrfHire6 = await pubPost(`/api/companies/${cid}/agents`, { name: 'snoop6', role: 'x', adapter: 'http', agent_pub: A.publicKey, config: { url: 'http://[::ffff:127.0.0.1]:1402/' } });
+  const ssrfSell = await pubPost(`/api/companies/${cid}/publish`, { gateway: 'http://192.168.1.1' });
+  const ssrfGw = await pubPost('/api/companies', { name: 'Peek', gateways: ['http://127.0.0.1:1402#'] });
+  check('a public server refuses http agents, selling gateways and gateways on private addresses', ssrfHire.status === 400 && ssrfHire6.status === 400
+    && ssrfSell.status === 400 && ssrfGw.status === 400, [ssrfHire.status, ssrfHire6.status, ssrfSell.status, ssrfGw.status]);
+  pub.close();
+  let egressRefused = '';
+  try { await guardedFetch()(`${GW}/.well-known/tab`); } catch (e) { egressRefused = (e as Error).message; }
+  check('runs on a public server reach only public addresses', /not a public address/.test(egressRefused));
 
   // -- 12. the claude-code adapter through a fake binary ------------------------------------
   const fake = join(scratch, 'fake-claude');

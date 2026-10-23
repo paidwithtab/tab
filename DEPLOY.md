@@ -99,9 +99,9 @@ examples/
   spec-evm.json             # same routes on the evm rail (Robinhood Chain testnet)
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh                   # one-command sandbox
-test/e2e.ts                 # 79 in-process checks, temp DB, ~1-2 min
-test/adversarial.ts         # 37 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts
-test/evm.ts                 # 41 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway, live Robinhood testnet reads
+test/e2e.ts                 # 81 in-process checks, temp DB, ~1-2 min
+test/adversarial.ts         # 48 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts
+test/evm.ts                 # 46 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway, live Robinhood testnet reads
 ```
 
 ---
@@ -112,10 +112,10 @@ test/evm.ts                 # 41 checks: crypto vectors, a mock EVM node, rpc fa
 cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
-npm test                    # 79 passed, 0 failed on the dev box
-npm run test:adversarial    # 37 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
-npm run test:evm            # 41 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
-npm run test:company        # 92 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
+npm test                    # 81 passed, 0 failed on the dev box
+npm run test:adversarial    # 48 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
+npm run test:evm            # 46 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
+npm run test:company        # 94 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
 npm run test:dashboard      # 21 passed, 0 failed: the dashboard in headless Chromium end to end (npx playwright install chromium first); --live also loads the public site and app
 ```
 
@@ -486,7 +486,7 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 - The wallet endpoint (`/.well-known/tab/wallet/<id>`) takes a 0x address on this rail.
 - Only type-2 transactions and empty access lists. Tokens may have 0 to 18 decimals since draft 0.4; the wire amount stays in micro units and is scaled to the token on chain.
 
-`npm run test:evm` runs 41 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, the same flow against an 18-decimal token priced in its own currency (scaling, the client's currency refusal, decimals checked against the contract), and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
+`npm run test:evm` runs 46 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, the same flow against an 18-decimal token priced in its own currency (scaling, the client's currency refusal, decimals checked against the contract), and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
 
 **Charging in your own token.** A gateway settles in one ERC-20, and it need not be a dollar. Set `currency` to the token's symbol and `evm.token` and `evm.decimals` to the contract; prices are then amounts of that token (`"price": "0.5"` is half a token), and every challenge, receipt and catalog listing names the currency so nothing is mistaken for dollars. The reference deployment runs one such gateway next to the dollar ones, with the same routes:
 

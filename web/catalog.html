@@ -173,10 +173,10 @@
 </footer>
 <script>
 const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const usd = (micro) => '$' + (Number(micro) / 1e6).toFixed(Number(micro) % 10000 ? 4 : 2);
 // a gateway that charges in its own token says so; its prices are shown in that token, never as dollars
-const money = (micro, currency) => (currency && currency !== 'USD') ? usd(micro).slice(1) + ' ' + currency : usd(micro);
+const money = (micro, currency) => (currency && currency !== 'USD') ? usd(micro).slice(1) + ' ' + esc(currency) : usd(micro);
 const priceOf = (r) => r.price === '0' ? 'free' : (r.currency && r.currency !== 'USD') ? esc(r.price) + ' ' + esc(r.currency) : '$' + esc(r.price);
 let tryInfo = { enabled: false };
 let knownGateways = [];
@@ -240,7 +240,8 @@ async function tryRoute(i) {
 async function loadGateways() {
   const data = await getJSON('/v1/catalog.json?services=0');
   knownGateways = data.gateways ?? [];
-  for (const g of knownGateways) { const e = g.explorer ?? g.rail_info?.explorer; if (e) explorers[g.origin] = e; }
+  // a gateway names its explorer; only an https URL becomes a link
+  for (const g of knownGateways) { const e = g.explorer ?? g.rail_info?.explorer; if (typeof e === 'string' && /^https:\/\/[^\s"'<>]+$/.test(e)) explorers[g.origin] = e; }
   const rows = knownGateways.map((g) => `
     <tr>
       <td><a href="${esc(g.origin)}/.well-known/tab" target="_blank" rel="noopener" class="mono">${esc(g.origin)}</a><br>

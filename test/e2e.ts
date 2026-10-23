@@ -460,7 +460,7 @@ async function main(): Promise<void> {
 
   const health = await fetch(`${CAT}/v1/health`);
   const hBody = await health.json() as any;
-  check('health reports 503 while a gateway fails, with the routes it serves and the version', health.status === 503 && hBody.ok === false && hBody.routes === 9
+  check('health ignores an origin that never served a document, and reports the routes and the version', health.status === 200 && hBody.ok === true && hBody.routes === 9
     && hBody.version === JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).version);
   // a refresh that fails keeps the last good routes in search, for a while
   const goodRow = catStore.all().find((r) => r.origin === GW)!;
@@ -468,6 +468,7 @@ async function main(): Promise<void> {
   const stale = await (await fetch(`${CAT}/v1/search`)).json() as any;
   const staleGw = (await (await fetch(`${CAT}/v1/catalog.json?services=0`)).json() as any).gateways.find((g: any) => g.origin === GW);
   check('a gateway that fails a refresh stays searchable on its last good document, marked stale', stale.total === 9 && staleGw.ok === false && staleGw.stale === true);
+  check('and health goes 503 while a gateway that used to work fails', (await fetch(`${CAT}/v1/health`)).status === 503);
   catStore.put({ ...goodRow, fetched_at: new Date(Date.now() - 7 * 3_600_000).toISOString() });
   catStore.put({ origin: GW, ok: false, error: 'down', payload: null, fetched_at: new Date().toISOString() });
   check('after six hours of failures its routes leave search', ((await (await fetch(`${CAT}/v1/search`)).json()) as any).total === 0);

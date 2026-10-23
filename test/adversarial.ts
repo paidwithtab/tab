@@ -283,6 +283,9 @@ async function main(): Promise<void> {
     const targets = [
       'http://127.0.0.1:1', 'http://localhost:80', 'http://169.254.169.254/latest/meta-data',
       'http://10.0.0.8', 'http://192.168.1.1', 'http://[::1]:80', 'http://metadata.internal',
+      // IPv4 in IPv6 clothing, and the special ranges the first guard missed
+      'http://[::ffff:127.0.0.1]:1', 'http://[::ffff:a9fe:a9fe]', 'http://[::7f00:1]', 'http://[64:ff9b::7f00:1]',
+      'http://[2002:7f00:1::]', 'http://198.18.0.1', 'http://127.0.0.1.nip.io:1',
     ];
     let refused = 0;
     for (const origin of targets) {
@@ -328,6 +331,36 @@ async function main(): Promise<void> {
     await announce(`http://127.0.0.1:${polPort}`);
     check('hostile discovery JSON cannot pollute prototypes', ({} as any).polluted === undefined);
     polluter.close();
+
+    // a hostile gateway: routes aimed at another host and port, its own origin and ok fields,
+    // and receipts carrying markup
+    const hostile = createServer((req, res) => {
+      const p = new URL(req.url ?? '/', 'http://x').pathname;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      if (p === '/.well-known/tab/receipts') {
+        res.end(JSON.stringify({ receipts: [
+          { id: 'aaaa', realm: 'evil', resource: 'GET /x', amount: '1', currency: '<img src=x onerror=alert(1)>', rail: 'ledger', ref: 'ledger:aaaa', at: new Date().toISOString() },
+          { id: 'bbbb', realm: 'evil', resource: 'GET /x', amount: '1', currency: 'USD', rail: 'ledger', ref: 'ledger:bbbb', at: '9999-01-01T00:00:00Z' },
+          { id: 'cccc', realm: 'evil', resource: 'GET /x', amount: '1', currency: 'USD', rail: 'ledger', ref: 'ledger:cccc', at: new Date().toISOString() },
+        ] }));
+        return;
+      }
+      res.end(JSON.stringify({ realm: 'evil', origin: 'javascript:alert(1)//', ok: true, public_receipts: true, services: [
+        { name: 'a', prefix: ':6379/x', routes: [{ method: 'GET', path: '/admin', price: '0.01' }] },
+        { name: 'b', prefix: '.127.0.0.1.nip.io', routes: [{ method: 'GET', path: '/admin', price: '0.01' }] },
+        { name: 'c', prefix: '/fine', routes: [{ method: 'GET', path: '/ok', price: '0.01' }] },
+      ] }));
+    });
+    const hostilePort = await listen(hostile);
+    await announce(`http://127.0.0.1:${hostilePort}`);
+    const found = ((await (await fetch(`${CAT}/v1/search?limit=100`)).json()) as any).results.filter((r: any) => r.realm === 'evil');
+    check('a gateway cannot aim a route at another host or port through its prefix', found.length === 1 && found[0].url === `http://127.0.0.1:${hostilePort}/fine/ok`, found.map((r: any) => r.url));
+    const gw = ((await (await fetch(`${CAT}/v1/catalog.json?services=0`)).json()) as any).gateways.find((g: any) => g.realm === 'evil');
+    check("a gateway's discovery document cannot overwrite the catalog's origin and status", gw.origin === `http://127.0.0.1:${hostilePort}`);
+    const rel = ((await (await fetch(`${CAT}/v1/receipts`)).json()) as any).receipts.filter((r: any) => r.realm === 'evil').map((r: any) => r.id);
+    check('relayed receipts drop markup and future dates', rel.length === 1 && rel[0] === 'cccc', rel);
+    check('a bad max_price is a 400, not a crash', (await fetch(`${CAT}/v1/search?max_price=abc`)).status === 400);
+    hostile.close();
     devCat.close();
   }
 

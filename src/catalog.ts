@@ -13,6 +13,7 @@ import type { KeyPair } from './keys.js';
 import { TabClient, PaymentRefused, receiptOf } from './client.js';
 import type { CatalogStore, GatewayRow } from './store.js';
 import { renderDocsPage, DOC_GROUPS } from './markdown.js';
+import { guardedFetch, isPublicAddress } from './net.js';
 
 // the package version, for /v1/health; src/ and dist/src/ sit at different depths
 const VERSION_PKG = (() => {
@@ -42,31 +43,10 @@ export interface CatalogOptions {
 
 const MAX_DISCOVERY_BYTES = 16_000_000; // about 40,000 routes
 
-function isPrivateIp(ip: string): boolean {
-  if (ip.toLowerCase().startsWith('::ffff:')) ip = ip.slice(7);
-  if (isIP(ip) === 4) {
-    const [a, b] = ip.split('.').map(Number);
-    return (
-      a === 0 || a === 10 || a === 127 ||
-      (a === 100 && b >= 64 && b <= 127) || // CGNAT
-      (a === 169 && b === 254) || // link-local, cloud metadata
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168)
-    );
-  }
-  const low = ip.toLowerCase();
-  return (
-    low === '::' || low === '::1' ||
-    low.startsWith('fc') || low.startsWith('fd') || // unique local
-    low.startsWith('fe8') || low.startsWith('fe9') || low.startsWith('fea') || low.startsWith('feb') // link-local
-  );
-}
-
 /**
- * SSRF gate for announced origins. Checks the hostname (or every address it
- * resolves to) against private ranges. Note the residual DNS-rebinding window
- * between this check and the fetch; run the catalog with no reachable internal
- * services if that matters in your deployment.
+ * SSRF gate for announced origins: the hostname, or every address it resolves to, must be
+ * global unicast (src/net.ts). The fetches themselves go through guardedFetch, which checks
+ * again at connect time, so DNS rebinding between this check and the fetch gets nowhere.
  */
 export async function originIsPublic(origin: string): Promise<{ ok: boolean; reason?: string }> {
   let host: string;
@@ -76,14 +56,14 @@ export async function originIsPublic(origin: string): Promise<{ ok: boolean; rea
     return { ok: false, reason: 'not a URL' };
   }
   if (isIP(host)) {
-    return isPrivateIp(host) ? { ok: false, reason: `${host} is not a public address` } : { ok: true };
+    return isPublicAddress(host) ? { ok: true } : { ok: false, reason: `${host} is not a public address` };
   }
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal')) {
     return { ok: false, reason: `${host} is not a public hostname` };
   }
   try {
     const addrs = await lookup(host, { all: true });
-    const bad = addrs.find((a) => isPrivateIp(a.address));
+    const bad = addrs.find((a) => !isPublicAddress(a.address));
     if (bad) return { ok: false, reason: `${host} resolves to ${bad.address}, which is not public` };
     return { ok: true };
   } catch {
@@ -119,7 +99,12 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 
 async function readJson(req: IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > 1_000_000) throw new Error('request body too large');
+    chunks.push(c as Buffer);
+  }
   const text = Buffer.concat(chunks).toString('utf8');
   return text ? JSON.parse(text) : {};
 }
@@ -186,6 +171,13 @@ function routesOf(row: GatewayRow): CatalogRoute[] {
       } catch {
         continue;
       }
+      // a prefix like ":6379/x" or ".evil.example" would point the route at another host or port
+      const prefix = String(s.prefix ?? ''), path = String(r.path ?? '');
+      if ((prefix !== '' && !prefix.startsWith('/')) || !path.startsWith('/')) continue;
+      let url: URL;
+      try { url = new URL(prefix + path, row.origin); } catch { continue; }
+      if (url.origin !== new URL(row.origin).origin) continue;
+      const currency = typeof doc.currency === 'string' && /^[A-Z0-9]{2,12}$/.test(doc.currency) ? doc.currency : 'USD';
       out.push({
         origin: row.origin,
         realm: String(doc.realm ?? ''),
@@ -194,10 +186,10 @@ function routesOf(row: GatewayRow): CatalogRoute[] {
         service_description: String(s.description ?? ''),
         method: String(r.method ?? 'GET').toUpperCase(),
         path: String(s.prefix ?? '') + String(r.path ?? ''),
-        url: row.origin.replace(/\/$/, '') + String(s.prefix ?? '') + String(r.path ?? ''),
+        url: row.origin.replace(/\/$/, '') + prefix + path,
         price: String(r.price),
         price_micro: priceMicro,
-        currency: typeof doc.currency === 'string' ? doc.currency : 'USD',
+        currency,
         description: String(r.description ?? ''),
       });
     }
@@ -209,12 +201,16 @@ export function createCatalog(opts: CatalogOptions): Server {
   const { store } = opts;
   const log = opts.log ?? (() => {});
   const uiPath = findUi();
+  // every fetch to an announced origin: public addresses only, checked at connect time, no redirects
+  const egress = (maxBytes: number, timeoutMs: number): typeof fetch =>
+    opts.allowPrivateOrigins ? fetch : guardedFetch({ maxBytes, timeoutMs });
   const tryClient =
     opts.tryAgent && opts.tryMandate
       ? new TabClient({
           agent: opts.tryAgent,
           mandate: opts.tryMandate,
           maxPerCallUsd: opts.tryMaxPerCallUsd ?? '0.05',
+          fetch: egress(1_000_000, 20_000),
         })
       : null;
 
@@ -225,8 +221,8 @@ export function createCatalog(opts: CatalogOptions): Server {
         const pub = await originIsPublic(origin);
         if (!pub.ok) throw new Error(`refused: ${pub.reason}`);
       }
-      const res = await fetch(origin.replace(/\/$/, '') + '/.well-known/tab', {
-        signal: AbortSignal.timeout(5_000),
+      const res = await egress(MAX_DISCOVERY_BYTES, 10_000)(origin.replace(/\/$/, '') + '/.well-known/tab', {
+        signal: AbortSignal.timeout(10_000),
         redirect: 'error',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -238,7 +234,9 @@ export function createCatalog(opts: CatalogOptions): Server {
       }
       return { origin, ok: true, error: null, payload: doc, fetched_at: now };
     } catch (err) {
-      return { origin, ok: false, error: (err as Error).message, payload: null, fetched_at: now };
+      const message = (err as Error).message;
+      // a host that now resolves somewhere private stops being served at once, stale copy or not
+      return { origin, ok: false, error: message, payload: null, fetched_at: now, forget: /refused|not a public|not public/.test(message) };
     }
   }
 
@@ -256,9 +254,14 @@ export function createCatalog(opts: CatalogOptions): Server {
   }
 
   const server = createServer(async (req, res) => {
-    const method = (req.method ?? 'GET').toUpperCase();
+    // HEAD is GET without the body (node drops it), so monitors and link checkers see real pages
+    const method = req.method === 'HEAD' ? 'GET' : (req.method ?? 'GET').toUpperCase();
     const u = new URL(req.url ?? '/', 'http://localhost');
     const path = u.pathname;
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('referrer-policy', 'strict-origin-when-cross-origin');
+    res.setHeader('x-frame-options', 'DENY');
+    res.setHeader('content-security-policy', "frame-ancestors 'none'; base-uri 'self'; object-src 'none'");
     try {
       if (method === 'OPTIONS') {
         res.writeHead(204, CORS);
@@ -333,9 +336,10 @@ export function createCatalog(opts: CatalogOptions): Server {
         return;
       }
 
-      // for uptime monitors: 503 when search would find nothing or a gateway is failing
+      // for uptime monitors: 503 when search would find nothing or a gateway that used to work is failing
       if (method === 'GET' && path === '/v1/health') {
-        const rows = store.all();
+        // origins that never once served a document (junk announces) do not count against health
+        const rows = store.all().filter((r) => r.last_ok_at || r.ok);
         const gateways = rows.map((r) => ({
           origin: r.origin, ok: r.ok, error: r.error, fetched_at: r.fetched_at, last_ok_at: r.last_ok_at ?? null,
           routes: routesOf(r).length,
@@ -354,14 +358,15 @@ export function createCatalog(opts: CatalogOptions): Server {
           gateways: store.all().map((r) => {
             const { services, ...rest } = (r.payload ?? {}) as { services?: Array<{ routes?: unknown[] }> };
             const list = Array.isArray(services) ? services : [];
+            // the gateway's own fields first, so it cannot overwrite the catalog's (origin, ok, ...)
             return {
+              ...rest,
               origin: r.origin,
               ok: r.ok,
               error: r.error,
               fetched_at: r.fetched_at,
               last_ok_at: r.last_ok_at ?? null,
               ...(!r.ok && servable(r) ? { stale: true } : {}),
-              ...rest,
               service_count: list.length,
               route_count: list.reduce((n, s) => n + (Array.isArray(s.routes) ? s.routes.length : 0), 0),
               ...(withServices && r.payload ? { services } : {}),
@@ -374,7 +379,10 @@ export function createCatalog(opts: CatalogOptions): Server {
       if (method === 'GET' && path === '/v1/search') {
         const q = (u.searchParams.get('q') ?? '').trim().toLowerCase();
         const maxPrice = u.searchParams.get('max_price');
-        const maxMicro = maxPrice ? usdToMicro(maxPrice) : null;
+        let maxMicro: number | null = null;
+        if (maxPrice) {
+          try { maxMicro = usdToMicro(maxPrice); } catch { sendJson(res, 400, { error: 'max_price must be an amount like 0.01' }); return; }
+        }
         // a price ceiling only means something in one currency: USD unless the caller says otherwise
         const currency = u.searchParams.get('currency') || 'USD';
         const terms = q ? q.split(/\s+/) : [];
@@ -472,7 +480,7 @@ export function createCatalog(opts: CatalogOptions): Server {
           return;
         }
         try {
-          const r = await fetch(
+          const r = await egress(100_000, 5_000)(
             origin.replace(/\/$/, '') + '/.well-known/tab/wallet/' + encodeURIComponent(wallet),
             { signal: AbortSignal.timeout(5_000) },
           );
@@ -484,18 +492,19 @@ export function createCatalog(opts: CatalogOptions): Server {
       }
 
       if (method === 'GET' && path === '/v1/receipts') {
-        const limit = Number(u.searchParams.get('limit') ?? 50) || 50;
+        const limit = Math.min(200, Math.max(1, Number(u.searchParams.get('limit') ?? 50) || 50));
         const all: Array<Receipt & { origin: string }> = [];
         await Promise.all(
           store.all().filter((r) => r.ok).map(async (row) => {
             try {
-              const r = await fetch(
+              const r = await egress(2_000_000, 5_000)(
                 row.origin.replace(/\/$/, '') + `/.well-known/tab/receipts?limit=${limit}`,
                 { signal: AbortSignal.timeout(5_000) },
               );
               if (!r.ok) return;
               const doc = (await r.json()) as { receipts?: Receipt[] };
-              for (const rec of doc.receipts ?? []) all.push({ ...rec, origin: row.origin });
+              // a gateway writes these; only well-formed receipts are passed on to the page
+              for (const rec of (doc.receipts ?? []).slice(0, limit)) if (receiptLooksRight(rec)) all.push({ ...rec, origin: row.origin });
             } catch {
               /* gateway without public receipts, or down */
             }
@@ -596,4 +605,13 @@ function urlMatchesRoute(url: string, routeUrl: string): boolean {
   const pb = b.pathname.split('/');
   if (pa.length !== pb.length) return false;
   return pb.every((seg, i) => (seg.startsWith(':') && seg.length > 1 ? pa[i].length > 0 : seg === pa[i]));
+}
+
+/** Receipts relayed from gateways to the catalog page: shapes only, so a hostile gateway cannot smuggle markup or reorder the list. */
+function receiptLooksRight(r: Receipt): boolean {
+  return !!r && typeof r === 'object' && typeof r.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(r.id)
+    && typeof r.realm === 'string' && r.realm.length <= 253 && typeof r.resource === 'string' && r.resource.length <= 2048
+    && /^\d{1,15}$/.test(String(r.amount)) && (r.currency === undefined || /^[A-Z0-9]{2,12}$/.test(String(r.currency)))
+    && typeof r.ref === 'string' && /^(ledger|evm):[A-Za-z0-9_x-]{1,80}$/.test(r.ref)
+    && typeof r.at === 'string' && !Number.isNaN(Date.parse(r.at)) && Date.parse(r.at) <= Date.now() + 300_000;
 }

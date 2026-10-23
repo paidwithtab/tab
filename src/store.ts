@@ -286,6 +286,7 @@ export interface GatewayRow {
   payload: Record<string, unknown> | null; // the /.well-known/tab document
   fetched_at: string;
   last_ok_at?: string | null; // the last fetch that succeeded; the payload is from then
+  forget?: boolean; // on put: drop the stored payload (the origin is now refused)
 }
 
 export class CatalogStore {
@@ -309,7 +310,11 @@ export class CatalogStore {
     }
   }
 
+  private cached: GatewayRow[] | null = null; // all() parses every payload; search calls it per request
+
   put(row: GatewayRow): void {
+    this.cached = null;
+    if (row.forget) this.db.prepare('UPDATE gateways SET payload = NULL, last_ok_at = NULL WHERE origin = ?').run(row.origin);
     this.db
       .prepare(
         `INSERT INTO gateways (origin, ok, error, payload, fetched_at, last_ok_at) VALUES (?,?,?,?,?,?)
@@ -321,10 +326,11 @@ export class CatalogStore {
   }
 
   all(): GatewayRow[] {
+    if (this.cached) return this.cached;
     const rows = this.db.prepare('SELECT * FROM gateways ORDER BY origin').all() as Array<
       Record<string, unknown>
     >;
-    return rows.map((r) => ({
+    this.cached = rows.map((r) => ({
       origin: String(r.origin),
       ok: Number(r.ok) === 1,
       error: r.error == null ? null : String(r.error),
@@ -332,6 +338,7 @@ export class CatalogStore {
       fetched_at: String(r.fetched_at),
       last_ok_at: r.last_ok_at == null ? null : String(r.last_ok_at),
     }));
+    return this.cached;
   }
 
   close(): void {
