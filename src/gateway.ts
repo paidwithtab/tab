@@ -586,7 +586,10 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           sendJson(res, 400, { error: 'wallet must be a tab wallet id (base64url public key)' });
           return;
         }
-        const ip = String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? req.socket.remoteAddress ?? '')
+        // forwarded addresses only count from a proxy on this machine; anyone else could invent one per request
+        const peer = req.socket.remoteAddress ?? '';
+        const viaLocalProxy = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+        const ip = (viaLocalProxy ? String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? peer) : peer)
           .split(',')[0].trim();
         const now = new Date();
         const since = new Date(now.getTime() - 86_400_000).toISOString();

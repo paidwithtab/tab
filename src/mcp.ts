@@ -48,6 +48,7 @@ export function runMcpServer(opts: McpOptions): void {
     } catch {
       return; // not JSON-RPC; ignore
     }
+    if (!msg || typeof msg !== 'object' || Array.isArray(msg)) return; // null, numbers, batches: not ours
     const { id, method, params } = msg;
     if (method === 'initialize') {
       reply(id, {
