@@ -218,16 +218,27 @@ async function main(): Promise<void> {
 
   // -- 6. mandate enforcement ----------------------------------------------
 
+  // pay the gateway directly, past the client's own mandate checks, to test what the gateway enforces
+  const rawPay = async (url: string, m: any, init: { method?: string; body?: string } = {}) => {
+    const c = parseChallengeHeader((await fetch(url, init)).headers.get('www-authenticate'))!;
+    return fetch(url, { ...init, headers: { authorization: encodeCredentialHeader(signCredential(agent, c, m, { query: new URL(url).search, body: init.body })) } });
+  };
+
   const strangerMandate = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['other.realm'] });
-  const deniedRes = await tabFetch(`${GW}/quote`, {}, { agent, mandate: strangerMandate });
+  const deniedRes = await rawPay(`${GW}/quote`, strangerMandate);
   const deniedBody = await deniedRes.json() as any;
   check('wrong-realm mandate denied', deniedRes.status === 402
     && deniedBody.type === 'urn:tab:problem:mandate-denied'
     && String(deniedBody.detail).includes('not in mandate allow list'));
 
   const capMandate = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00', maxPerCallUsd: '0.005', allow: ['quotes.local'] });
-  const capRes = await tabFetch(`${GW}/quote`, {}, { agent, mandate: capMandate });
+  const capRes = await rawPay(`${GW}/quote`, capMandate);
   check('per-call cap enforced by gateway', capRes.status === 402 && (await capRes.json() as any).type === 'urn:tab:problem:mandate-exceeded');
+  const refusals: string[] = [];
+  for (const m of [strangerMandate, capMandate]) {
+    try { await tabFetch(`${GW}/quote`, {}, { agent, mandate: m }); refusals.push('signed'); } catch (e) { refusals.push(e instanceof PaymentRefused ? e.reason : String(e)); }
+  }
+  check('the client enforces the mandate too, refusing before it signs', /allow list/.test(refusals[0]) && /per-call cap/.test(refusals[1]));
 
   const tinyMandate = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '0.015', allow: ['quotes.local'] });
   const tinyClient = new TabClient({ agent, mandate: tinyMandate });

@@ -299,7 +299,7 @@ export function signReceipt(key: KeyPair, r: Receipt): Receipt {
 }
 
 export interface ReceiptExpectations {
-  key?: string | null; // the receipt key the gateway publishes; required for a pass
+  key?: string | null; // the receipt key the gateway publishes; null fails, and leaving it out checks only that the receipt is self-consistent
   body?: string | Uint8Array; // the response body as received
   status?: number;
   mandate?: string; // the mandate id this client paid under

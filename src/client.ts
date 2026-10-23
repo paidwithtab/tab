@@ -15,7 +15,7 @@ import {
   type Challenge,
   type Receipt,
 } from './protocol.js';
-import type { Mandate } from './mandate.js';
+import { mandateExpired, realmAllowed, type Mandate } from './mandate.js';
 import type { KeyPair } from './keys.js';
 import { buildSignedPaymentTxEvm } from './evm/pay.js';
 import { addressFromSeed } from './evm/secp256k1.js';
@@ -126,6 +126,19 @@ export class TabClient {
         `gateway charges in ${currency}; this client pays in ${this.accepts} (set currency to accept it)`,
         chal,
       );
+    }
+    // the mandate binds the client too: an honest gateway enforces it, a hostile one would not
+    const m = this.opts.mandate;
+    if (mandateExpired(m)) throw new PaymentRefused('mandate has expired', chal);
+    if (!realmAllowed(m, String(chal.realm))) throw new PaymentRefused(`realm ${chal.realm} is not in the mandate's allow list`, chal);
+    if (!Number.isSafeInteger(amount) || amount <= 0) throw new PaymentRefused(`challenge amount ${chal.amount} is not a positive amount`, chal);
+    if (m.max_per_call !== null && amount > Number(m.max_per_call)) {
+      throw new PaymentRefused(`price ${request.amountUsd} exceeds the mandate's per-call cap ${microToUsd(Number(m.max_per_call))}`, chal);
+    }
+    if (amount > Number(m.budget)) throw new PaymentRefused(`price ${request.amountUsd} exceeds the mandate budget`, chal);
+    const method = (init.method ?? 'GET').toUpperCase();
+    if (chal.resource !== `${method} ${new URL(url).pathname}`) {
+      throw new PaymentRefused(`challenge is for ${chal.resource}, not ${method} ${new URL(url).pathname}`, chal);
     }
     if (this.maxPerCallMicro !== null && amount > this.maxPerCallMicro) {
       throw new PaymentRefused(

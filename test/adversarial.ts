@@ -18,7 +18,7 @@ import { issueMandate, realmAllowed } from '../src/mandate.js';
 import { Store, CatalogStore } from '../src/store.js';
 import { createGateway, loadSpec, type Spec } from '../src/gateway.js';
 import { createCatalog } from '../src/catalog.js';
-import { TabClient, receiptOf } from '../src/client.js';
+import { TabClient, receiptOf, PaymentRefused } from '../src/client.js';
 
 let passed = 0;
 let failed = 0;
@@ -80,6 +80,12 @@ async function main(): Promise<void> {
   const GW = `http://127.0.0.1:${gwPort}`;
   const sellerBal = () => store.balance(seller.publicKey);
   const ownerBal = () => store.balance(owner.publicKey);
+
+  // pay the gateway directly, past the client's own mandate checks, to test what the gateway enforces
+  const rawPay = async (url: string, m: any, init: { method?: string; body?: string } = {}) => {
+    const c = parseChallengeHeader((await fetch(url, init)).headers.get('www-authenticate'))!;
+    return fetch(url, { ...init, headers: { authorization: encodeCredentialHeader(signCredential(agent, c, m, { query: new URL(url).search, body: init.body })) } });
+  };
 
   // ==========================================================================
   // A. concurrency: the budget must be a hard boundary
@@ -246,8 +252,10 @@ async function main(): Promise<void> {
       agent: agent.publicKey, budgetUsd: '1.00', allow: ['adv.local'], days: 1,
       now: new Date(Date.now() - 3 * 86_400_000),
     });
-    const r = await new TabClient({ agent, mandate: stale }).fetch(`${GW}/quote`);
-    check('expired mandate is rejected', r.status === 402
+    const r = await rawPay(`${GW}/quote`, stale);
+    let clientRefused = false;
+    try { await new TabClient({ agent, mandate: stale }).fetch(`${GW}/quote`); } catch (e) { clientRefused = e instanceof PaymentRefused; }
+    check('an expired mandate is refused by the client, and by the gateway when sent anyway', clientRefused && r.status === 402
       && ((await r.json()) as any).type === 'urn:tab:problem:mandate-invalid');
   }
 
@@ -413,7 +421,7 @@ async function main(): Promise<void> {
 
     const stars = issueMandate(attacker, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['*'.repeat(40) + 'Z'] });
     const t0 = Date.now();
-    const r = await new TabClient({ agent, mandate: stars }).fetch(`${GW}/quote`).catch(() => null);
+    const r = await rawPay(`${GW}/quote`, stars).catch(() => null);
     check('a mandate glob of forty stars is refused in milliseconds, not minutes', Date.now() - t0 < 2_000 && r?.status === 402, Date.now() - t0);
     const m = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['adv.*', '*.local'] });
     check('globs still match', realmAllowed(m, 'adv.local') && realmAllowed(m, 'x.local') && !realmAllowed(m, 'adv'));
