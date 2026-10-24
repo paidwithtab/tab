@@ -115,8 +115,8 @@ npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 81 passed, 0 failed on the dev box
 npm run test:adversarial    # 48 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
 npm run test:evm            # 59 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
-npm run test:company        # 94 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
-npm run test:dashboard      # 21 passed, 0 failed: the dashboard in headless Chromium end to end (npx playwright install chromium first); --live also loads the public site and app
+npm run test:company        # 101 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
+npm run test:dashboard      # 28 passed, 0 failed: the dashboard in headless Chromium end to end (npx playwright install chromium first); --live also loads the public site and app
 ```
 
 These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes two read-only calls to the public Robinhood testnet RPC and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
@@ -197,6 +197,7 @@ tab mint    --wallet <pub|file> --amount 5.00 [--db tab.db]        sandbox: crea
 tab balance --wallet <pub|file> [--db tab.db]
 tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin http://host:1402]
             [--faucet 1.00]                                         ledger rail: starter credits, once per wallet
+            [--faucet-per-ip 20]                                    faucet claims per client address per day
 tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
                   [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
 tab evm address <key.json>                                          key file -> 0x address (EIP-55)
@@ -215,7 +216,7 @@ tab company new|model-key|fund|hire|ticket|comment|approve|pause|resume|budget|s
 Notes:
 
 - `tab init` is the buyer's whole setup: it writes `owner.json`, `agent.json` and `mandate.json` to `~/.tab` (reusing keys that are already there), signs a daily-window mandate for any realm, and claims the gateway's starter credits for the owner wallet if the gateway advertises a `faucet` in its discovery document. `tab fetch` and `tab mcp` fall back to those files when no `--agent`/`--mandate` or `TAB_AGENT`/`TAB_MANDATE` is given, and `tab mcp` defaults `TAB_CATALOG` to `https://paidwithtab.com`. `TAB_HOME` moves the directory.
-- `tab serve --faucet 1.00` (ledger rail only) opens `POST /.well-known/tab/faucet {wallet}`: one credit per wallet, ever, at most 20 claims per client address per day (`cf-connecting-ip`, then `x-forwarded-for`, then the socket). The discovery document gains `"faucet": "1.00"` so clients can find it. Starter credits are sandbox money that only spends on that gateway.
+- `tab serve --faucet 1.00` (ledger rail only) opens `POST /.well-known/tab/faucet {wallet}`: one credit per wallet, ever, at most 20 claims per client address per day by default (`cf-connecting-ip`, then `x-forwarded-for`, then the socket). A hosted company server claims for every new company from its own address, so the gateway it points at needs a higher `--faucet-per-ip`; pay.paidwithtab.com runs 200. The discovery document gains `"faucet": "1.00"` so clients can find it. Starter credits are sandbox money that only spends on that gateway.
 - Anywhere a `<pub|file>` is accepted, a path ending in `.json` is read as a key file and its `publicKey` used; anything else is taken as the public key itself.
 - Key files are written with mode `0600` and look like `{"publicKey":"…","privateKey":"…"}`, both base64url raw 32 bytes. A wallet id **is** the public key; its seed also derives the key's EVM address (`tab evm address`).
 - `--allow` may be repeated. Values are globs over realms: `*`, `*.example.com`, `quotes.local`. Omitted means `*`.

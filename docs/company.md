@@ -6,7 +6,15 @@ It is one process on SQLite with no dependencies beyond Node. Use the hosted das
 
 ## Quick start
 
-Hosted:
+The fastest way in: sign up at [app.paidwithtab.com](https://app.paidwithtab.com), type a topic and press Start. In one step you get a company with a one dollar budget, its starter credits, and a starter agent that looks the topic up on Wikipedia. It pays $0.002 through tab, then shows you the answer and both signed receipts. You don't need a model key or a wallet. From the command line it is one command after signing up:
+
+```sh
+tab company quickstart --topic "Robinhood Markets"
+```
+
+When you want agents that think, add a model key and hire a claude agent, as below.
+
+Hosted, step by step:
 
 1. Sign up at app.paidwithtab.com. The account holds the company's owner key until you export it.
 2. Found a company from a template (research, or seller) or blank. Name the gateway it spends at; the default is `pay.paidwithtab.com`, whose currency becomes the company's.
@@ -72,6 +80,10 @@ Only where the server was started with `--local-claude`. Spawns `claude -p` with
 
 Config keys: `model`, `max_turns` (default 25), `tools` (array), `max_per_call` (USD string, becomes `TAB_MAX_PER_CALL`), `system` (appended system prompt), `command` (the binary; default `claude` or `$CLAUDE_BIN`).
 
+### starter
+
+Needs no model and no key. It reads the ticket title (a leading "Look up:" is dropped), makes one paid Wikipedia search and one paid article summary through the company's first gateway under the run's mandate, and reports the summary with both receipts and the article URL as evidence. It accepts only a search hit whose title or description contains every word of the topic, so a subject Wikipedia lacks blocks the ticket after one $0.001 search instead of answering about something else. `POST /api/quickstart {"topic": "..."}` founds a company with one of these, claims its starter credits and opens the first ticket, in that order. It is there so a new account sees a real payment and a real receipt in under a minute; it is not meant for work.
+
 ### http
 
 POSTs the packet as JSON to `config.url` with any `config.headers`, waits up to the run timeout, reads the result from the response body. The endpoint holds its own agent key; you give its public key at hire (`agent_pub`) and the mandate in each packet is issued to it. No private key ever leaves the server. The adapter calls out, never in; redirects are refused.
@@ -134,10 +146,11 @@ tab company serve  [--db company.db] [--port 1407] [--host app.example.com]... [
                    [--work dir] [--allow-private-origins] [--tick 3] [--run-timeout 600]
                    [--host-model-key] [--local-claude]
 tab company signup|login --email ... --password ... [--server http://127.0.0.1:1407]
+tab company quickstart [--topic "..."]
 tab company new    --name "..." [--mission "..."] [--budget 5.00] [--gateway origin]... [--template file.json]
 tab company model-key [--key sk-ant-...] [--key-file path] [--remove] [--company id]
 tab company fund   [--company id]
-tab company hire   --name scout --role researcher --adapter claude|http|claude-code [--url ...] [--agent-pub ...]
+tab company hire   --name scout --role researcher --adapter claude|http|starter|claude-code [--url ...] [--agent-pub ...]
                    [--budget-per-run 0.50] [--heartbeat 0] [--instructions "..."] [--model m] [--max-per-call 0.05]
 tab company ticket --title "..." [--body "..."] [--assignee scout] [--budget 0.50]
 tab company comment --ticket id --text "..."

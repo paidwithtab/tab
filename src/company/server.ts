@@ -37,7 +37,7 @@ export interface CompanyServerOptions {
   authPerWindow?: number;
   /** Seals company model keys at rest. Without it, model keys cannot be set. */
   secrets?: Secrets;
-  /** Adapters a company may hire. Default claude and http; claude-code only where the host runs Claude Code. */
+  /** Adapters a company may hire. Default claude, http and starter; claude-code only where the host runs Claude Code. */
   adapters?: AdapterName[];
   /** Whether the engine has a host key for companies that set none (shown to the dashboard; the key itself stays in the engine). */
   hostModelKey?: boolean;
@@ -51,6 +51,8 @@ const COOKIE = 'tab_session';
 const TICKET_STATES: ReadonlySet<string> = new Set(['open', 'in_progress', 'review', 'blocked', 'done', 'cancelled']);
 const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/;
 const PUB_RE = /^[A-Za-z0-9_-]{43}$/;
+const QUICKSTART_MISSION = 'A first look at tab: one agent, a one dollar budget, and receipts for everything it pays for. Hire a claude agent on your Anthropic key when you are ready for real work.';
+const STARTER_INSTRUCTIONS = 'Looks the ticket subject up on Wikipedia through the company gateway: one paid search, one paid summary, both receipts attached as evidence. Needs no model key.';
 
 class HttpError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -123,7 +125,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
   const hosts = new Set((opts.hosts ?? []).map((h) => h.toLowerCase()));
   const secure = opts.secureCookies ?? [...hosts].some((h) => !isLoopbackHost(h.replace(/:\d+$/, '')));
   const authPerWindow = opts.authPerWindow ?? 20;
-  const adapters = new Set<AdapterName>(opts.adapters ?? ['claude', 'http']);
+  const adapters = new Set<AdapterName>(opts.adapters ?? ['claude', 'http', 'starter']);
   const anthropicUrl = (opts.anthropicUrl ?? ANTHROPIC_URL).replace(/\/$/, '');
   const web = findWeb();
 
@@ -201,6 +203,57 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       realms.push(doc.realm);
     }
     return { realms, currency: currency ?? 'USD' };
+  }
+
+  /** Found a company for a user: wallet, budget, gateways, and from a template its first agents and tickets. */
+  async function found(user: UserRow, body: Record<string, unknown>): Promise<{ company: CompanyRow; agents: unknown[] }> {
+    const name = str(body.name, 80).trim();
+    if (!name) throw new HttpError(400, 'name is required');
+    if (store.companiesOf(user.id).length >= 20) throw new HttpError(429, 'at most 20 companies per account');
+    let budget: number;
+    try { budget = usdToMicro(str(body.budget, 20) || '5.00'); } catch { throw new HttpError(400, 'budget must be an amount like 25.00'); }
+    const gateways = (Array.isArray(body.gateways) ? body.gateways.map((g) => str(g, 300).replace(/\/$/, '')) : [opts.defaultGateway ?? '']).filter(Boolean).slice(0, 10);
+    const { realms, currency: discovered } = await checkGateways(gateways);
+    const currency = str(body.currency, 10) || discovered;
+    if (!isCurrency(currency)) throw new HttpError(400, 'currency must be 2 to 10 upper-case letters or digits');
+    const owner = newKeyPair();
+    const catalog = body.catalog === null ? null : str(body.catalog, 300).replace(/\/$/, '') || opts.defaultCatalog || null;
+    if (catalog && !bareOrigin(catalog)) throw new HttpError(400, 'catalog must be an origin like https://paidwithtab.com');
+    const c = store.createCompany({
+      user_id: user.id, name, mission: str(body.mission, 20_000), owner_pub: owner.publicKey, owner_priv: owner.privateKey,
+      budget, currency, gateways, realms, catalog, sell_gateway: null, state: 'active',
+      concurrency: Math.max(1, Math.min(8, Number(body.concurrency ?? 2) || 2)), max_tickets: 200,
+    });
+    store.addEvent({ company_id: c.id, ticket_id: null, agent_id: null, kind: 'founded', body: { name, budget: microToUsd(budget), currency, gateways, realms } });
+    // a template may hire the first agents and open the first tickets in the same breath
+    const hired: unknown[] = [];
+    for (const a of Array.isArray(body.agents) ? body.agents.slice(0, 20) : []) {
+      if (a && typeof a === 'object') { await checkEgress('hire', a); hired.push(boardAct(c, 'hire', a)); }
+    }
+    for (const t of Array.isArray(body.tickets) ? body.tickets.slice(0, 50) : []) {
+      if (!t || typeof t !== 'object') continue;
+      const tt = t as Record<string, unknown>;
+      const assignee = tt.assignee ? store.agentByName(c.id, str(tt.assignee, 40)) : undefined;
+      let tb: number | null = null;
+      if (tt.budget) { try { tb = usdToMicro(str(tt.budget, 20)); } catch { /* no cap */ } }
+      const created = store.createTicket({ company_id: c.id, title: str(tt.title, 200) || 'untitled', body: str(tt.body, 20_000), state: 'open', assignee_id: assignee?.id ?? null, created_by: 'owner', parent_id: null, budget: tb });
+      store.addEvent({ company_id: c.id, ticket_id: created.id, agent_id: null, kind: 'ticket', body: { ticket_id: created.id, title: created.title, assignee: assignee?.name ?? null } });
+      if (assignee) store.wake(assignee.id, created.id, 'assigned by owner');
+    }
+    log(`company ${c.id} (${name}) founded by ${user.email}: ${gateways.join(', ')} ${currency}`);
+    return { company: store.company(c.id)!, agents: hired };
+  }
+
+  /** Starter credits for the owner wallet at every gateway of the company that offers them. */
+  async function claimCredits(c: CompanyRow): Promise<Array<Record<string, unknown>>> {
+    const results = await Promise.all(c.gateways.map(async (origin) => {
+      try {
+        const r = await egress(`${origin}/.well-known/tab/faucet`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wallet: c.owner_pub }), signal: AbortSignal.timeout(8_000) });
+        return { origin, status: r.status, ...((await r.json()) as Record<string, unknown>) };
+      } catch (err) { return { origin, error: (err as Error).message }; }
+    }));
+    store.addEvent({ company_id: c.id, ticket_id: null, agent_id: null, kind: 'fund', body: { results } });
+    return results;
   }
 
   // -- views -----------------------------------------------------------------
@@ -469,42 +522,27 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         return;
       }
       if (path === '/api/companies' && method === 'POST') {
+        const out = await found(auth.user, await readJson(req));
+        sendJson(res, 200, { company: publicCompany(out.company), agents: out.agents });
+        return;
+      }
+      if (path === '/api/quickstart' && method === 'POST') {
+        // the first run in one call: a $1 company, the starter agent, the gateway's starter
+        // credits, then a ticket it works at once. No model key needed; the receipts are real.
+        if (!adapters.has('starter')) throw new HttpError(503, 'this server does not offer the starter agent');
         const body = await readJson(req);
-        const name = str(body.name, 80).trim();
-        if (!name) throw new HttpError(400, 'name is required');
-        if (store.companiesOf(auth.user.id).length >= 20) throw new HttpError(429, 'at most 20 companies per account');
-        let budget: number;
-        try { budget = usdToMicro(str(body.budget, 20) || '5.00'); } catch { throw new HttpError(400, 'budget must be an amount like 25.00'); }
-        const gateways = (Array.isArray(body.gateways) ? body.gateways.map((g) => str(g, 300).replace(/\/$/, '')) : [opts.defaultGateway ?? '']).filter(Boolean).slice(0, 10);
-        const { realms, currency: discovered } = await checkGateways(gateways);
-        const currency = str(body.currency, 10) || discovered;
-        if (!isCurrency(currency)) throw new HttpError(400, 'currency must be 2 to 10 upper-case letters or digits');
-        const owner = newKeyPair();
-        const catalog = body.catalog === null ? null : str(body.catalog, 300).replace(/\/$/, '') || opts.defaultCatalog || null;
-        if (catalog && !bareOrigin(catalog)) throw new HttpError(400, 'catalog must be an origin like https://paidwithtab.com');
-        const c = store.createCompany({
-          user_id: auth.user.id, name, mission: str(body.mission, 20_000), owner_pub: owner.publicKey, owner_priv: owner.privateKey,
-          budget, currency, gateways, realms, catalog, sell_gateway: null, state: 'active',
-          concurrency: Math.max(1, Math.min(8, Number(body.concurrency ?? 2) || 2)), max_tickets: 200,
+        const topic = str(body.topic, 120).replace(/\s+/g, ' ').trim() || 'Robinhood Markets';
+        const out = await found(auth.user, {
+          name: 'My first company', budget: '1.00', mission: QUICKSTART_MISSION,
+          agents: [{ name: 'starter', role: 'researcher', adapter: 'starter', budget_per_run: '0.01', config: { max_per_call: '0.005' }, instructions: STARTER_INSTRUCTIONS }],
         });
-        store.addEvent({ company_id: c.id, ticket_id: null, agent_id: null, kind: 'founded', body: { name, budget: microToUsd(budget), currency, gateways, realms } });
-        // a template may hire the first agents and open the first tickets in the same breath
-        const hired: unknown[] = [];
-        for (const a of Array.isArray(body.agents) ? body.agents.slice(0, 20) : []) {
-          if (a && typeof a === 'object') { await checkEgress('hire', a); hired.push(boardAct(c, 'hire', a)); }
-        }
-        for (const t of Array.isArray(body.tickets) ? body.tickets.slice(0, 50) : []) {
-          if (!t || typeof t !== 'object') continue;
-          const tt = t as Record<string, unknown>;
-          const assignee = tt.assignee ? store.agentByName(c.id, str(tt.assignee, 40)) : undefined;
-          let tb: number | null = null;
-          if (tt.budget) { try { tb = usdToMicro(str(tt.budget, 20)); } catch { /* no cap */ } }
-          const created = store.createTicket({ company_id: c.id, title: str(tt.title, 200) || 'untitled', body: str(tt.body, 20_000), state: 'open', assignee_id: assignee?.id ?? null, created_by: 'owner', parent_id: null, budget: tb });
-          store.addEvent({ company_id: c.id, ticket_id: created.id, agent_id: null, kind: 'ticket', body: { ticket_id: created.id, title: created.title, assignee: assignee?.name ?? null } });
-          if (assignee) store.wake(assignee.id, created.id, 'assigned by owner');
-        }
-        log(`company ${c.id} (${name}) founded by ${auth.user.email}: ${gateways.join(', ')} ${currency}`);
-        sendJson(res, 200, { company: publicCompany(store.company(c.id)!), agents: hired });
+        const c = out.company;
+        const funding = await claimCredits(c);
+        const agent = store.agentByName(c.id, 'starter')!;
+        const t = store.createTicket({ company_id: c.id, title: `Look up: ${topic}`, body: `Read about ${topic} on Wikipedia and report back with the receipts.`, state: 'open', assignee_id: agent.id, created_by: 'owner', parent_id: null, budget: usdToMicro('0.01') });
+        store.addEvent({ company_id: c.id, ticket_id: t.id, agent_id: null, kind: 'ticket', body: { ticket_id: t.id, title: t.title, assignee: agent.name } });
+        store.wake(agent.id, t.id, 'assigned by owner');
+        sendJson(res, 200, { company: publicCompany(store.company(c.id)!), ticket: publicTicket(t), funding });
         return;
       }
 
@@ -636,14 +674,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       }
       if (sub === 'fund') {
         // starter credits where a gateway offers them, for the owner wallet
-        const results = await Promise.all(c.gateways.map(async (origin) => {
-          try {
-            const r = await egress(`${origin}/.well-known/tab/faucet`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wallet: c.owner_pub }), signal: AbortSignal.timeout(8_000) });
-            return { origin, status: r.status, ...((await r.json()) as Record<string, unknown>) };
-          } catch (err) { return { origin, error: (err as Error).message }; }
-        }));
-        store.addEvent({ company_id: c.id, ticket_id: null, agent_id: null, kind: 'fund', body: { results } });
-        sendJson(res, 200, { wallet: c.owner_pub, results });
+        sendJson(res, 200, { wallet: c.owner_pub, results: await claimCredits(c) });
         return;
       }
       if (sub === 'tickets') {

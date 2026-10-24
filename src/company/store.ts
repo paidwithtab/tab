@@ -39,7 +39,7 @@ export interface AgentRow {
   name: string;
   role: string;
   instructions: string;
-  adapter: 'claude' | 'claude-code' | 'http';
+  adapter: 'claude' | 'claude-code' | 'http' | 'starter';
   config: Record<string, unknown>;
   agent_pub: string;
   agent_priv: string | null; // custodial for the claude adapters; null for http agents that hold their own key

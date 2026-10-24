@@ -5,7 +5,10 @@
 // attached (the agent key and the run's mandate go to a 0700 temp directory
 // that is deleted when the run ends); it is for self-hosted servers whose user
 // is signed in to Claude Code. `http` POSTs the packet to an endpoint the agent
-// definition names and reads the result back. Agent definitions are data:
+// definition names and reads the result back. `starter` needs no model at
+// all: it looks the ticket's subject up on Wikipedia through the company's own
+// gateway, two paid calls under the run's mandate, so a new company sees a real
+// payment and a signed receipt before it has a model key. Agent definitions are data:
 // nothing in them is executed here, and every adapter calls out, never in.
 
 import { spawn } from 'node:child_process';
@@ -18,9 +21,10 @@ import { saveKey, type KeyPair } from '../keys.js';
 import { saveMandate, type Mandate } from '../mandate.js';
 import { parseResult, validateResult, type AgentResult, type Packet } from './packet.js';
 import { runModelAgent } from './model.js';
+import { createTabTools } from '../tools.js';
 import type { AgentRow } from './store.js';
 
-export const ADAPTERS = ['claude', 'claude-code', 'http'] as const;
+export const ADAPTERS = ['claude', 'claude-code', 'http', 'starter'] as const;
 export type AdapterName = (typeof ADAPTERS)[number];
 
 export interface AdapterContext {
@@ -69,6 +73,8 @@ export async function runAdapter(ctx: AdapterContext): Promise<AdapterOutput> {
       return runModel(ctx);
     case 'claude-code':
       return runClaudeCode(ctx);
+    case 'starter':
+      return runStarter(ctx);
     default:
       throw new Error(`unknown adapter ${String(ctx.agent.adapter)}`);
   }
@@ -124,6 +130,71 @@ async function runModel(ctx: AdapterContext): Promise<AdapterOutput> {
   const head = `[${out.model}: ${out.usage.turns} turns, ${out.usage.input} tokens in, ${out.usage.output} out${out.usage.cache_read ? `, ${out.usage.cache_read} cached` : ''}]`;
   ctx.log?.(`${ctx.agent.name} ${head}`);
   return { text: `${head}\n${out.text}`, result: out.result, modelCostMicro: out.modelCostMicro };
+}
+
+// ---------------------------------------------------------------------------
+// starter: two paid Wikipedia calls, no model
+
+/** The subject of a starter ticket: its title without a leading "Look up:". */
+export function starterTopic(title: string): string {
+  return title.replace(/^\s*(look\s*up|research|find)\s*:?\s*/i, '').trim().slice(0, 200);
+}
+
+const STOP = new Set(['a', 'an', 'the', 'of', 'and', 'or', 'in', 'on', 'for', 'to', 'what', 'is', 'who', 'about']);
+
+/** The first search hit whose title or description has every word of the topic, or null: a loose hit is worse than none. */
+export function starterMatch(topic: string, pages: Array<{ key?: unknown; title?: unknown; description?: unknown }>): { key: string; title: string } | null {
+  const norm = (x: unknown) => String(x ?? '').toLowerCase().replace(/[_\W]+/g, ' ');
+  const words = norm(topic).split(' ').filter((w) => w && !STOP.has(w));
+  for (const p of pages) {
+    if (!p?.key) continue;
+    const hay = ` ${norm(p.title ?? p.key)} ${norm(p.description)} `;
+    if (words.every((w) => hay.includes(` ${w}`))) return { key: String(p.key), title: String(p.title ?? p.key) };
+  }
+  return null;
+}
+
+async function runStarter(ctx: AdapterContext): Promise<AdapterOutput> {
+  if (!ctx.agentKey || !ctx.mandate) throw new Error('the starter agent needs a mandate: is the company out of budget?');
+  const ticket = ctx.packet.json.ticket as { title?: string } | null;
+  const topic = starterTopic(String(ticket?.title ?? ''));
+  if (!topic) return { text: 'no ticket to look up', result: { status: 'blocked', summary: 'Give me a ticket titled "Look up: <subject>" and I will read about it on Wikipedia.' }, modelCostMicro: 0 };
+  const gateways = (ctx.packet.json.budget as { gateways?: string[] })?.gateways ?? [];
+  const gw = String(ctx.agent.config.gateway ?? gateways[0] ?? '').replace(/\/$/, '');
+  if (!gw) throw new Error('the starter agent has no gateway to pay at');
+  const tab = createTabTools({ agent: ctx.agentKey, mandate: ctx.mandate, currency: ctx.currency, maxPerCallUsd: typeof ctx.agent.config.max_per_call === 'string' ? ctx.agent.config.max_per_call : undefined, fetch: ctx.fetch });
+  const lines: string[] = [];
+  const evidence: Array<{ kind: 'receipt' | 'url' | 'text'; value: string }> = [];
+  const paid = async (url: string): Promise<Record<string, any>> => {
+    const out = await tab.call('tab_fetch', { url });
+    if (out.isError) throw new Error(out.text);
+    const o = JSON.parse(out.text) as Record<string, any>;
+    lines.push(`[tab_fetch ${url}] -> HTTP ${o.status}, paid ${o.paid ?? 'nothing'}${o.receipt ? `, receipt ${o.receipt.id}${o.receipt_verified ? ' (signature verified)' : ''}` : ''}`);
+    if (o.receipt) evidence.push({ kind: 'receipt', value: String(o.receipt.id) });
+    if (o.status !== 200) throw new Error(`${url} answered HTTP ${o.status}: ${String(o.body).slice(0, 200)}`);
+    try { return JSON.parse(String(o.body)) as Record<string, any>; } catch { throw new Error(`${url} did not answer JSON`); }
+  };
+
+  const search = await paid(`${gw}/wikipedia/w/rest.php/v1/search/page?q=${encodeURIComponent(topic)}&limit=5`);
+  const page = starterMatch(topic, Array.isArray(search.pages) ? search.pages : []);
+  if (!page) {
+    const near = Array.isArray(search.pages) && search.pages[0]?.title ? ` The closest hit was "${String(search.pages[0].title)}", which is not it.` : '';
+    return { text: lines.join('\n'), result: { status: 'blocked', summary: `Wikipedia has no article that matches "${topic}".${near} Try another subject.`, evidence }, modelCostMicro: 0 };
+  }
+  const sum = await paid(`${gw}/wikipedia/api/rest_v1/page/summary/${encodeURIComponent(String(page.key))}`);
+  const extract = String(sum.extract ?? '').replace(/<[^>]+>/g, '').trim();
+  const link = String(sum.content_urls?.desktop?.page ?? `https://en.wikipedia.org/wiki/${encodeURIComponent(String(page.key))}`);
+  evidence.push({ kind: 'url', value: link });
+  return {
+    text: lines.join('\n'),
+    result: {
+      status: 'done',
+      summary: (extract || `Wikipedia has an article on ${String(sum.title ?? page.title)} but no summary.`).slice(0, 2_000),
+      evidence,
+      comment: `Two paid calls through ${new URL(gw).host}: a search, then the article summary. Each one is a receipt below, signed by the gateway.`,
+    },
+    modelCostMicro: 0,
+  };
 }
 
 // ---------------------------------------------------------------------------

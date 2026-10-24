@@ -26,6 +26,7 @@ import { Secrets } from '../src/company/secrets.js';
 import { priceUsage } from '../src/company/model.js';
 import { signBoardAction, verifyBoardAction } from '../src/company/board.js';
 import { parseResult, validateResult } from '../src/company/packet.js';
+import { starterTopic, starterMatch } from '../src/company/adapters.js';
 
 let passed = 0;
 let failed = 0;
@@ -50,9 +51,26 @@ async function main(): Promise<void> {
     res.end(JSON.stringify({ quote: 'stub', path: req.url }));
   });
   const upPort = await listen(upstream);
+  // a Wikipedia stand-in for the starter agent: one article, Lisbon
+  const wiki = createServer((req, res) => {
+    const u = new URL(req.url ?? '/', 'http://wiki');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    if (u.pathname === '/w/rest.php/v1/search/page') {
+      const q = (u.searchParams.get('q') ?? '').toLowerCase();
+      return res.end(JSON.stringify({ pages: q.includes('lisbon') ? [{ key: 'Lisbon', title: 'Lisbon', excerpt: 'capital' }] : [] }));
+    }
+    res.end(JSON.stringify({ title: 'Lisbon', extract: 'Lisbon is the capital of Portugal.', content_urls: { desktop: { page: 'https://en.wikipedia.org/wiki/Lisbon' } } }));
+  });
+  const wikiPort = await listen(wiki);
   const spec: Spec = {
     realm: 'quotes.local', recipient: seller.publicKey, public_receipts: true,
-    services: [{ name: 'q', prefix: '', upstream: `http://127.0.0.1:${upPort}`, routes: [{ method: 'GET', path: '/quote', price: '0.01' }] }],
+    services: [
+      { name: 'q', prefix: '', upstream: `http://127.0.0.1:${upPort}`, routes: [{ method: 'GET', path: '/quote', price: '0.01' }] },
+      { name: 'wikipedia', prefix: '/wikipedia', upstream: `http://127.0.0.1:${wikiPort}`, routes: [
+        { method: 'GET', path: '/w/rest.php/v1/search/page', price: '0.001' },
+        { method: 'GET', path: '/api/rest_v1/page/summary/:title', price: '0.001' },
+      ] },
+    ],
   };
   const gwStore = new Store(join(scratch, 'gw.db'));
   const gateway = createGateway(spec, { store: gwStore, faucetUsd: '1.00', faucetPerIpPerDay: 100 });
@@ -132,7 +150,7 @@ async function main(): Promise<void> {
   const store = new CompanyStore(join(scratch, 'company.db'));
   const secrets = Secrets.ephemeral();
   const engine = new Engine({ store, workDir: join(scratch, 'work'), tickMs: 3_600_000, runTimeoutMs: 10_000, secrets, anthropicUrl: ANT });
-  const server = createCompanyServer({ store, engine, hosts: ['app.test'], allowPrivateOrigins: true, defaultGateway: GW, authPerWindow: 6, secureCookies: false, secrets, anthropicUrl: ANT, adapters: ['claude', 'http', 'claude-code'] });
+  const server = createCompanyServer({ store, engine, hosts: ['app.test'], allowPrivateOrigins: true, defaultGateway: GW, authPerWindow: 6, secureCookies: false, secrets, anthropicUrl: ANT, adapters: ['claude', 'http', 'claude-code', 'starter'] });
   const port = await listen(server);
   const APP = `http://127.0.0.1:${port}`;
 
@@ -413,7 +431,7 @@ async function main(): Promise<void> {
   const plainPort = await listen(plain);
   const plainHire = await fetch(`http://127.0.0.1:${plainPort}/api/companies/${cid}/agents`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ name: 'local', role: 'x', adapter: 'claude-code' }) });
   const plainHealth = (await (await fetch(`http://127.0.0.1:${plainPort}/api/health`)).json()) as any;
-  check('a server started without --local-claude offers claude and http only', plainHire.status === 400 && plainHealth.adapters.join(',') === 'claude,http' && plainHealth.host_model_key === false);
+  check('a server started without --local-claude offers claude, http and starter only', plainHire.status === 400 && plainHealth.adapters.join(',') === 'claude,http,starter' && plainHealth.host_model_key === false);
   const noSecrets = await fetch(`http://127.0.0.1:${plainPort}/api/companies/${cid}/model-key`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ key: GOOD_KEY }) });
   check('a server without a secrets store refuses to hold keys', noSecrets.status === 503);
   plain.close();
@@ -460,6 +478,32 @@ process.stdin.on('end', () => {
   check('claude-code adapter: key files, mcp config, prompt on stdin, result and cost parsed', tk.state === 'done' && /mcp:true/.test(tk.evidence[0].value)
     && tk.evidence[0].value.includes(join(scratch, 'work', cid)) && v.runs[0].model_cost === '0.0123' && v.runs[0].agent === 'cat');
 
+  // -- 12b. the first run: quickstart and the starter agent, no model key ----------------------
+  const qs = await api('POST', '/api/quickstart', { topic: '  Lisbon  ' }, token2);
+  const qcid: string = qs.body.company?.id;
+  const qview = async () => (await api('GET', `/api/companies/${qcid}`, undefined, token2)).body;
+  let qv = await qview();
+  const starterAgent = qv.agents.find((a: any) => a.name === 'starter');
+  check('quickstart founds a $1 company, claims its credits and opens a ticket for the starter agent', qs.status === 200 && qs.body.company.budget === '1.00'
+    && qs.body.funding[0].credited === '1.00' && qs.body.ticket.title === 'Look up: Lisbon' && qs.body.ticket.assignee_id === starterAgent?.id
+    && starterAgent?.adapter === 'starter' && starterAgent?.custodial === true, qs.body);
+  await runAll();
+  qv = await qview();
+  let qt = qv.tickets.find((t: any) => t.id === qs.body.ticket.id);
+  check('the starter agent pays for a search and a summary and closes with receipts as evidence', qt.state === 'done' && qt.spent === '0.002'
+    && qt.evidence.filter((e: any) => e.kind === 'receipt').length === 2 && qt.evidence.some((e: any) => e.value === 'https://en.wikipedia.org/wiki/Lisbon')
+    && /Lisbon is the capital of Portugal/.test(qv.runs[0].result.summary) && qv.runs[0].model_cost === '0.00', { qt, run: qv.runs[0] });
+  check('both receipts are signed by the gateway and verified', qv.receipts.length === 2 && qv.receipts.every((r: any) => r.verified && r.signed && r.run_id === qv.runs[0].id));
+  const miss = (await api('POST', `/api/companies/${qcid}/tickets`, { title: 'Look up: Nowhereville', assignee: 'starter' }, token2)).body.ticket;
+  await runAll();
+  qv = await qview();
+  qt = qv.tickets.find((t: any) => t.id === miss.id);
+  check('a subject Wikipedia lacks blocks the ticket after one paid search', qt.state === 'blocked' && qt.spent === '0.001' && /no article that matches/.test(qv.runs[0].result.summary), qt);
+  check('the starter topic drops a leading "Look up:"', starterTopic('Look up: Lisbon') === 'Lisbon' && starterTopic('research quantum dots') === 'quantum dots' && starterTopic('Robinhood Chain') === 'Robinhood Chain');
+  check('the starter takes only a hit that names every word of the topic', starterMatch('Robinhood Chain', [{ key: 'GameStop_short_squeeze', title: 'GameStop short squeeze', description: '2021 financial markets event' }, { key: 'S.V._Robinhood', title: 'S.V. Robinhood', description: 'Surinamese football club' }]) === null
+    && starterMatch('taylor swift', [{ key: 'Taylor_Swift', title: 'Taylor Swift' }])?.key === 'Taylor_Swift' && starterMatch('the history of bitcoin', [{ key: 'Bitcoin', title: 'Bitcoin' }, { key: 'History_of_bitcoin', title: 'History of bitcoin' }])?.key === 'History_of_bitcoin');
+  check('health lists the starter adapter', (await api('GET', '/api/health')).body.adapters.includes('starter'));
+
   // -- 13. packet parsing and the rest of the surface ----------------------------------------
   check('parseResult takes the last fence or a bare object', parseResult('x ```json\n{"status":"blocked","summary":"a"}\n``` y ```json\n{"status":"done","summary":"b"}\n```')?.summary === 'b'
     && parseResult('nope {"status":"in_progress","summary":"c"} done')?.status === 'in_progress' && parseResult('nothing here') === null);
@@ -484,6 +528,7 @@ process.stdin.on('end', () => {
   anthropic.close();
   gateway.close();
   upstream.close();
+  wiki.close();
   store.close();
   gwStore.close();
   rmSync(scratch, { recursive: true, force: true });

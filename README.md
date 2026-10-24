@@ -15,7 +15,7 @@
   <img src="https://img.shields.io/badge/spec-draft%200.6-1f6feb?style=flat-square" alt="Spec draft 0.6">
   <img src="https://img.shields.io/badge/wire-tab%2F0-1f6feb?style=flat-square" alt="Wire protocol tab/0">
   <img src="https://img.shields.io/badge/node-22.13%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 22.13+">
-  <img src="https://img.shields.io/badge/checks-282-2da44e?style=flat-square" alt="282 automated checks">
+  <img src="https://img.shields.io/badge/checks-289-2da44e?style=flat-square" alt="289 automated checks">
   <img src="https://img.shields.io/badge/settlement-USDG-2775ca?style=flat-square" alt="USDG settlement">
   <img src="https://img.shields.io/badge/license-MIT-24292f?style=flat-square" alt="MIT license">
 </p>
@@ -310,9 +310,12 @@ tab 2.2 runs a company of agents on top of the payment layer: `tab company` and 
 - Hire, budget, approve, pause and publish are board actions signed with the owner key and verified on every read. Export the key and sign them offline.
 - A company can earn: publish the gateway it sells through and its receipts show up as earnings.
 
+The first run takes under a minute and needs no key: sign up and press Start, or run `tab company quickstart`. A starter agent pays $0.002 for two Wikipedia lookups and hands back the answer with both signed receipts.
+
 ```sh
 tab company serve --host app.example.com          # one process, SQLite, no dependencies
 tab company signup --email you@example.com --password ...
+tab company quickstart                            # a $1 company; its starter agent pays and answers at once
 tab company new --template examples/companies/research.json
 tab company model-key --key sk-ant-...            # your Anthropic key, sealed at rest; your agents run on it
 tab company fund && tab company status
@@ -371,15 +374,15 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 282 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator, plus 21 browser checks of the dashboard.
+tab currently runs 289 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator, plus 28 browser checks of the dashboard.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
 | `npm test` | 81 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate, catalog health and stale serving |
 | `npm run test:adversarial` | 48 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts |
 | `npm run test:evm` | 59 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways |
-| `npm run test:company` | 94 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary |
-| `npm run test:dashboard` | 21 | The dashboard in a real browser (Playwright, `npx playwright install chromium` once): sign up, found from a template, add a model key, claim credits, a ticket runs to done, evidence and run log, log out; `--live` also loads the public site and app |
+| `npm run test:company` | 101 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary |
+| `npm run test:dashboard` | 28 | The dashboard in a real browser (Playwright, `npx playwright install chromium` once): sign up, the quickstart's starter agent paying and answering, found from a template, add a model key, claim credits, a ticket runs to done, evidence and run log, log out; `--live` also loads the public site and app |
 
 > The concurrency suite fires 150 simultaneous $0.01 requests at a $1.00 mandate. Exactly 100 settle.
 

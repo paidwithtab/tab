@@ -53,6 +53,16 @@
   .grid3 { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; }
   .crumbs { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
   .who-end { font-size:13px; color:var(--fg2); margin-right:10px; }
+  .steps { list-style:none; margin:14px 0 0; padding:0; display:grid; gap:10px; }
+  .steps li { display:grid; grid-template-columns:22px minmax(0,1fr); gap:10px; align-items:start; font-size:14.5px; color:var(--fg2); }
+  .steps li::before { content:''; width:14px; height:14px; margin-top:4px; border-radius:50%; border:1.5px solid var(--line); }
+  .steps li.done { color:var(--fg); } .steps li.done::before { background:var(--ok); border-color:var(--ok); }
+  .steps li.now { color:var(--fg); } .steps li.now::before { border-color:var(--accent); border-top-color:transparent; animation:spin .9s linear infinite; }
+  .steps li.fail::before { border-color:var(--bad); background:var(--bad); }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  @media (prefers-reduced-motion:reduce) { .steps li.now::before { animation:none; border-top-color:var(--accent); } }
+  .answer { margin-top:16px; padding:16px 18px; border-radius:12px; border:1px solid rgba(127,216,166,.3); background:rgba(127,216,166,.05); font-size:15px; line-height:1.55; }
+  .answer .rc { display:flex; gap:10px; flex-wrap:wrap; margin-top:10px; font-size:13px; }
   [hidden] { display:none !important; }
 </style>
 </head>
@@ -101,12 +111,20 @@
   </section>
 
   <section id="v-list" hidden>
+    <div class="panel" id="qs" hidden style="max-width:720px;margin-bottom:clamp(36px,5vw,56px);border-color:rgba(156,195,255,.35)">
+      <div class="eyebrow">Start here</div>
+      <h2 style="margin-top:10px">Watch an agent pay, in under a minute.</h2>
+      <p class="sub" style="margin-bottom:0">We set up a company with $1 of free credits and one starter agent. It looks your topic up on Wikipedia, pays $0.002 through tab, and hands you the answer with signed receipts. No API key, no wallet.</p>
+      <label for="qs-topic">What should it look up?</label><input id="qs-topic" maxlength="120" placeholder="Robinhood Markets">
+      <div class="actions"><button class="btn primary" id="qs-go">Start</button></div>
+      <div class="err" id="qs-err"></div>
+    </div>
     <div class="eyebrow">Your companies</div>
     <h2 style="margin-top:10px">Companies</h2>
     <p class="sub">Each company has its own owner wallet, budget and board log.</p>
     <div class="tablewrap framed"><table id="companies"><tbody></tbody></table></div>
     <div class="panel" style="margin-top:28px;max-width:720px">
-      <h3>New company</h3>
+      <h3 id="n-head">New company</h3>
       <label for="n-template">Start from</label>
       <select id="n-template"><option value="">a blank company</option></select>
       <label for="n-name">Name</label><input id="n-name" placeholder="Field Notes">
@@ -127,6 +145,11 @@
       <h2 id="c-name" style="margin:0"></h2><span class="pill" id="c-state"></span>
     </div>
     <p class="sub" id="c-mission" style="margin-top:8px"></p>
+    <div class="panel" id="gs" hidden style="border-color:rgba(156,195,255,.35)">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:baseline"><h3 style="font-size:17px;margin:0">Getting started</h3><button class="sm" id="gs-hide">Hide</button></div>
+      <ol class="steps" id="gs-steps"></ol>
+      <div id="gs-answer"></div>
+    </div>
     <div class="panel">
       <div class="bar" id="c-bar"><i style="width:0"></i></div>
       <div class="stats">
@@ -274,7 +297,8 @@
   const when = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); };
   const pill = (s) => `<span class="pill ${esc(s)}">${esc(String(s).replace('_', ' '))}</span>`;
   const state = { me: null, companies: [], company: null, view: null, ticket: null, run: null, templates: [], timer: null, config: { adapters: ['claude', 'http'], host_model_key: false } };
-  const ADAPTER_LABELS = { claude: "claude (Claude, on the company's API key)", http: 'http (your endpoint)', 'claude-code': 'claude-code (Claude Code on this server)' };
+  const ADAPTER_LABELS = { claude: "claude (Claude, on the company's API key)", http: 'http (your endpoint)', starter: 'starter (Wikipedia lookups, no model key)', 'claude-code': 'claude-code (Claude Code on this server)' };
+  const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
   async function api(path, body, method) {
     const r = await fetch(path, { method: method ?? (body === undefined ? 'GET' : 'POST'), credentials: 'same-origin', headers: body !== undefined ? { 'content-type': 'application/json' } : {}, body: body !== undefined ? JSON.stringify(body) : undefined });
@@ -317,10 +341,23 @@
     const tb = $('companies').querySelector('tbody');
     tb.innerHTML = state.companies.length
       ? '<tr><th>Company</th><th>State</th><th>Spent</th><th>Budget</th><th></th></tr>' + state.companies.map((c) => `<tr class="click" data-id="${esc(c.id)}"><td>${esc(c.name)}</td><td>${pill(c.state)}</td><td class="mono">${esc(c.spent.total)} ${esc(c.currency)}</td><td class="mono">${esc(c.budget)}</td><td class="dim">${esc(c.realms.join(', '))}</td></tr>`).join('')
-      : '<tr><td class="dim">No companies yet. Found one below.</td></tr>';
+      : '<tr><td class="dim">No companies yet. Start one above, or build your own below.</td></tr>';
     for (const tr of tb.querySelectorAll('tr.click')) tr.onclick = () => openCompany(tr.dataset.id);
+    const first = !state.companies.length && (state.config.adapters || []).includes('starter');
+    $('qs').hidden = !first;
+    $('n-head').textContent = first ? 'Or build your own' : 'New company';
     show('list');
+    if (first) $('qs-topic').focus();
   }
+  const quickstart = () => busy($('qs-go'), 'qs-err', async () => {
+    $('qs-go').textContent = 'Starting…';
+    try {
+      const out = await api('/api/quickstart', { topic: $('qs-topic').value.trim() || undefined });
+      await openCompany(out.company.id);
+    } finally { $('qs-go').textContent = 'Start'; }
+  });
+  $('qs-go').onclick = quickstart;
+  $('qs-topic').onkeydown = (e) => { if (e.key === 'Enter') quickstart(); };
   $('n-template').onchange = () => {
     const t = state.templates[$('n-template').value];
     if (!t) return;
@@ -346,8 +383,14 @@
   $('c-back').onclick = (e) => { e.preventDefault(); loadList(); };
   async function refresh() {
     const v = await api(`/api/companies/${state.company}`);
+    if (v.company.id !== state.company) return;
+    const wasLive = state.live;
     state.view = v;
     render();
+    // while an agent works, look every 1.5 s; the 5 s timer covers the rest
+    state.live = v.runs.some((r) => r.state === 'running') || v.tickets.some((t) => t.assignee_id && t.state === 'open' && v.agents.some((a) => a.id === t.assignee_id && a.adapter === 'starter'));
+    if (wasLive && !state.live) loadBalance();
+    if (state.live && !state.fast) state.fast = setTimeout(() => { state.fast = null; if (state.company === v.company.id && !$('v-company').hidden) refresh().catch(() => {}); }, 1500);
   }
   async function loadBalance() {
     try {
@@ -364,6 +407,7 @@
 
   function render() {
     const v = state.view; const c = v.company; const cur = c.currency;
+    renderGuide(v);
     $('c-name').textContent = c.name; $('c-state').textContent = c.state; $('c-state').className = `pill ${c.state}`;
     $('c-mission').textContent = c.mission;
     $('c-spent').textContent = `${c.spent.total} ${cur}`; $('c-budget').textContent = `${c.budget} ${cur}`;
@@ -417,6 +461,47 @@
 
     $('events').querySelector('tbody').innerHTML = '<tr><th>When</th><th>Who</th><th>What</th></tr>' + v.events.slice(0, 40).map((e) => `<tr><td class="dim">${when(e.at)}</td><td>${esc(e.by)}</td><td>${esc(e.kind)}${e.ticket_id ? ` <span class="mono">#${esc(e.ticket_id)}</span>` : ''} <span class="dim">${esc(summarize(e.body))}</span></td></tr>`).join('');
   }
+  function renderGuide(v) {
+    const c = v.company;
+    const starter = v.agents.find((a) => a.adapter === 'starter');
+    const hidden = store.get(`tab-gs-${c.id}`) === 'hidden';
+    $('gs').hidden = !starter || hidden;
+    if ($('gs').hidden) return;
+    const credit = v.events.filter((e) => e.kind === 'fund').flatMap((e) => e.body.results || []).find((x) => x.credited && x.credited !== '0.00');
+    const funded = !!credit;
+    const fundErr = !funded && v.events.find((e) => e.kind === 'fund');
+    // the newest starter ticket and its newest run (runs come newest first)
+    const ticket = v.tickets.filter((t) => t.assignee_id === starter.id).sort((a, b) => (a.created_at < b.created_at ? 1 : -1))[0];
+    const run = ticket && v.runs.find((r) => r.ticket_id === ticket.id);
+    const receipts = run ? v.receipts.filter((r) => r.run_id === run.id) : [];
+    const verified = receipts.filter((r) => r.verified);
+    const ran = run && run.state !== 'running';
+    const failed = run && (run.state === 'failed' || (ran && !run.result));
+    const hasClaude = v.agents.some((a) => a.adapter === 'claude' && a.state === 'active');
+    const step = (cls, html) => `<li class="${cls}"><div>${html}</div></li>`;
+    $('gs-steps').innerHTML = [
+      step('done', `Founded <b>${esc(c.name)}</b> with its own wallet and a ${esc(c.budget)} ${esc(c.currency)} budget.`),
+      step(funded ? 'done' : fundErr ? 'fail' : 'now', funded ? `Claimed ${esc(credit.credited)} ${esc(c.currency)} of free credits at ${esc(c.realms.join(', '))}.` : fundErr ? `The free credits did not come through. <button class="sm" id="gs-fund">Try again</button>` : 'Claiming free credits…'),
+      step(!run ? (ticket ? 'now' : '') : run.state === 'running' ? 'now' : failed ? 'fail' : 'done',
+        !ticket ? 'Starter agent is ready for a ticket.' : !run ? `Starter agent picked up <b>${esc(ticket.title)}</b>…` : run.state === 'running' ? `Starter agent is working on <b>${esc(ticket.title)}</b>, under a signed mandate of ${esc(run.mandate ? run.mandate.budget : '')}…` : failed ? `The run failed${run.error ? `: <span class="bad">${esc(run.error)}</span>` : ''}.` : `Starter agent finished <b>${esc(ticket.title)}</b> and spent ${esc(run.spent)} ${esc(c.currency)}.`),
+      step(verified.length ? 'done' : ran && !failed ? 'fail' : '', verified.length ? `${verified.length} receipt${verified.length === 1 ? '' : 's'}, each signed by the gateway and checked here.` : 'Every paid call comes back with a receipt the gateway signs.'),
+      step(c.model_key && hasClaude ? 'done' : '', c.model_key && hasClaude ? 'A claude agent is on the team.' : `Next: <a href="#mk-panel" class="accent" id="gs-key">add your Anthropic key</a>, then hire a claude agent for real work. It can search 8,600+ paid routes, always inside its budget.`),
+    ].join('');
+    const fb = $('gs-fund'); if (fb) fb.onclick = () => $('c-fund').click();
+    const gk = $('gs-key'); if (gk) gk.onclick = (e) => { e.preventDefault(); $('mk-panel').scrollIntoView({ behavior: 'smooth' }); $('mk-key').focus(); };
+    const result = run && run.result;
+    const html = result && ran ? `<div class="answer"><div style="white-space:pre-wrap">${esc(result.summary)}</div><div class="rc">${receipts.map((r) => `<a class="mono ${r.verified ? 'ok' : 'bad'}" href="/api/companies/${esc(c.id)}/receipts/${esc(r.id)}" target="_blank" rel="noopener">${esc(r.amount)} ${esc(r.currency)} receipt ${r.verified ? '✓' : '✗'}</a>`).join('')}${(result.evidence || []).filter((e) => e.kind === 'url' && /^https:\/\//.test(e.value)).map((e) => `<a class="accent" href="${esc(e.value)}" target="_blank" rel="noopener">source</a>`).join('')}</div></div>
+      <div class="actions"><input id="gs-topic" maxlength="120" placeholder="Look something else up" style="flex:1;min-width:180px"><button class="sm" id="gs-again">Ask again</button></div>` : '';
+    if ($('gs-answer').dataset.html !== html) {
+      $('gs-answer').dataset.html = html; $('gs-answer').innerHTML = html;
+      const again = $('gs-again');
+      if (again) {
+        const go = () => busy(again, 'c-err', async () => { const topic = $('gs-topic').value.trim(); if (!topic) return; await api(`/api/companies/${c.id}/tickets`, { title: `Look up: ${topic}`, assignee: starter.name, budget: '0.01' }); await refresh(); });
+        again.onclick = go; $('gs-topic').onkeydown = (e) => { if (e.key === 'Enter') go(); };
+      }
+    }
+  }
+  $('gs-hide').onclick = () => { store.set(`tab-gs-${state.company}`, 'hidden'); $('gs').hidden = true; };
   function summarize(p) {
     if (!p || typeof p !== 'object') return '';
     return Object.entries(p).filter(([k, v]) => v !== null && v !== undefined && v !== '' && !['config', 'instructions', 'results'].includes(k)).map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : String(v)}`).join(' · ').slice(0, 240);

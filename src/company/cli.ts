@@ -19,10 +19,11 @@ export const COMPANY_USAGE = `  tab company serve  [--db company.db] [--port 140
                      [--listen 127.0.0.1] [--host-model-key] (companies without a key use $ANTHROPIC_API_KEY) [--local-claude] (allow claude-code agents)
   tab company signup --email you@example.com --password ... [--server http://127.0.0.1:1407]
   tab company login  --email you@example.com --password ... [--server http://127.0.0.1:1407]
+  tab company quickstart [--topic "Robinhood Markets"]                 a $1 company whose starter agent pays for two lookups now, no model key
   tab company new    --name "Acme Research" [--mission "..."] [--budget 5.00] [--gateway origin]... [--template file.json]
   tab company fund   [--company id]                                    starter credits for the owner wallet, where offered
   tab company model-key [--key sk-ant-...] [--key-file path] [--remove] [--company id]   the Anthropic key its claude agents run on
-  tab company hire   --name scout --role "researcher" --adapter claude|http|claude-code [--url https://...] [--agent-pub <pub>]
+  tab company hire   --name scout --role "researcher" --adapter claude|http|starter|claude-code [--url https://...] [--agent-pub <pub>]
                      [--budget-per-run 0.50] [--heartbeat 0] [--instructions "..."] [--model m] [--company id]
   tab company ticket --title "..." [--body "..."] [--assignee scout] [--budget 0.50] [--company id]
   tab company comment --ticket id --text "..." [--company id]
@@ -117,7 +118,7 @@ export async function companyCommand(rest: string[]): Promise<void> {
       const hostModelKey = values['host-model-key'] ? process.env.ANTHROPIC_API_KEY ?? '' : '';
       if (values['host-model-key'] && !hostModelKey) die('--host-model-key needs ANTHROPIC_API_KEY in the environment');
       const anthropicUrl = process.env.TAB_ANTHROPIC_URL || undefined;
-      const adapters: AdapterName[] = ['claude', 'http', ...(values['local-claude'] ? ['claude-code' as const] : [])];
+      const adapters: AdapterName[] = ['claude', 'http', 'starter', ...(values['local-claude'] ? ['claude-code' as const] : [])];
       // runs reach only public addresses: http agents, gateways and the URLs a model asks for
       const egress = values['allow-private-origins'] ? undefined : guardedFetch();
       const engine = new Engine({
@@ -173,6 +174,28 @@ export async function companyCommand(rest: string[]): Promise<void> {
       writeConf({ ...conf, company: company.id });
       console.log(`company ${company.id} (${company.name}): budget ${company.budget} ${company.currency}, spends at ${company.realms.join(', ')}\nowner wallet ${company.owner_pub}\nhired ${(out.agents as unknown[]).length} agents; it is now the default company for this CLI`);
       return;
+    }
+    case 'quickstart': {
+      const { values } = opts(args, { topic: { type: 'string' } });
+      const out = await api(conf, 'POST', '/api/quickstart', { topic: values.topic });
+      const company = out.company as { id: string; name: string; owner_pub: string; realms: string[] };
+      const ticket = out.ticket as { id: string; title: string };
+      writeConf({ ...conf, company: company.id });
+      for (const f of out.funding as Array<Record<string, unknown>>) console.log(`starter credits at ${f.origin}: ${f.credited ? `${f.credited} credited` : String(f.error ?? 'none')}`);
+      console.log(`company ${company.id} (${company.name}) founded; ticket #${ticket.id} "${ticket.title}" is assigned to starter. Watching the run...`);
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 1_500));
+        const v = await api(conf, 'GET', `/api/companies/${company.id}`);
+        const t = (v.tickets as Array<{ id: string; state: string; spent: string; evidence: Array<{ kind: string; value: string }> }>).find((x) => x.id === ticket.id);
+        const run = (v.runs as Array<{ state: string; error: string | null; result: { summary?: string } | null }>)[0];
+        if (!t || !run || run.state === 'running') continue;
+        if (run.error && !run.result) die(`the run failed: ${run.error}`);
+        console.log(`\n${t.state}: ${run.result?.summary ?? ''}\nspent ${t.spent}`);
+        for (const r of v.receipts as Array<{ id: string; resource: string; amount: string; currency: string; verified: boolean }>) console.log(`  receipt ${r.id}  ${r.amount} ${r.currency}  ${r.resource}  ${r.verified ? 'signature verified' : 'NOT VERIFIED'}`);
+        console.log(`\nNext: tab company model-key --key sk-ant-... and hire a claude agent for real work.`);
+        return;
+      }
+      die('the run has not finished yet; check with tab company status');
     }
     case 'fund': {
       const { values } = opts(args, { company: { type: 'string' } });

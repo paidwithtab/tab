@@ -1,6 +1,7 @@
 // The dashboard in a real browser. Starts a gateway with starter credits, a
 // fake Messages API and a company server in process, then drives web/app.html
-// with Playwright: sign up, found a company from the research template, add a
+// with Playwright: sign up, start the quickstart and watch the starter agent pay
+// and answer, found a company from the research template, add a
 // model key, claim credits, watch the first ticket run to done, read the
 // evidence and the run log, log out. Any console error or page error fails.
 //   npm run test:dashboard          (needs: npx playwright install chromium, once)
@@ -54,9 +55,23 @@ async function main(): Promise<void> {
   const seller = newKeyPair();
   const upstream = createServer((req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ quote: 'stub', path: req.url })); });
   const upPort = await listen(upstream);
+  const wiki = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    const u = new URL(req.url ?? '/', 'http://wiki');
+    const q = u.searchParams.get('q') ?? '';
+    if (u.pathname === '/w/rest.php/v1/search/page') return res.end(JSON.stringify({ pages: [{ key: q.replace(/ /g, '_'), title: q }] }));
+    res.end(JSON.stringify({ title: 'Lisbon', extract: 'Lisbon is the capital of Portugal.', content_urls: { desktop: { page: 'https://en.wikipedia.org/wiki/Lisbon' } } }));
+  });
+  const wikiPort = await listen(wiki);
   const spec: Spec = {
     realm: 'quotes.local', recipient: seller.publicKey, public_receipts: true,
-    services: [{ name: 'q', prefix: '', upstream: `http://127.0.0.1:${upPort}`, routes: [{ method: 'GET', path: '/quote', price: '0.01' }] }],
+    services: [
+      { name: 'q', prefix: '', upstream: `http://127.0.0.1:${upPort}`, routes: [{ method: 'GET', path: '/quote', price: '0.01' }] },
+      { name: 'wikipedia', prefix: '/wikipedia', upstream: `http://127.0.0.1:${wikiPort}`, routes: [
+        { method: 'GET', path: '/w/rest.php/v1/search/page', price: '0.001' },
+        { method: 'GET', path: '/api/rest_v1/page/summary/:title', price: '0.001' },
+      ] },
+    ],
   };
   const gwStore = new Store(join(scratch, 'gw.db'));
   const gateway = createGateway(spec, { store: gwStore, faucetUsd: '1.00', faucetPerIpPerDay: 100 });
@@ -82,7 +97,7 @@ async function main(): Promise<void> {
   });
   const ANT = `http://127.0.0.1:${await listen(anthropic)}`;
 
-  // -- the company server, as the hosted one runs: claude and http, no host key --------
+  // -- the company server, as the hosted one runs: claude, http and starter, no host key --------
   const store = new CompanyStore(join(scratch, 'company.db'));
   const secrets = Secrets.ephemeral();
   const engine = new Engine({ store, workDir: join(scratch, 'work'), tickMs: 3_600_000, runTimeoutMs: 20_000, secrets, anthropicUrl: ANT });
@@ -106,6 +121,32 @@ async function main(): Promise<void> {
     await visible('v-list').waitFor();
     check('sign up lands on the company list, signed in', (await page.locator('#who').textContent()) === 'owner@example.com' && /No companies yet/.test(await page.locator('#companies').textContent() ?? ''));
 
+    // -- the quickstart: a starter agent pays and answers, no key --------------------------
+    check('a new account is offered the quickstart', await page.locator('#qs').isVisible() && (await page.locator('#n-head').textContent()) === 'Or build your own');
+    await page.fill('#qs-topic', 'Lisbon');
+    await page.click('#qs-go');
+    await visible('v-company').waitFor();
+    await visible('gs').waitFor();
+    check('the getting started list shows the company founded and the credits claimed', (await page.locator('#gs-steps li.done').count()) >= 2 && /1\.00 USD of free credits/.test(await page.locator('#gs-steps').textContent() ?? ''));
+    await engine.tick();
+    await engine.drain();
+    await page.locator('#gs-answer .answer').waitFor({ timeout: 15_000 });
+    check('the starter answer appears with its two verified receipts', /Lisbon is the capital of Portugal/.test(await page.locator('#gs-answer').textContent() ?? '')
+      && (await page.locator('#gs-answer a.ok').count()) === 2 && /2 receipts, each signed/.test(await page.locator('#gs-steps').textContent() ?? ''));
+    check('the next step points at the model key', await page.locator('#gs-key').isVisible());
+    await page.fill('#gs-topic', 'Lisbon tram 28');
+    await page.click('#gs-again');
+    await page.locator('#tickets tr.click').filter({ hasText: 'Lisbon tram 28' }).waitFor();
+    await engine.tick();
+    await engine.drain();
+    await page.locator('#tickets tr.click').filter({ hasText: 'Lisbon tram 28' }).filter({ hasText: 'done' }).waitFor({ timeout: 15_000 });
+    check('asking again opens a starter ticket that runs to done', true);
+    await page.click('#gs-hide');
+    check('the guide can be hidden', !(await page.locator('#gs').isVisible()));
+    await page.click('#c-back');
+    await visible('v-list').waitFor();
+    check('with a company, the quickstart card steps aside', !(await page.locator('#qs').isVisible()) && (await page.locator('#n-head').textContent()) === 'New company');
+
     // -- found from the research template ---------------------------------------------
     const templates = await page.locator('#n-template option').count();
     check('templates are offered', templates >= 3);
@@ -116,7 +157,7 @@ async function main(): Promise<void> {
     await visible('v-company').waitFor();
     check('the company view opens with the template agents and ticket', /Field Notes/.test(await page.locator('#c-name').textContent() ?? '')
       && (await page.locator('#agents tr').count()) === 3 && (await page.locator('#tickets tr.click').count()) === 1);
-    check('the hosted server offers claude and http adapters', (await page.locator('#h-adapter option').allTextContents()).join('|') === "claude (Claude, on the company's API key)|http (your endpoint)");
+    check('the hosted server offers claude, http and starter adapters', (await page.locator('#h-adapter option').allTextContents()).join('|') === "claude (Claude, on the company's API key)|http (your endpoint)|starter (Wikipedia lookups, no model key)");
     check('claude agents are shown waiting for a model key', /waiting for a model key/.test(await page.locator('#mk-status').textContent() ?? ''));
 
     // -- model key and starter credits ----------------------------------------------
@@ -191,6 +232,7 @@ async function main(): Promise<void> {
     anthropic.close();
     gateway.close();
     upstream.close();
+    wiki.close();
     store.close();
     gwStore.close();
     rmSync(scratch, { recursive: true, force: true });

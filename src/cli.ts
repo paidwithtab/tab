@@ -36,6 +36,7 @@ const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed man
   tab balance --wallet <pub|file> [--db tab.db]
   tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin url] [--x402-settler key.json]
               [--faucet 1.00]   ledger rail: starter credits any wallet can claim once
+              [--faucet-per-ip 20]   claims per address per day (a hosted company server claims for all its users from one)
   tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
                     [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
   tab evm address <key.json>                                          key file -> 0x address
@@ -187,6 +188,7 @@ async function main(): Promise<void> {
         announce: { type: 'string' },
         origin: { type: 'string' },
         faucet: { type: 'string' },
+        'faucet-per-ip': { type: 'string' },
         'x402-settler': { type: 'string' },
       });
       if (!values.spec) die('--spec is required');
@@ -196,6 +198,7 @@ async function main(): Promise<void> {
       const x402Settler = values['x402-settler'] ? loadKey(values['x402-settler'] as string) : undefined;
       const server = createGateway(spec, {
         store, log, faucetUsd: values.faucet as string | undefined, x402Settler,
+        faucetPerIpPerDay: values['faucet-per-ip'] ? Math.max(1, Number(values['faucet-per-ip']) || 20) : undefined,
         origin: values.origin as string | undefined,
       });
       const port = Number(values.port);
