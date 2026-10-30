@@ -15,7 +15,7 @@ export interface AgentResult {
   evidence?: Evidence[];
   comment?: string;
   new_tickets?: Array<{ title: string; body?: string; assignee?: string; budget?: string }>;
-  requests?: Array<{ kind: string; amount?: string; reason?: string }>;
+  requests?: Array<{ kind: string; amount?: string; reason?: string; name?: string; role?: string; instructions?: string }>;
   mentions?: string[];
 }
 
@@ -44,7 +44,7 @@ export const CONTRACT = {
   evidence: [{ kind: 'receipt | url | file | text', value: 'a receipt id, a URL, a file path you wrote, or the literal output' }],
   comment: 'optional longer note for the ticket thread',
   new_tickets: [{ title: '...', body: '...', assignee: 'colleague name', budget: '0.50' }],
-  requests: [{ kind: 'budget | hire | other', amount: '5.00', reason: '...' }],
+  requests: [{ kind: 'budget | hire | other', amount: '5.00', reason: '...', name: 'for hire: the new agent', role: 'for hire', instructions: 'for hire; amount is then its budget per run' }],
   mentions: ['colleague name to wake on this ticket'],
 };
 
@@ -161,7 +161,9 @@ export function validateResult(x: unknown): AgentResult | null {
       .slice(0, 10)
       .map((r) => {
         const rr = r as Record<string, unknown>;
-        return { kind: str(rr.kind, 32), amount: rr.amount === undefined ? undefined : str(rr.amount, 20), reason: str(rr.reason, 2000) };
+        const req: NonNullable<AgentResult['requests']>[number] = { kind: str(rr.kind, 32), amount: rr.amount === undefined ? undefined : str(rr.amount, 20), reason: str(rr.reason, 2000) };
+        if (req.kind === 'hire') { if (rr.name !== undefined) req.name = str(rr.name, 40).replace(/^@/, ''); if (rr.role !== undefined) req.role = str(rr.role, 200); if (rr.instructions !== undefined) req.instructions = str(rr.instructions, 20_000); }
+        return req;
       });
   }
   if (Array.isArray(o.mentions)) out.mentions = o.mentions.filter((m) => typeof m === 'string').slice(0, 20).map((m) => (m as string).replace(/^@/, '').slice(0, 100));

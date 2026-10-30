@@ -314,43 +314,46 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
     const ev = (kind: string, body: unknown, ticketId: string | null = null) =>
       store.addEvent({ company_id: c.id, ticket_id: ticketId, agent_id: null, kind, body }, now);
     store.addBoard({ company_id: c.id, seq: a.seq, id: a.id, action: a.action, payload: a.payload, at: a.at, sig: a.sig });
-    switch (a.action) {
-      case 'hire': {
-        const name = str(p.name, 40);
-        if (!NAME_RE.test(name)) throw new HttpError(400, 'agent name: letters, digits, dot, dash, underscore; up to 40');
-        if (store.agentByName(c.id, name)) throw new HttpError(409, `an agent named ${name} exists`);
-        const adapter = (ADAPTERS as readonly string[]).includes(String(p.adapter)) && adapters.has(p.adapter as AdapterName) ? (p.adapter as AdapterName) : null;
-        if (!adapter) throw new HttpError(400, `adapter must be one of ${[...adapters].join(', ')}`);
-        const config = (p.config && typeof p.config === 'object' && !Array.isArray(p.config) ? p.config : {}) as Record<string, unknown>;
-        // the per call cap goes into every mandate the agent gets, so it is checked here and kept in canonical form
-        if (config.max_per_call === undefined || config.max_per_call === null || config.max_per_call === '') delete config.max_per_call;
-        else {
-          try { config.max_per_call = microToUsd(usdToMicro(normalizeUsd(str(config.max_per_call, 20)))); } catch { throw new HttpError(400, 'per call must be an amount like 0.05'); }
-        }
-        let agent_pub: string;
-        let agent_priv: string | null = null;
-        if (adapter === 'http') {
-          let target: URL;
-          try { target = new URL(String(config.url ?? '')); } catch { throw new HttpError(400, 'http adapter needs config.url'); }
-          if ((target.protocol !== 'http:' && target.protocol !== 'https:') || target.username || target.password) throw new HttpError(400, 'http adapter needs an http(s) config.url');
-
-          agent_pub = str(p.agent_pub, 64);
-          if (!PUB_RE.test(agent_pub)) throw new HttpError(400, 'http adapter needs agent_pub: the public key the endpoint pays with');
-        } else {
-          const pair = newKeyPair();
-          agent_pub = pair.publicKey;
-          agent_priv = pair.privateKey;
-        }
-        let budget_per_run: number;
-        try { budget_per_run = usdToMicro(normalizeUsd(str(p.budget_per_run, 20) || '0.50')); } catch { throw new HttpError(400, 'budget_per_run must be an amount like 0.50'); }
-        const heartbeat_s = Math.max(0, Math.min(86_400 * 7, Number(p.heartbeat_s ?? 0) || 0));
-        const agent = store.createAgent({
-          company_id: c.id, name, role: str(p.role, 200) || 'agent', instructions: str(p.instructions, 20_000), adapter, config,
-          agent_pub, agent_priv, budget_per_run, heartbeat_s, state: 'active',
-        }, now);
-        ev('hire', { agent_id: agent.id, name, role: agent.role, adapter, agent_pub, budget_per_run: microToUsd(budget_per_run) });
-        return publicAgent(agent);
+    // a hire: by the owner directly, or by approving an agent's hire request
+    const hire = (p: Record<string, unknown>) => {
+      const name = str(p.name, 40);
+      if (!NAME_RE.test(name)) throw new HttpError(400, 'agent name: letters, digits, dot, dash, underscore; up to 40');
+      if (store.agentByName(c.id, name)) throw new HttpError(409, `an agent named ${name} exists`);
+      const adapter = (ADAPTERS as readonly string[]).includes(String(p.adapter)) && adapters.has(p.adapter as AdapterName) ? (p.adapter as AdapterName) : null;
+      if (!adapter) throw new HttpError(400, `adapter must be one of ${[...adapters].join(', ')}`);
+      const config = (p.config && typeof p.config === 'object' && !Array.isArray(p.config) ? p.config : {}) as Record<string, unknown>;
+      // the per call cap goes into every mandate the agent gets, so it is checked here and kept in canonical form
+      if (config.max_per_call === undefined || config.max_per_call === null || config.max_per_call === '') delete config.max_per_call;
+      else {
+        try { config.max_per_call = microToUsd(usdToMicro(normalizeUsd(str(config.max_per_call, 20)))); } catch { throw new HttpError(400, 'per call must be an amount like 0.05'); }
       }
+      let agent_pub: string;
+      let agent_priv: string | null = null;
+      if (adapter === 'http') {
+        let target: URL;
+        try { target = new URL(String(config.url ?? '')); } catch { throw new HttpError(400, 'http adapter needs config.url'); }
+        if ((target.protocol !== 'http:' && target.protocol !== 'https:') || target.username || target.password) throw new HttpError(400, 'http adapter needs an http(s) config.url');
+
+        agent_pub = str(p.agent_pub, 64);
+        if (!PUB_RE.test(agent_pub)) throw new HttpError(400, 'http adapter needs agent_pub: the public key the endpoint pays with');
+      } else {
+        const pair = newKeyPair();
+        agent_pub = pair.publicKey;
+        agent_priv = pair.privateKey;
+      }
+      let budget_per_run: number;
+      try { budget_per_run = usdToMicro(normalizeUsd(str(p.budget_per_run, 20) || '0.50')); } catch { throw new HttpError(400, 'budget_per_run must be an amount like 0.50'); }
+      const heartbeat_s = Math.max(0, Math.min(86_400 * 7, Number(p.heartbeat_s ?? 0) || 0));
+      const agent = store.createAgent({
+        company_id: c.id, name, role: str(p.role, 200) || 'agent', instructions: str(p.instructions, 20_000), adapter, config,
+        agent_pub, agent_priv, budget_per_run, heartbeat_s, state: 'active',
+      }, now);
+      ev('hire', { agent_id: agent.id, name, role: agent.role, adapter, agent_pub, budget_per_run: microToUsd(budget_per_run) });
+      return agent;
+    };
+    switch (a.action) {
+      case 'hire':
+        return publicAgent(hire(p));
       case 'retire': {
         const agent = store.agent(str(p.agent_id, 64));
         if (!agent || agent.company_id !== c.id) throw new HttpError(404, 'no such agent');
@@ -384,7 +387,19 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
             }
           }
         }
-        if (ap.agent_id && ap.ticket_id) store.wake(ap.agent_id, ap.ticket_id, `request ${a.action === 'approve' ? 'approved' : 'rejected'}`, now);
+        let hired: AgentRow | null = null;
+        if (a.action === 'approve' && ap.kind === 'hire' && typeof ap.payload.name === 'string' && ap.payload.name) {
+          // the agent the requester described joins on the requester's adapter and per call cap
+          const by = ap.agent_id ? store.agent(ap.agent_id) : null;
+          const adapter = by && by.adapter !== 'http' ? by.adapter : adapters.has('claude') ? 'claude' : 'starter';
+          hired = hire({
+            name: ap.payload.name, role: ap.payload.role ?? '', instructions: ap.payload.instructions ?? '', adapter,
+            config: by?.config.max_per_call ? { max_per_call: by.config.max_per_call } : {},
+            budget_per_run: typeof ap.payload.amount === 'string' && ap.payload.amount ? ap.payload.amount : '0.25',
+          });
+        }
+        if (ap.agent_id && ap.ticket_id) store.wake(ap.agent_id, ap.ticket_id, `request ${a.action === 'approve' ? 'approved' : 'rejected'}${hired ? `: ${hired.name} is hired` : ''}`, now);
+        if (hired) return { ok: true, agent: publicAgent(hired) };
         return { ok: true };
       }
       case 'pause':

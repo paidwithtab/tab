@@ -73,7 +73,7 @@ const FINISH_TOOL: ToolSpec = {
       evidence: { type: 'array', items: { type: 'object', properties: { kind: { type: 'string', enum: ['receipt', 'url', 'file', 'text'] }, value: { type: 'string' } }, required: ['kind', 'value'] } },
       comment: { type: 'string', description: CONTRACT.comment },
       new_tickets: { type: 'array', items: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' }, assignee: { type: 'string' }, budget: { type: 'string' } }, required: ['title'] } },
-      requests: { type: 'array', items: { type: 'object', properties: { kind: { type: 'string', enum: ['budget', 'hire', 'other'] }, amount: { type: 'string' }, reason: { type: 'string' } }, required: ['kind'] } },
+      requests: { type: 'array', description: 'Ask the owner. A hire names the new agent, its role and instructions, with amount as its budget per run; once approved the agent joins the company and you are woken to assign it work.', items: { type: 'object', properties: { kind: { type: 'string', enum: ['budget', 'hire', 'other'] }, amount: { type: 'string' }, reason: { type: 'string' }, name: { type: 'string' }, role: { type: 'string' }, instructions: { type: 'string' } }, required: ['kind'] } },
       mentions: { type: 'array', items: { type: 'string' } },
     },
     required: ['status', 'summary'],

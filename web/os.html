@@ -430,7 +430,7 @@
   function apprTitle(a, who) {
     const name = who ? who.name : 'An agent';
     if (a.kind === 'budget' && a.payload.amount) return `${name} requests ${money(a.payload.amount)}`;
-    if (a.kind === 'hire') return `${name} wants to hire`;
+    if (a.kind === 'hire') return a.payload.name ? `${name} wants to hire ${a.payload.name}${a.payload.role ? `, ${a.payload.role}` : ''}` : `${name} wants to hire`;
     return `${name} asks: ${a.kind}`;
   }
 
@@ -596,7 +596,7 @@
     const who = d.byId.get(a.agent_id); const t = a.ticket_id && d.ticket(a.ticket_id);
     return `<div class="appr"><span class="tile"><img src="${avatar(who)}" alt=""></span><div style="min-width:0">
       <h3><span>${esc(apprTitle(a, who))}</span><small>${ago(a.created_at)}</small></h3>
-      <p>${esc(a.payload.reason || (a.kind === 'budget' ? 'More budget for its work.' : ''))}</p>${t ? `<p class="dim" style="font-size:12.5px">On ${esc(t.title)}</p>` : ''}
+      <p>${esc(a.payload.reason || (a.kind === 'budget' ? 'More budget for its work.' : ''))}</p>${a.kind === 'hire' && a.payload.name ? `<p class="dim" style="font-size:12.5px">${a.payload.amount ? `${money(a.payload.amount)} per run. ` : ''}${esc(String(a.payload.instructions || '').slice(0, 280))}</p>` : ''}${t ? `<p class="dim" style="font-size:12.5px">On ${esc(t.title)}</p>` : ''}
       ${a.state === 'pending' ? `<div class="row"><button class="btn primary" data-approve="${esc(a.id)}">Approve</button>${full ? `<button class="btn danger" data-reject="${esc(a.id)}">Reject</button>` : `<button class="btn" data-review="${esc(a.id)}">Review</button>`}</div>` : `<div style="margin-top:8px">${st(a.state, a.state)}</div>`}
     </div></div>`;
   }
@@ -675,7 +675,7 @@
       'run-started': `${esc(who)} started working${on}`,
       state: `${on ? `<b>${esc(t.title)}</b>` : 'A task'} moved from ${esc(TSTATE[b.from] || b.from)} to ${esc(TSTATE[b.to] || b.to)}`,
       ticket: `New task <b>${esc(b.title || '')}</b>${b.assignee ? ` for ${esc(b.assignee)}` : ''}`,
-      request: `${esc(who)} asked for ${b.amount ? money(b.amount) : esc(b.kind)}: <span class="s">${esc(b.reason || '')}</span>`,
+      request: b.kind === 'hire' && b.name ? `${esc(who)} asked to hire <b>${esc(b.name)}</b>${b.role ? `, ${esc(b.role)}` : ''}` : `${esc(who)} asked for ${b.amount ? money(b.amount) : esc(b.kind)}: <span class="s">${esc(b.reason || '')}</span>`,
       'budget-warning': 'The company passed 80 percent of its budget',
       paused: `The company paused <span class="s">${esc(b.reason || '')}</span>`, resumed: 'The company resumed',
       hire: `Hired <b>${esc(b.name || '')}</b>`, 'needs-model-key': `${esc(who)} is waiting for a model key`, 'run-failed': `${esc(who)} could not start <span class="s">${esc(b.error || '')}</span>`, 'late-spend': `${esc(who)} spent after its run ended <span class="s">${esc(b.spent || '')}</span>`, approval: `${esc(b.decision === 'reject' ? 'Rejected' : 'Approved')} a request`, fund: 'Claimed starter credits', 'model-key': b.removed ? 'Removed the model key' : 'Set the model key', 'key-exported': 'The owner key was exported',
@@ -909,7 +909,7 @@
 
   // ---------------------------------------------------------------- actions
   function go(app) { closeOverlay(); $('notes').hidden = true; location.hash = `#/${app}`; }
-  async function decide(id, decision) { await api(`${C()}/approvals/${id}`, { decision }); toast(decision === 'approve' ? 'Approved' : 'Rejected'); await refresh(); }
+  async function decide(id, decision) { const r = await api(`${C()}/approvals/${id}`, { decision }); toast(r && r.agent ? `${r.agent.name} is hired` : decision === 'approve' ? 'Approved' : 'Rejected'); await refresh(); }
   async function togglePause() { const paused = S.view.company.state === 'paused'; await api(`${C()}/${paused ? 'resume' : 'pause'}`, {}); toast(paused ? 'Company resumed' : 'Company paused'); await refresh(); }
   function budgetModal() { modal('Change budget', 'The most the whole company can ever spend, models included. This is a signed board action.', `<label class="f" for="b-val">Budget</label><input id="b-val" value="${esc(S.view.company.budget)}" inputmode="decimal" autofocus>`, 'Save budget', async () => { await api(`${C()}/budget`, { budget: val('b-val') }); toast('Budget updated'); }); }
   function keyModal() { modal('Anthropic API key', 'Claude agents run on the company\'s own key. It is checked with Anthropic, sealed at rest, and never shown again.', `<label class="f" for="k-val">Key</label><input id="k-val" type="password" class="mono" placeholder="sk-ant-…" autocomplete="off" autofocus>`, 'Save key', async () => { await api(`${C()}/model-key`, { key: val('k-val') }); toast('Model key saved'); }); }

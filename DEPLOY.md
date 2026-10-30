@@ -115,7 +115,7 @@ npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 81 passed, 0 failed on the dev box
 npm run test:adversarial    # 48 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
 npm run test:evm            # 59 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
-npm run test:company        # 103 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
+npm run test:company        # 105 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests, signed board log, sealed model keys, the claude adapter against a fake Messages API
 npm run test:dashboard      # 26 passed, 0 failed: tab OS in headless Chromium end to end (npx playwright install chromium first); --live also loads the public site and app
 ```
 

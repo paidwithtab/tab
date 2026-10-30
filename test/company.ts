@@ -108,6 +108,7 @@ async function main(): Promise<void> {
     if (mode === 'blocked') return json(200, { status: 'blocked', summary: 'need the api key' });
     if (mode === 'progress') return json(200, { status: 'in_progress', summary: 'still at it' });
     if (mode === 'spawn') return json(200, { status: 'in_progress', summary: 'delegating', new_tickets: [{ title: 'sub task', body: 'buy a quote', assignee: 'bee', budget: '0.05' }] });
+    if (mode === 'hire') return json(200, { status: 'in_progress', summary: 'need a hand', requests: [{ kind: 'hire', name: '@cy', role: 'researcher', instructions: 'Find sources.', amount: '.20', reason: 'research is not my role' }] });
     if (mode === 'request') return json(200, { status: 'in_progress', summary: 'need more', requests: [{ kind: 'budget', amount: '1.00', reason: 'bigger job' }] });
     if (mode === 'costly') return json(200, { result: { status: 'done', summary: 'expensive', evidence: [{ kind: 'text', value: 'out' }] }, cost_usd: 1.0 });
     if (mode === 'mention') return json(200, { status: 'in_progress', summary: 'bee, look', mentions: ['@bee'] });
@@ -316,6 +317,17 @@ async function main(): Promise<void> {
   check('approving a budget request raises the budget by a signed action and wakes the agent', approved.status === 200 && v.company.budget === '6.00'
     && v.board.some((b: any) => b.action === 'approve' && b.verified) && store.wakes().some((w) => w.ticket_id === t8.id && /approved/.test(w.reason)));
   check('an approval decides once', (await api('POST', `/api/companies/${cid}/approvals/${ap.id}`, { decision: 'reject' })).status === 409);
+  modes.ant = 'progress';
+  await runAll();
+  modes.ant = 'hire';
+  const t8b = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'needs a researcher', assignee: 'ant' })).body.ticket;
+  await runAll();
+  const hireAp = (await view()).approvals.find((a: any) => a.state === 'pending');
+  check('a hire request names the agent it wants', hireAp && hireAp.kind === 'hire' && hireAp.payload.name === 'cy' && hireAp.payload.role === 'researcher');
+  const hiredRes = await api('POST', `/api/companies/${cid}/approvals/${hireAp.id}`, { decision: 'approve' });
+  const cy = (await view()).agents.find((a: any) => a.name === 'cy');
+  check('approving a hire request hires that agent and tells the requester', hiredRes.status === 200 && hiredRes.body.agent?.name === 'cy' && cy && cy.role === 'researcher' && cy.budget_per_run === '0.20'
+    && store.wakes().some((w) => w.ticket_id === t8b.id && /cy is hired/.test(w.reason)));
   modes.ant = 'progress';
   await runAll();
 

@@ -405,9 +405,9 @@ export class Engine {
       for (const req of r.requests ?? []) {
         const a = this.store.createApproval({
           company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: req.kind,
-          payload: { amount: req.amount ?? null, reason: req.reason ?? '' },
+          payload: { amount: req.amount ?? null, reason: req.reason ?? '', ...(req.kind === 'hire' ? { name: req.name ?? null, role: req.role ?? null, instructions: req.instructions ?? null } : {}) },
         }, now);
-        ev('request', { approval_id: a.id, kind: req.kind, amount: req.amount ?? null, reason: req.reason ?? '' });
+        ev('request', { approval_id: a.id, kind: req.kind, amount: req.amount ?? null, reason: req.reason ?? '', ...(req.kind === 'hire' && req.name ? { name: req.name, role: req.role ?? null } : {}) });
       }
       for (const name of r.mentions ?? []) {
         const other = this.store.agentByName(company.id, name);
