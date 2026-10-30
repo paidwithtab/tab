@@ -438,12 +438,22 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       // static: the dashboard and the site assets it shares with the catalog page
       if (method === 'GET' && !path.startsWith('/api/')) {
         if (!web) { sendJson(res, 500, { error: 'ui not found: keep web/ next to dist/' }); return; }
-        if (path === '/' || path === '/app' || path === '/index.html') {
+        // tab OS at /os, the classic dashboard at /; same API, same session
+        const page = path === '/' || path === '/app' || path === '/index.html' ? 'app.html' : path === '/os' || path === '/os/' ? 'os.html' : null;
+        if (page) {
           // the page's one inline script runs under a per-response nonce; nothing else may execute
           const nonce = randomBytes(16).toString('base64url');
-          const html = readFileSync(join(web, 'app.html'), 'utf8').replace(/<script>/g, `<script nonce="${nonce}">`);
-          res.writeHead(200, { 'content-type': TYPES.html, 'cache-control': 'no-cache', 'x-frame-options': 'DENY', 'content-security-policy': `default-src 'self'; script-src 'nonce-${nonce}'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'` });
+          const html = readFileSync(join(web, page), 'utf8').replace(/<script>/g, `<script nonce="${nonce}">`);
+          res.writeHead(200, { 'content-type': TYPES.html, 'cache-control': 'no-cache', 'x-frame-options': 'DENY', 'content-security-policy': `default-src 'self'; script-src 'nonce-${nonce}'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'` });
           res.end(html);
+          return;
+        }
+        // what makes tab OS installable: its manifest and a service worker that never touches /api
+        if (path === '/os.webmanifest' || path === '/os-sw.js') {
+          const file = join(web, path.slice(1));
+          if (!existsSync(file)) { sendJson(res, 404, { error: 'not found' }); return; }
+          res.writeHead(200, { 'content-type': path.endsWith('.js') ? 'text/javascript; charset=utf-8' : 'application/manifest+json', 'cache-control': 'no-cache' });
+          res.end(readFileSync(file));
           return;
         }
         const m = /^\/([a-z0-9-]+)\.(css|png|jpg|woff2)$/.exec(path);

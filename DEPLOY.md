@@ -752,5 +752,5 @@ What to check before opening it up:
 - The default gateway (`--gateway`) is where a new company spends unless it names one; starter credits for the owner wallet come from that gateway's faucet when it has one. The public ledger gateway does, so a hosted company can run on sandbox credits before anyone funds a real wallet.
 - Sign up and log in are rate limited per client address, 20 per 15 minutes, using `cf-connecting-ip` first, so the tunnel's address does not count as one client.
 
-The surface is the JSON API under `/api/` (every route in `src/company/server.ts`, all authenticated except sign up, log in, health and templates) and the dashboard at `/`. The CLI client commands talk to the same API with a bearer token.
+The surface is the JSON API under `/api/` (every route in `src/company/server.ts`, all authenticated except sign up, log in, health and templates), the dashboard at `/`, and tab OS at `/os`, an installable workspace on the same API and session (`web/os.html`, its manifest, service worker and images). The CLI client commands talk to the same API with a bearer token.
 
