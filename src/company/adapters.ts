@@ -16,7 +16,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { usdToMicro } from '../protocol.js';
+import { normalizeUsd, usdToMicro } from '../protocol.js';
 import { saveKey, type KeyPair } from '../keys.js';
 import { saveMandate, type Mandate } from '../mandate.js';
 import { parseResult, validateResult, type AgentResult, type Packet } from './packet.js';
@@ -124,7 +124,7 @@ async function runModel(ctx: AdapterContext): Promise<AdapterOutput> {
     maxTurns: Number(cfg.max_turns) || undefined,
     system: cfg.system ? String(cfg.system) : undefined,
     packet: ctx.packet, agentKey: ctx.agentKey, mandate: ctx.mandate, catalog: ctx.catalog, currency: ctx.currency,
-    maxPerCallUsd: typeof cfg.max_per_call === 'string' ? cfg.max_per_call : undefined,
+    maxPerCallUsd: typeof cfg.max_per_call === 'string' && cfg.max_per_call ? normalizeUsd(cfg.max_per_call) : undefined,
     timeoutMs: ctx.timeoutMs, maxCostMicro: ctx.maxModelCostMicro, fetch: ctx.fetch, log: ctx.log,
   });
   const head = `[${out.model}: ${out.usage.turns} turns, ${out.usage.input} tokens in, ${out.usage.output} out${out.usage.cache_read ? `, ${out.usage.cache_read} cached` : ''}]`;
@@ -162,7 +162,7 @@ async function runStarter(ctx: AdapterContext): Promise<AdapterOutput> {
   const gateways = (ctx.packet.json.budget as { gateways?: string[] })?.gateways ?? [];
   const gw = String(ctx.agent.config.gateway ?? gateways[0] ?? '').replace(/\/$/, '');
   if (!gw) throw new Error('the starter agent has no gateway to pay at');
-  const tab = createTabTools({ agent: ctx.agentKey, mandate: ctx.mandate, currency: ctx.currency, maxPerCallUsd: typeof ctx.agent.config.max_per_call === 'string' ? ctx.agent.config.max_per_call : undefined, fetch: ctx.fetch });
+  const tab = createTabTools({ agent: ctx.agentKey, mandate: ctx.mandate, currency: ctx.currency, maxPerCallUsd: typeof ctx.agent.config.max_per_call === 'string' && ctx.agent.config.max_per_call ? normalizeUsd(ctx.agent.config.max_per_call) : undefined, fetch: ctx.fetch });
   const lines: string[] = [];
   const evidence: Array<{ kind: 'receipt' | 'url' | 'text'; value: string }> = [];
   const paid = async (url: string): Promise<Record<string, any>> => {

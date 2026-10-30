@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { newKeyPair, type KeyPair } from '../src/keys.js';
-import { usdToMicro, verifyReceipt } from '../src/protocol.js';
+import { normalizeUsd, usdToMicro, verifyReceipt } from '../src/protocol.js';
 import { Store } from '../src/store.js';
 import { createGateway, type Spec } from '../src/gateway.js';
 import { TabClient, receiptOf } from '../src/client.js';
@@ -212,6 +212,8 @@ async function main(): Promise<void> {
   const ant = await api('POST', `/api/companies/${cid}/agents`, { name: 'ant', role: 'buyer', adapter: 'http', agent_pub: A.publicKey, config: { url: STUB }, budget_per_run: '0.02' });
   check('http agent hired with its own key, no custodial secret', ant.status === 200 && ant.body.agent.custodial === false && ant.body.agent.agent_priv === undefined);
   check('http agent without a key is refused', (await api('POST', `/api/companies/${cid}/agents`, { name: 'nokey', role: 'x', adapter: 'http', config: { url: STUB } })).status === 400);
+  check('a per call cap that is not an amount is refused at hire', (await api('POST', `/api/companies/${cid}/agents`, { name: 'badcap', role: 'x', adapter: 'http', agent_pub: B.publicKey, config: { url: STUB, max_per_call: 'five cents' } })).status === 400);
+  check('amounts typed as .05 or $0.05 read as 0.05', normalizeUsd('.05') === '0.05' && normalizeUsd(' $0.05 ') === '0.05' && usdToMicro(normalizeUsd('.5')) === 500_000);
   check('duplicate agent name refused', (await api('POST', `/api/companies/${cid}/agents`, { name: 'ant', role: 'x', adapter: 'http', agent_pub: B.publicKey, config: { url: STUB } })).status === 409);
   const bee = await api('POST', `/api/companies/${cid}/agents`, { name: 'bee', role: 'helper', adapter: 'http', agent_pub: B.publicKey, config: { url: STUB }, budget_per_run: '0.05' });
   const cat = await api('POST', `/api/companies/${cid}/agents`, { name: 'cat', role: 'coder', adapter: 'claude-code', budget_per_run: '0.10' });

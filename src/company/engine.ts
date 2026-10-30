@@ -6,7 +6,7 @@
 
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { microToUsd, randomId, usdToMicro, verifyReceipt, type Receipt } from '../protocol.js';
+import { microToUsd, normalizeUsd, randomId, usdToMicro, verifyReceipt, type Receipt } from '../protocol.js';
 import { issueMandate, type Mandate } from '../mandate.js';
 import { addressFromSeed } from '../evm/secp256k1.js';
 import type { KeyPair } from '../keys.js';
@@ -35,6 +35,7 @@ const ACTIVE: ReadonlySet<string> = new Set(['open', 'in_progress']);
 const WAKEABLE: ReadonlySet<string> = new Set(['open', 'in_progress', 'review']);
 // runs on one ticket in an hour before it is blocked for the owner to look at
 const MAX_RUNS_PER_TICKET_HOUR = 12;
+const START_RETRY_MS = 60_000;
 
 export class Engine {
   private store: CompanyStore;
@@ -42,6 +43,7 @@ export class Engine {
   private timer: NodeJS.Timeout | null = null;
   private ticking = false;
   private running = new Map<string, Promise<void>>(); // agent id -> the run in flight
+  private failed = new Map<string, { error: string; at: number }>(); // agent id -> why its last run could not start, and when
   private keyNoted = new Set<string>(); // companies told once that their claude agents wait on a model key
   readonly workDir: string;
   readonly runTimeoutMs: number;
@@ -92,6 +94,9 @@ export class Engine {
         if (company.state !== 'active' || agent.state !== 'active') return false;
         if (this.running.has(agent.id) || started.has(agent.id)) return false;
         if (countRunning(company.id) >= company.concurrency) return false;
+        // a run that could not start waits a minute before the next try, not one tick
+        const f = this.failed.get(agent.id);
+        if (f && now.getTime() - f.at < START_RETRY_MS) return false;
         if (agent.adapter === 'claude' && !this.modelKeyFor(company)) {
           // the wake stays; the run starts on the first tick after the owner adds a key
           if (!this.keyNoted.has(company.id)) {
@@ -140,7 +145,13 @@ export class Engine {
 
   private launch(company: CompanyRow, agent: AgentRow, ticket: TicketRow | null, reason: string): void {
     const p = this.runOnce(company, agent, ticket, reason)
-      .then(() => undefined, (err) => this.log(`run error (${agent.name}): ${(err as Error).stack ?? err}`))
+      .then(() => { this.failed.delete(agent.id); }, (err) => {
+        const error = (err as Error).message ?? String(err);
+        this.log(`run error (${agent.name}): ${(err as Error).stack ?? err}`);
+        // tell the owner once per distinct reason, on the task it was for, instead of failing silently every tick
+        if (this.failed.get(agent.id)?.error !== error) this.store.addEvent({ company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: 'run-failed', body: { agent: agent.name, error } });
+        this.failed.set(agent.id, { error, at: Date.now() });
+      })
       .finally(() => this.running.delete(agent.id));
     this.running.set(agent.id, p);
   }
@@ -200,7 +211,7 @@ export class Engine {
         agent: agent.agent_pub,
         budgetUsd: microToUsd(ceiling),
         window: 'total',
-        maxPerCallUsd: typeof agent.config.max_per_call === 'string' ? agent.config.max_per_call : undefined,
+        maxPerCallUsd: typeof agent.config.max_per_call === 'string' && agent.config.max_per_call ? normalizeUsd(agent.config.max_per_call) : undefined,
         allow: company.realms,
         expiresInMs: this.runTimeoutMs + 60_000,
         evmOwner: addressFromSeed(new Uint8Array(Buffer.from(owner.privateKey, 'base64url'))),

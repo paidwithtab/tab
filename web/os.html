@@ -9,8 +9,8 @@
 <meta name="description" content="Run your agents and your company of agents: work, approvals, spending and receipts in one place.">
 <meta name="theme-color" content="#05080c">
 <link rel="manifest" href="/os.webmanifest">
-<link rel="icon" href="/os-icon-64.png">
-<link rel="apple-touch-icon" href="/os-icon-192.png">
+<link rel="icon" type="image/png" href="/os-favicon.png?v=__ASSET_V__">
+<link rel="apple-touch-icon" href="/os-icon-192.png?v=__ASSET_V__">
 <style>
   @font-face { font-family:"Inter"; src:url(/inter.woff2) format("woff2"); font-weight:100 900; font-display:swap; }
   @font-face { font-family:"Geist Mono"; src:url(/geist-mono.woff2) format("woff2"); font-weight:100 900; font-display:swap; }
@@ -54,7 +54,8 @@
   .mono { font-family:var(--mono); font-size:12.5px; }
   .dim { color:var(--dim); } .fg2 { color:var(--fg2); } .ok { color:var(--ok); } .bad { color:var(--bad); }
   svg.i { width:18px; height:18px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; flex:none; }
-  img.i { width:20px; height:20px; object-fit:contain; flex:none; }
+  /* the picture icons are Higgsfield line drawings used as masks, so they take the text color like the home page's glyphs */
+  .i.pic { width:20px; height:20px; display:inline-block; flex:none; background:currentColor; -webkit-mask:var(--m) center/contain no-repeat; mask:var(--m) center/contain no-repeat; }
 
   /* -- buttons and fields -- */
   .btn { display:inline-flex; align-items:center; justify-content:center; gap:7px; height:38px; padding:0 16px; border-radius:999px; border:1px solid var(--line2); background:transparent; font-weight:500; font-size:13.5px; white-space:nowrap; transition:background .2s, border-color .2s; }
@@ -124,9 +125,8 @@
   .kpi { display:flex; align-items:center; gap:16px; padding:20px; text-align:left; border:1px solid var(--line); background:var(--surface); border-radius:var(--r); box-shadow:var(--shadow); }
   .kpi:hover { border-color:var(--line2); }
   .kpi .ic { width:46px; height:46px; border-radius:12px; display:grid; place-items:center; flex:none; }
-  .kpi .ic .i { width:30px; height:30px; }
-  .wip .ic .i { width:28px; height:28px; }
-  nav.apps img.i { width:22px; height:22px; opacity:.9; } nav.apps button:hover img.i, nav.apps button[aria-current="page"] img.i { opacity:1; }
+  .kpi .ic .i { width:24px; height:24px; }
+  .wip .ic .i { width:22px; height:22px; }
   .kpi .t { flex:1; min-width:0; }
   .kpi .lbl { font:500 10.5px var(--mono); letter-spacing:.18em; text-transform:uppercase; color:var(--fg2); margin-bottom:4px; }
   .kpi .val { font-size:26px; font-weight:500; letter-spacing:-.02em; display:flex; align-items:baseline; gap:2px 10px; flex-wrap:wrap; }
@@ -352,7 +352,7 @@
   const clock = (iso) => new Date(iso).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
   const today = (iso) => new Date(iso).toDateString() === new Date().toDateString();
   const hash = (s) => { let h = 7; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; };
-  const avatar = (a) => `/os-agent-${a && S.avIdx && S.avIdx.has(a.id) ? S.avIdx.get(a.id) % 8 : hash(a ? a.name : 'owner') % 8}.png`;
+  const avatar = (a) => `/os-agent-${a && S.avIdx && S.avIdx.has(a.id) ? S.avIdx.get(a.id) % 8 : hash(a ? a.name : 'owner') % 8}.png?v=${AV}`;
   const I = {
     home: '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-6h4v6"/>',
     agents: '<circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6"/><path d="M16 4.6a3.2 3.2 0 0 1 0 6.3M18 14.3c1.8.8 3 2.6 3 4.7"/>',
@@ -373,8 +373,9 @@
     bolt: '<path d="M13 3 5 14h6l-1 7 8-11h-6z"/>', shield: '<path d="M12 3 4.5 6v6c0 4.5 3.2 7.8 7.5 9 4.3-1.2 7.5-4.5 7.5-9V6z"/><path d="m9 12 2 2 4-4"/>', globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/>',
   };
   // the picture icons are Higgsfield renders (web/os-ic-*.png); small controls keep the stroke glyphs
+  const AV = '__ASSET_V__'; // the server fills in a hash of the image files, so a changed icon is a new address
   const PIC = { home: 'home', agents: 'agents', tasks: 'tasks', check: 'tasks', inbox: 'inbox', wallet: 'wallet', receipts: 'receipts', plug: 'plug', settings: 'settings', card: 'card', alert: 'alert', doc: 'doc', search: 'search', key: 'key', building: 'building' };
-  const ic = (n, cls = '') => PIC[n] ? `<img class="i pic ${cls}" src="/os-ic-${PIC[n]}.png" alt="" aria-hidden="true">` : `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${I[n] || ''}</svg>`;
+  const ic = (n, cls = '') => PIC[n] ? `<span class="i pic ${cls}" style="--m:url(/os-ic-${PIC[n]}.png?v=${AV})" aria-hidden="true"></span>` : `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${I[n] || ''}</svg>`;
 
   const APPS = [
     { id: 'overview', name: 'Overview', icon: 'home' },
@@ -663,7 +664,7 @@
       <div class="board">${cols.map((s) => { const ts = by(s); return `<div class="col"><h3>${TSTATE[s]}<span class="dim">${ts.length}</span></h3>${ts.slice(0, 40).map((t) => { const a = d.byId.get(t.assignee_id); return `<button class="tcard" data-ticket="${esc(t.id)}"><span class="tt">${esc(t.title)}</span><span class="meta">${a ? `<img src="${a.img}" alt="">${esc(a.name)}` : 'Unassigned'}<span class="sp">${money(t.spent)}</span></span></button>`; }).join('') || '<div class="dim" style="font-size:12.5px;padding:4px">Nothing here.</div>'}</div>`; }).join('')}</div>`;
   };
 
-  const EVI = { comment: 'inbox', run: 'bolt', 'run-started': 'bolt', state: 'tasks', hire: 'agents', retire: 'agents', ticket: 'doc', request: 'alert', approval: 'check', 'budget-warning': 'alert', paused: 'pause', resumed: 'play', fund: 'wallet', 'model-key': 'key', 'key-exported': 'key', publish: 'globe', 'needs-model-key': 'key', 'late-spend': 'alert' };
+  const EVI = { comment: 'inbox', run: 'bolt', 'run-started': 'bolt', state: 'tasks', hire: 'agents', retire: 'agents', ticket: 'doc', request: 'alert', 'run-failed': 'alert', approval: 'check', 'budget-warning': 'alert', paused: 'pause', resumed: 'play', fund: 'wallet', 'model-key': 'key', 'key-exported': 'key', publish: 'globe', 'needs-model-key': 'key', 'late-spend': 'alert' };
   function evText(e, d) {
     const who = e.agent_id ? (d.byId.get(e.agent_id)?.name || 'an agent') : 'You';
     const b = e.body || {}; const t = e.ticket_id && d.ticket(e.ticket_id);
@@ -677,7 +678,7 @@
       request: `${esc(who)} asked for ${b.amount ? money(b.amount) : esc(b.kind)}: <span class="s">${esc(b.reason || '')}</span>`,
       'budget-warning': 'The company passed 80 percent of its budget',
       paused: `The company paused <span class="s">${esc(b.reason || '')}</span>`, resumed: 'The company resumed',
-      hire: `Hired <b>${esc(b.name || '')}</b>`, 'needs-model-key': `${esc(who)} is waiting for a model key`, 'late-spend': `${esc(who)} spent after its run ended <span class="s">${esc(b.spent || '')}</span>`, approval: `${esc(b.decision === 'reject' ? 'Rejected' : 'Approved')} a request`, fund: 'Claimed starter credits', 'model-key': b.removed ? 'Removed the model key' : 'Set the model key', 'key-exported': 'The owner key was exported',
+      hire: `Hired <b>${esc(b.name || '')}</b>`, 'needs-model-key': `${esc(who)} is waiting for a model key`, 'run-failed': `${esc(who)} could not start <span class="s">${esc(b.error || '')}</span>`, 'late-spend': `${esc(who)} spent after its run ended <span class="s">${esc(b.spent || '')}</span>`, approval: `${esc(b.decision === 'reject' ? 'Rejected' : 'Approved')} a request`, fund: 'Claimed starter credits', 'model-key': b.removed ? 'Removed the model key' : 'Set the model key', 'key-exported': 'The owner key was exported',
     }[e.kind] || `${esc(who)}: ${esc(e.kind)}`;
     return text;
   }
@@ -985,7 +986,12 @@
   });
   window.addEventListener('hashchange', () => { closeOverlay(); render(); window.scrollTo(0, 0); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); S.install = e; if (S.view) { $('main').dataset.h = ''; render(); } });
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/os-sw.js', { scope: '/' }).catch(() => {});
+  if ('serviceWorker' in navigator) {
+    // when a new worker takes over (a deploy changed the shell), reload once so the page and its images match
+    const had = !!navigator.serviceWorker.controller; let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => { if (had && !reloaded) { reloaded = true; location.reload(); } });
+    navigator.serviceWorker.register('/os-sw.js', { scope: '/' }).catch(() => {});
+  }
 
   boot();
 })();

@@ -107,7 +107,7 @@ export async function runModelAgent(o: ModelRunOptions): Promise<ModelRunOutput>
   const system = [
     'You are an agent employed by a company that runs on tab, a payment layer for agents. You work one ticket per run.',
     tab
-      ? 'You pay for information and services with the tab tools: tab_search finds priced routes in the catalog, tab_fetch pays for one call under your mandate and returns a receipt, tab_limits shows what this run may spend. You have no other tools: no files, no shell, no browser. Everything you learn comes from paid calls or the packet itself.'
+      ? 'You pay for information and services with the tab tools: tab_search finds priced routes in the catalog, tab_fetch pays for one call under your mandate and returns a receipt, tab_limits shows what this run may spend. You have no other tools: no files, no shell, no browser. Everything you learn comes from paid calls or the packet itself. When no route serves the topic directly (a store, a company, a market), search the catalog for "web search": a paid web search covers the open web, and its results are evidence like any other call.'
       : 'This run has no mandate, so you cannot pay for anything; work from the packet alone.',
     'Spend only what the ticket needs. A cheaper route that does the job is the right route. Never pay the same call twice.',
     `When you are finished, blocked, or out of useful moves, call finish exactly once. Its arguments are your report: ${JSON.stringify(CONTRACT)}. Do not write the report as prose instead of calling finish.`,

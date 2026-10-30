@@ -43,6 +43,11 @@ export function usdToMicro(usd: string): number {
   return micro;
 }
 
+/** An amount the way people type it (".05", "$0.05", " 0.05") in the form usdToMicro reads; anything else is left for it to reject. */
+export function normalizeUsd(usd: string): string {
+  return String(usd).trim().replace(/^\$\s*/, '').replace(/^\./, '0.');
+}
+
 /** Currency codes a gateway may charge in: USD (the default) or a token symbol, 2 to 10 upper-case letters or digits. */
 export function isCurrency(code: unknown): code is string {
   return typeof code === 'string' && /^[A-Z0-9]{2,10}$/.test(code);

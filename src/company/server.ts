@@ -6,11 +6,11 @@
 // action with the company owner key (or verifies one signed offline).
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
+import { randomBytes, createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { microToUsd, usdToMicro, isCurrency, type Receipt } from '../protocol.js';
+import { microToUsd, usdToMicro, normalizeUsd, isCurrency, type Receipt } from '../protocol.js';
 import { newKeyPair } from '../keys.js';
 import { addressFromSeed } from '../evm/secp256k1.js';
 import { originIsPublic } from '../catalog.js';
@@ -105,6 +105,16 @@ function cookies(req: IncomingMessage): Record<string, string> {
 
 function isLoopbackHost(hostname: string): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]' || hostname === '::1' || hostname.endsWith('.localhost');
+}
+
+// tab OS asks for its images as /os-ic-home.png?v=<this>: a hash over every os-* image's size and time, so a
+// changed icon gets a new address and no browser, worker or edge cache can keep handing out the old one
+let assetMemo = { key: '', v: '' };
+function assetVersion(web: string): string {
+  const files = readdirSync(web).filter((f) => f.startsWith('os-') && /\.(png|jpg)$/.test(f)).sort();
+  const key = files.map((f) => { const st = statSync(join(web, f)); return `${f}:${st.size}:${st.mtimeMs}`; }).join('|');
+  if (key !== assetMemo.key) assetMemo = { key, v: createHash('sha256').update(key).digest('hex').slice(0, 10) };
+  return assetMemo.v;
 }
 
 function findWeb(): string | null {
@@ -212,7 +222,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
     if (!name) throw new HttpError(400, 'name is required');
     if (store.companiesOf(user.id).length >= 20) throw new HttpError(429, 'at most 20 companies per account');
     let budget: number;
-    try { budget = usdToMicro(str(body.budget, 20) || '5.00'); } catch { throw new HttpError(400, 'budget must be an amount like 25.00'); }
+    try { budget = usdToMicro(normalizeUsd(str(body.budget, 20) || '5.00')); } catch { throw new HttpError(400, 'budget must be an amount like 25.00'); }
     const gateways = (Array.isArray(body.gateways) ? body.gateways.map((g) => str(g, 300).replace(/\/$/, '')) : [opts.defaultGateway ?? '']).filter(Boolean).slice(0, 10);
     const { realms, currency: discovered } = await checkGateways(gateways);
     const currency = str(body.currency, 10) || discovered;
@@ -312,6 +322,11 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         const adapter = (ADAPTERS as readonly string[]).includes(String(p.adapter)) && adapters.has(p.adapter as AdapterName) ? (p.adapter as AdapterName) : null;
         if (!adapter) throw new HttpError(400, `adapter must be one of ${[...adapters].join(', ')}`);
         const config = (p.config && typeof p.config === 'object' && !Array.isArray(p.config) ? p.config : {}) as Record<string, unknown>;
+        // the per call cap goes into every mandate the agent gets, so it is checked here and kept in canonical form
+        if (config.max_per_call === undefined || config.max_per_call === null || config.max_per_call === '') delete config.max_per_call;
+        else {
+          try { config.max_per_call = microToUsd(usdToMicro(normalizeUsd(str(config.max_per_call, 20)))); } catch { throw new HttpError(400, 'per call must be an amount like 0.05'); }
+        }
         let agent_pub: string;
         let agent_priv: string | null = null;
         if (adapter === 'http') {
@@ -327,7 +342,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
           agent_priv = pair.privateKey;
         }
         let budget_per_run: number;
-        try { budget_per_run = usdToMicro(str(p.budget_per_run, 20) || '0.50'); } catch { throw new HttpError(400, 'budget_per_run must be an amount like 0.50'); }
+        try { budget_per_run = usdToMicro(normalizeUsd(str(p.budget_per_run, 20) || '0.50')); } catch { throw new HttpError(400, 'budget_per_run must be an amount like 0.50'); }
         const heartbeat_s = Math.max(0, Math.min(86_400 * 7, Number(p.heartbeat_s ?? 0) || 0));
         const agent = store.createAgent({
           company_id: c.id, name, role: str(p.role, 200) || 'agent', instructions: str(p.instructions, 20_000), adapter, config,
@@ -345,7 +360,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       }
       case 'budget': {
         let budget: number;
-        try { budget = usdToMicro(str(p.budget, 20)); } catch { throw new HttpError(400, 'budget must be an amount like 25.00'); }
+        try { budget = usdToMicro(normalizeUsd(str(p.budget, 20))); } catch { throw new HttpError(400, 'budget must be an amount like 25.00'); }
         store.updateCompany(c.id, { budget, warned: false });
         ev('budget', { from: microToUsd(c.budget), to: microToUsd(budget) });
         return { ok: true };
@@ -447,7 +462,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         if (page) {
           // the page's one inline script runs under a per-response nonce; nothing else may execute
           const nonce = randomBytes(16).toString('base64url');
-          const html = readFileSync(join(web, page), 'utf8').replace(/<script>/g, `<script nonce="${nonce}">`);
+          const html = readFileSync(join(web, page), 'utf8').replace(/<script>/g, `<script nonce="${nonce}">`).replaceAll('__ASSET_V__', assetVersion(web));
           res.writeHead(200, { 'content-type': TYPES.html, 'cache-control': 'no-cache', 'x-frame-options': 'DENY', 'content-security-policy': `default-src 'self'; script-src 'nonce-${nonce}'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'` });
           res.end(html);
           return;
@@ -699,7 +714,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         const assignee = assigneeName ? store.agentByName(c.id, assigneeName) ?? store.agent(assigneeName) : undefined;
         if (assigneeName && (!assignee || assignee.company_id !== c.id)) throw new HttpError(404, `no agent named ${assigneeName}`);
         let tb: number | null = null;
-        if (body.budget) { try { tb = usdToMicro(str(body.budget, 20)); } catch { throw new HttpError(400, 'budget must be an amount like 0.50'); } }
+        if (body.budget) { try { tb = usdToMicro(normalizeUsd(str(body.budget, 20))); } catch { throw new HttpError(400, 'budget must be an amount like 0.50'); } }
         const t = store.createTicket({ company_id: c.id, title, body: str(body.body, 20_000), state: 'open', assignee_id: assignee?.id ?? null, created_by: 'owner', parent_id: null, budget: tb });
         store.addEvent({ company_id: c.id, ticket_id: t.id, agent_id: null, kind: 'ticket', body: { ticket_id: t.id, title, assignee: assignee?.name ?? null } });
         if (assignee) store.wake(assignee.id, t.id, 'assigned by owner');
