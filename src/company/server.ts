@@ -111,7 +111,7 @@ function findWeb(): string | null {
   const here = dirname(fileURLToPath(import.meta.url));
   for (const rel of ['../../web', '../../../web']) {
     const p = join(here, rel);
-    if (existsSync(join(p, 'app.html'))) return p;
+    if (existsSync(join(p, 'os.html'))) return p;
   }
   return null;
 }
@@ -441,8 +441,9 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       // static: the dashboard and the site assets it shares with the catalog page
       if (method === 'GET' && !path.startsWith('/api/')) {
         if (!web) { sendJson(res, 500, { error: 'ui not found: keep web/ next to dist/' }); return; }
-        // tab OS at /os, the classic dashboard at /; same API, same session
-        const page = path === '/' || path === '/app' || path === '/index.html' ? 'app.html' : path === '/os' || path === '/os/' ? 'os.html' : null;
+        // tab OS is the app; the addresses it and the old dashboard used to live at lead to it, the hash kept by the browser
+        if (path === '/os' || path === '/os/' || path === '/app' || path === '/app.html') { res.writeHead(301, { location: '/' }); res.end(); return; }
+        const page = path === '/' || path === '/index.html' ? 'os.html' : null;
         if (page) {
           // the page's one inline script runs under a per-response nonce; nothing else may execute
           const nonce = randomBytes(16).toString('base64url');

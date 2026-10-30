@@ -269,7 +269,7 @@ export function createCatalog(opts: CatalogOptions): Server {
         return;
       }
 
-      // the dashboard is its own origin; the site only points at it (the shell in web/app.html has no API here)
+      // the dashboard is its own origin; the site only points at it (tab OS in web/os.html needs the company API, which only that origin has)
       if (method === 'GET' && (path === '/app' || path === '/app.html')) {
         res.writeHead(302, { location: APP_URL });
         res.end();

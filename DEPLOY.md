@@ -116,7 +116,7 @@ npm test                    # 81 passed, 0 failed on the dev box
 npm run test:adversarial    # 48 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
 npm run test:evm            # 59 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
 npm run test:company        # 101 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, signed board log, sealed model keys, the claude adapter against a fake Messages API
-npm run test:dashboard      # 28 passed, 0 failed: the dashboard in headless Chromium end to end (npx playwright install chromium first); --live also loads the public site and app
+npm run test:dashboard      # 26 passed, 0 failed: tab OS in headless Chromium end to end (npx playwright install chromium first); --live also loads the public site and app
 ```
 
 These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes two read-only calls to the public Robinhood testnet RPC and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
@@ -752,5 +752,5 @@ What to check before opening it up:
 - The default gateway (`--gateway`) is where a new company spends unless it names one; starter credits for the owner wallet come from that gateway's faucet when it has one. The public ledger gateway does, so a hosted company can run on sandbox credits before anyone funds a real wallet.
 - Sign up and log in are rate limited per client address, 20 per 15 minutes, using `cf-connecting-ip` first, so the tunnel's address does not count as one client.
 
-The surface is the JSON API under `/api/` (every route in `src/company/server.ts`, all authenticated except sign up, log in, health and templates), the dashboard at `/`, and tab OS at `/os`, an installable workspace on the same API and session (`web/os.html`, its manifest, service worker and images). The CLI client commands talk to the same API with a bearer token.
+The surface is the JSON API under `/api/` (every route in `src/company/server.ts`, all authenticated except sign up, log in, health and templates), and tab OS at `/`, the installable workspace in `web/os.html` with its manifest, service worker and images (`/os` and the old `/app` redirect there). The CLI client commands talk to the same API with a bearer token.
 

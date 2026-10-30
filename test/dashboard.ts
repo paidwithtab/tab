@@ -1,9 +1,9 @@
-// The dashboard in a real browser. Starts a gateway with starter credits, a
-// fake Messages API and a company server in process, then drives web/app.html
-// with Playwright: sign up, start the quickstart and watch the starter agent pay
-// and answer, found a company from the research template, add a
-// model key, claim credits, watch the first ticket run to done, read the
-// evidence and the run log, log out. Any console error or page error fails.
+// tab OS in a real browser. Starts a gateway with starter credits, a fake
+// Messages API and a company server in process, then drives web/os.html with
+// Playwright: sign up, start the quickstart and watch the starter agent pay and
+// answer, found a company from the research template, add a model key, claim
+// credits, watch the first ticket run to done, read the evidence and the run
+// log, sign out. Any console error or page error fails.
 //   npm run test:dashboard          (needs: npx playwright install chromium, once)
 //   npm run test:dashboard -- --live   also loads the public site and app read-only
 // The browser is the one Playwright installed, or $CHROME.
@@ -108,103 +108,118 @@ async function main(): Promise<void> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
   const w = watch(page);
-  const visible = (id: string) => page.locator(`#${id}:not([hidden])`);
+  const text = async (sel: string) => (await page.locator(sel).first().textContent()) ?? '';
+  const open = async (app: string) => { await page.evaluate((a) => { (globalThis as any).location.hash = `#/${a}`; }, app); await page.locator(`main[data-app="${app}"]`).waitFor(); };
+  const run = async () => { await engine.tick(); await engine.drain(); };
+  const doneCol = '.board .col:nth-child(5)';
 
   try {
     // -- sign up ----------------------------------------------------------------------
     await page.goto(APP + '/');
-    await visible('v-auth').waitFor();
-    check('the auth view shows first', await page.locator('#a-signup').isVisible());
+    await page.locator('#a-signup').waitFor();
+    check('the sign in view shows first', await page.locator('#a-login').isVisible() && await page.locator('#shell').isHidden());
     await page.fill('#a-email', 'owner@example.com');
     await page.fill('#a-pass', 'correct horse battery');
     await page.click('#a-signup');
-    await visible('v-list').waitFor();
-    check('sign up lands on the company list, signed in', (await page.locator('#who').textContent()) === 'owner@example.com' && /No companies yet/.test(await page.locator('#companies').textContent() ?? ''));
+    await page.locator('#qs-topic').waitFor();
+    check('sign up lands on the first company setup', /Set up your first company/.test(await text('#gate h1')) && await page.locator('#n-out').isVisible());
 
     // -- the quickstart: a starter agent pays and answers, no key --------------------------
-    check('a new account is offered the quickstart', await page.locator('#qs').isVisible() && (await page.locator('#n-head').textContent()) === 'Or build your own');
     await page.fill('#qs-topic', 'Lisbon');
     await page.click('#qs-go');
-    await visible('v-company').waitFor();
-    await visible('gs').waitFor();
-    check('the getting started list shows the company founded and the credits claimed', (await page.locator('#gs-steps li.done').count()) >= 2 && /1\.00 USD of free credits/.test(await page.locator('#gs-steps').textContent() ?? ''));
-    await engine.tick();
-    await engine.drain();
-    await page.locator('#gs-answer .answer').waitFor({ timeout: 15_000 });
-    check('the starter answer appears with its two verified receipts', /Lisbon is the capital of Portugal/.test(await page.locator('#gs-answer').textContent() ?? '')
-      && (await page.locator('#gs-answer a.ok').count()) === 2 && /2 receipts, each signed/.test(await page.locator('#gs-steps').textContent() ?? ''));
-    check('the next step points at the model key', await page.locator('#gs-key').isVisible());
-    await page.fill('#gs-topic', 'Lisbon tram 28');
-    await page.click('#gs-again');
-    await page.locator('#tickets tr.click').filter({ hasText: 'Lisbon tram 28' }).waitFor();
-    await engine.tick();
-    await engine.drain();
-    await page.locator('#tickets tr.click').filter({ hasText: 'Lisbon tram 28' }).filter({ hasText: 'done' }).waitFor({ timeout: 15_000 });
+    await page.locator('main[data-app="overview"]').waitFor();
+    check('the quickstart opens the overview with the first run card', /Your first run/.test(await text('main')) && /owner@example\.com/.test(await text('#me')));
+    await run();
+    await page.locator('main .answer').waitFor({ timeout: 15_000 });
+    check('the starter answer appears with its two verified receipts', /Lisbon is the capital of Portugal/.test(await text('main .answer')) && (await page.locator('main .answer a.ok').count()) === 2);
+    await page.fill('#fr-topic', 'Lisbon tram 28');
+    await page.click('[data-act="fr-again"]');
+    await page.locator('main .wip').filter({ hasText: 'Lisbon tram 28' }).waitFor();
+    await run();
+    await open('tasks');
+    await page.locator(`${doneCol} .tcard`).filter({ hasText: 'Lisbon tram 28' }).waitFor({ timeout: 15_000 });
     check('asking again opens a starter ticket that runs to done', true);
-    await page.click('#gs-hide');
-    check('the guide can be hidden', !(await page.locator('#gs').isVisible()));
-    await page.click('#c-back');
-    await visible('v-list').waitFor();
-    check('with a company, the quickstart card steps aside', !(await page.locator('#qs').isVisible()) && (await page.locator('#n-head').textContent()) === 'New company');
+    await open('overview');
+    await page.click('[data-act="hide-fr"]');
+    check('the first run card can be hidden', !/Your first run/.test(await text('main')));
 
-    // -- found from the research template ---------------------------------------------
-    const templates = await page.locator('#n-template option').count();
-    check('templates are offered', templates >= 3);
+    // -- a second company, from the research template ---------------------------------------------
+    await page.click('[data-act="switch"]');
+    await page.click('#switcher [data-act="new-company"]');
+    await page.locator('#n-template').waitFor();
+    check('the switcher starts a new company, with a way back', /New company/.test(await text('#gate h1')) && await page.locator('#n-cancel').isVisible());
+    check('templates are offered', (await page.locator('#n-template option').count()) >= 3);
     await page.selectOption('#n-template', '0');
     check('choosing a template fills the form', /Field Notes/.test(await page.inputValue('#n-name')) && (await page.inputValue('#n-mission')).length > 20);
     await page.fill('#n-gateway', GW);
     await page.click('#n-go');
-    await visible('v-company').waitFor();
-    check('the company view opens with the template agents and ticket', /Field Notes/.test(await page.locator('#c-name').textContent() ?? '')
-      && (await page.locator('#agents tr').count()) === 3 && (await page.locator('#tickets tr.click').count()) === 1);
-    check('the hosted server offers claude, http and starter adapters', (await page.locator('#h-adapter option').allTextContents()).join('|') === "claude (Claude, on the company's API key)|http (your endpoint)|starter (Wikipedia lookups, no model key)");
-    check('claude agents are shown waiting for a model key', /waiting for a model key/.test(await page.locator('#mk-status').textContent() ?? ''));
+    await page.locator('#switcher .nm').filter({ hasText: 'Field Notes' }).waitFor();
+    await page.locator('main[data-app="overview"]').waitFor();
+    check('the company opens with the template agents and ticket', (await page.locator('main table.t tr.click').count()) === 2 && (await page.locator('main .wip').count()) === 1);
+    check('claude agents are shown waiting for a model key', /waiting for a model key/.test(await text('main')));
+    await page.click('.top [data-act="new-agent"]');
+    check('the hosted server offers claude, http and starter adapters', (await page.locator('#h-adapter option').allTextContents()).join('|') === 'Claude (on the company model key)|Your own endpoint (http)|Starter (Wikipedia lookups, no model key)');
+    await page.click('#mform [data-act="close"]');
 
     // -- model key and starter credits ----------------------------------------------
-    await page.fill('#mk-key', 'hunter2');
-    await page.click('#mk-save');
-    await page.locator('#mk-err').filter({ hasText: /does not look like/ }).waitFor();
+    await open('integrations');
+    await page.click('main [data-act="model-key"]');
+    await page.fill('#k-val', 'hunter2');
+    await page.click('#msub');
+    await page.locator('#merr').filter({ hasText: /does not look like/ }).waitFor();
     check('a bad key is explained inline', true);
-    await page.fill('#mk-key', GOOD_KEY);
-    await page.click('#mk-save');
-    await page.locator('#mk-status').filter({ hasText: /ending in/ }).waitFor();
-    check('a good key is accepted and shown by its hint only', /ending in/.test(await page.locator('#mk-status').textContent() ?? '') && (await page.inputValue('#mk-key')) === ''
-      && !(await page.content()).includes(GOOD_KEY) && await page.locator('#mk-remove').isVisible());
-    await page.click('#c-fund');
-    await page.locator('#c-balance').filter({ hasText: /1\.00/ }).waitFor();
-    check('starter credits land in the owner wallet', /1\.00/.test(await page.locator('#c-balance').textContent() ?? ''));
+    await page.fill('#k-val', GOOD_KEY);
+    await page.click('#msub');
+    await page.locator('main').filter({ hasText: /ending in/ }).waitFor();
+    check('a good key is accepted and shown by its hint only', !(await page.content()).includes(GOOD_KEY) && await page.locator('main [data-act="model-key-rm"]').isVisible());
+    await open('wallet');
+    await page.click('main [data-act="fund"]');
+    await page.locator('main .wal .amt').filter({ hasText: /1\.00/ }).waitFor();
+    check('starter credits land in the owner wallet', true);
 
     // -- the first run ----------------------------------------------------------------
-    await engine.tick();
-    await engine.drain();
-    await page.locator('#tickets .pill.done').first().waitFor({ timeout: 15_000 });
-    check('the ticket goes to done on the dashboard', (await page.locator('#tickets .pill.done').count()) === 1);
-    check('the run shows its tab spend and model cost', /0\.01/.test(await page.locator('#runs').textContent() ?? '') && /0\.009/.test(await page.locator('#runs').textContent() ?? ''));
-    check('the budget bar moved', /0\.019/.test(await page.locator('#c-spent').textContent() ?? ''));
-    await page.locator('#tickets tr.click').first().click();
-    await visible('ticket-panel').waitFor();
-    await page.locator('#tp-evidence').filter({ hasText: /receipt/ }).waitFor();
-    check('the ticket panel shows the receipt as evidence and the agent comment', /receipt/.test(await page.locator('#tp-evidence').textContent() ?? '') && /the quote was: stub/.test(await page.locator('#tp-thread').textContent() ?? ''));
-    await page.locator('#runs tr.click').first().click();
-    await visible('run-out').waitFor();
-    check('the run log names the model and the tool calls', /claude-sonnet-5-5: 3 turns/.test(await page.locator('#run-out').textContent() ?? '') && /\[tab_fetch/.test(await page.locator('#run-out').textContent() ?? ''));
-    check('the board log verifies every action', (await page.locator('#board td.ok').count()) >= 2 && (await page.locator('#board td.bad').count()) === 0);
-    check('receipts list the payment', /quotes\.local/.test(await page.locator('#receipts').textContent() ?? ''));
+    await run();
+    await open('tasks');
+    await page.locator(`${doneCol} .tcard`).first().waitFor({ timeout: 15_000 });
+    check('the ticket goes to done', (await page.locator(`${doneCol} .tcard`).count()) === 1);
+    await open('wallet');
+    await page.locator('main').filter({ hasText: /0\.019/ }).waitFor();
+    const wallet = await text('main');
+    check('the wallet shows the tab spend, the model cost and the total', /0\.01/.test(wallet) && /0\.009/.test(wallet) && /0\.019/.test(wallet));
+    await open('tasks');
+    await page.locator(`${doneCol} .tcard`).first().click();
+    await page.locator('#td-thread').filter({ hasText: /the quote was: stub/ }).waitFor();
+    check('the task drawer shows the receipt as evidence and the agent comment', /receipt/.test(await text('.drawer')));
+    await page.click('.drawer [data-act="close"]');
+    await open('agents');
+    await page.locator('main .acard').filter({ hasText: 'scout' }).click();
+    await page.locator('.drawer tr[data-run]').first().click();
+    await page.locator('#ad-run').filter({ hasText: /claude-sonnet-5-5: 3 turns/ }).waitFor();
+    check('the run log names the model and the tool calls', /\[tab_fetch/.test(await text('#ad-run')));
+    await page.click('.drawer [data-act="close"]');
+    await open('integrations');
+    check('the board log verifies every action', (await page.locator('main td.ok').count()) >= 2 && (await page.locator('main td.bad').count()) === 0);
+    await open('receipts');
+    check('receipts list the payment', /quotes\.local/.test(await text('main')));
 
-    // -- a ticket and a comment from the dashboard -----------------------------------------
+    // -- a task from tab OS ---------------------------------------------------------------
+    await open('tasks');
+    await page.click('main [data-act="new-task"]');
     await page.fill('#t-title', 'second brief');
-    await page.selectOption('#t-assignee', 'scout');
-    await page.click('#t-go');
-    await page.locator('#tickets tr.click').filter({ hasText: 'second brief' }).waitFor();
-    await engine.tick();
-    await engine.drain();
-    await page.locator('#tickets tr.click').filter({ hasText: 'second brief' }).filter({ hasText: 'done' }).waitFor({ timeout: 15_000 });
-    check('a ticket opened on the dashboard runs to done', true);
+    await page.selectOption('#t-as', 'scout');
+    await page.click('#msub');
+    await page.locator('.board .tcard').filter({ hasText: 'second brief' }).waitFor();
+    await run();
+    await page.locator(`${doneCol} .tcard`).filter({ hasText: 'second brief' }).waitFor({ timeout: 15_000 });
+    check('a task opened in tab OS runs to done', true);
 
-    // -- log out ----------------------------------------------------------------------------
-    await page.click('#logout');
-    await visible('v-auth').waitFor();
-    check('log out returns to the auth view', await page.locator('#a-login').isVisible());
+    // -- the old addresses and sign out --------------------------------------------------
+    const old = await fetch(APP + '/os', { redirect: 'manual' });
+    check('the old /os address leads to tab OS at /', old.status === 301 && old.headers.get('location') === '/');
+    await page.click('#me');
+    await page.click('.side [data-act="logout"]');
+    await page.locator('#a-login').waitFor();
+    check('sign out returns to the sign in view', await page.locator('#shell').isHidden());
     check('no console or page errors during the session', w.errors.length === 0, w.errors);
     check('no asset failed to load', w.failed.length === 0, w.failed);
 
@@ -221,9 +236,8 @@ async function main(): Promise<void> {
       const p = await context.newPage();
       const lw = watch(p);
       const r = await p.goto(LIVE_APP + '/', { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      await p.locator('#v-auth:not([hidden])').waitFor({ timeout: 10_000 });
-      await p.locator('#n-template option').nth(2).waitFor({ state: 'attached', timeout: 10_000 }); // templates arrive after the auth check
-      check('the live app serves the auth view with templates and no errors', !!r && r.status() === 200 && lw.errors.length === 0 && lw.failed.length === 0, { errors: lw.errors, failed: lw.failed });
+      await p.locator('#a-login').waitFor({ timeout: 10_000 });
+      check('the live app serves the sign in view with no errors', !!r && r.status() === 200 && lw.errors.length === 0 && lw.failed.length === 0, { errors: lw.errors, failed: lw.failed });
       await p.close();
     }
   } finally {

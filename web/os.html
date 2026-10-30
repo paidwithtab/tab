@@ -1,6 +1,6 @@
 <!doctype html>
 <!-- tab OS: a workspace for running agents and companies of agents. One page, no build step,
-     no external scripts; it talks to the same /api as the classic dashboard at / -->
+     no external scripts; served at / by the company server and talks to its /api -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -338,7 +338,8 @@
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const ls = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
   const num = (s) => Number(s) || 0;
-  const money = (v) => { const n = num(v); const a = Math.abs(n); return `${n < 0 ? '-' : ''}$${a > 0 && a < 0.01 ? a.toFixed(4).replace(/0+$/, '') : a.toFixed(2)}`; };
+  // cents, plus the sub-cent digits a micropayment needs: $1.50, $0.019, $0.0005
+  const money = (v) => { const n = num(v); const a = Math.abs(n); return `${n < 0 ? '-' : ''}$${a.toFixed(6).replace(/0+$/, '').replace(/\.(\d?)$/, (m, d) => `.${d.padEnd(2, '0')}`)}`; };
   const ago = (iso) => {
     const s = (Date.now() - new Date(iso).getTime()) / 1000;
     if (!isFinite(s)) return '';
@@ -463,6 +464,8 @@
       <label class="f" for="n-name">Name</label><input id="n-name" maxlength="80" placeholder="Acme Studio">
       <label class="f" for="n-mission">Mission</label><textarea id="n-mission" placeholder="What the company is for. Every agent reads this."></textarea>
       <label class="f" for="n-budget">Budget (the most it can ever spend)</label><input id="n-budget" placeholder="5.00" inputmode="decimal">
+      <label class="f" for="n-gateway">Spends at</label><input id="n-gateway" placeholder="${esc(S.config.default_gateway || 'https://pay.paidwithtab.com')}" spellcheck="false">
+      <p class="hint">The gateway that takes its payments. Leave it empty for ${esc((S.config.default_gateway || '').replace(/^https:\/\//, '') || 'the default')}; a Robinhood Chain gateway such as https://mainnet.paidwithtab.com pays in USDG.</p>
       <div class="row2"><button class="btn primary" id="n-go">Create company</button>${S.companies.length ? '<button class="btn" id="n-cancel">Cancel</button>' : '<button class="btn" id="n-out">Sign out</button>'}</div>
       <div class="err" id="n-err"></div></div>`;
     const open = async (id) => { S.cid = id; ls.set('tab-os-company', id); await start(); };
@@ -473,7 +476,8 @@
     $('n-template').onchange = () => { const t = S.templates[$('n-template').value]; if (t) { $('n-name').value = t.name || ''; $('n-mission').value = t.mission || ''; $('n-budget').value = t.budget || '5.00'; } };
     $('n-go').onclick = () => busy($('n-go'), async () => {
       const t = S.templates[$('n-template').value] || {};
-      const out = await api('/api/companies', { ...t, name: $('n-name').value.trim(), mission: $('n-mission').value, budget: $('n-budget').value.trim() || '5.00' });
+      const gw = $('n-gateway').value.trim().replace(/\/$/, '');
+      const out = await api('/api/companies', { ...t, name: $('n-name').value.trim(), mission: $('n-mission').value, budget: $('n-budget').value.trim() || '5.00', ...(gw ? { gateways: [gw] } : {}) });
       await open(out.company.id);
     }, $('n-err'));
     if ($('n-cancel')) $('n-cancel').onclick = () => start();
@@ -635,7 +639,8 @@
     return `<section class="card" style="margin-bottom:16px"><header><h2>Your first run</h2><button class="link" data-act="hide-fr">Hide</button></header><div class="body">
       <p class="fg2" style="margin:0 0 6px">${status}</p>
       ${res ? `<div class="answer"><div style="white-space:pre-wrap">${esc(res.summary)}</div><div class="rc">${rc.map((r) => `<a class="mono ${r.verified ? 'ok' : 'bad'}" href="${C()}/receipts/${esc(r.id)}" target="_blank" rel="noopener">${money(r.amount)} receipt ${r.verified ? '✓ signed' : '✗'}</a>`).join('')}</div></div>
-      <p class="hint">Next: add an Anthropic key in Settings and hire a Claude agent. It can search 8,600+ paid routes, always inside its budget.</p>` : ''}</div></section>`;
+      <div style="display:flex;gap:10px;margin-top:12px"><input id="fr-topic" maxlength="120" placeholder="Look something else up"><button class="btn" data-act="fr-again" data-for="${esc(starter.name)}">Ask again</button></div>
+      <p class="hint">Next: add an Anthropic key in Integrations and hire a Claude agent. It can search 8,600+ paid routes, always inside its budget.</p>` : ''}</div></section>`;
   }
 
   VIEWS.agents = (v, d) => {
@@ -746,7 +751,7 @@
       </div>
       <div class="two">
         <section class="card"><header><h2>Company</h2></header><div class="body"><dl class="kv"><dt>Name</dt><dd>${esc(c.name)}</dd><dt>ID</dt><dd class="mono">${esc(c.id)}</dd><dt>Runs at once</dt><dd>${esc(c.concurrency)}</dd><dt>Ticket limit</dt><dd>${esc(c.max_tickets)}</dd><dt>Created</dt><dd>${new Date(c.created_at).toLocaleDateString()}</dd></dl>
-          <div class="acts"><button class="btn" data-act="pause">${c.state === 'paused' ? 'Resume company' : 'Pause company'}</button><button class="btn" data-act="new-company">${ic('plus')} New company</button><a class="btn" href="/">Classic dashboard</a></div></div></section>
+          <div class="acts"><button class="btn" data-act="pause">${c.state === 'paused' ? 'Resume company' : 'Pause company'}</button><button class="btn" data-act="new-company">${ic('plus')} New company</button></div></div></section>
         <section class="card"><header><h2>Account</h2></header><div class="body"><dl class="kv"><dt>Signed in as</dt><dd>${esc(S.me.email)}</dd></dl><div class="acts"><button class="btn" data-act="logout">${ic('logout')} Sign out</button></div></div></section>
       </div>`;
   };
@@ -932,6 +937,7 @@
     publish: publishModal, fund: async () => { const r = await api(`${C()}/fund`, {}); toast(r.results.map((x) => x.credited ? `Credited ${x.credited}` : x.already_claimed ? 'Already claimed' : x.error || 'No faucet here').join('; ')); loadMoney(); },
     'reload-money': () => { S.balances = null; render(); loadMoney(); }, 'export-key': exportKey, logout, 'new-company': () => { closeOverlay(); gate('new'); },
     switch: (el) => switchMenu(el.parentElement), 'theme-toggle': () => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'),
+    'fr-again': async (el) => { const topic = val('fr-topic'); if (!topic) return; await api(`${C()}/tickets`, { title: `Look up: ${topic}`, assignee: el.dataset.for, budget: '0.01' }); $('fr-topic').value = ''; await refresh(); },
     'hide-fr': () => { ls.set(`tab-os-fr-${S.cid}`, 'hidden'); render(); },
     install: async () => { if (!S.install) return; S.install.prompt(); try { await S.install.userChoice; } catch {} S.install = null; render(); },
     more: () => overlay(`<div class="palette" role="dialog" aria-label="More" style="top:auto;bottom:90px"><ul>${[['receipts', 'Receipts', 'receipts'], ['integrations', 'Integrations', 'plug'], ['settings', 'Settings', 'settings']].map(([id, n, i]) => `<li data-go="${id}">${ic(i)}<span>${n}</span></li>`).join('')}<li data-act="new-company">${ic('plus')}<span>New company</span></li><li data-act="logout">${ic('logout')}<span>Sign out</span></li></ul></div>`, 'menu'),
@@ -975,7 +981,7 @@
   });
   window.addEventListener('hashchange', () => { closeOverlay(); render(); window.scrollTo(0, 0); });
   window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); S.install = e; if (S.view) { $('main').dataset.h = ''; render(); } });
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/os-sw.js', { scope: '/os' }).catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/os-sw.js', { scope: '/' }).catch(() => {});
 
   boot();
 })();
