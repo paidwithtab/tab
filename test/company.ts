@@ -112,6 +112,7 @@ async function main(): Promise<void> {
     if (mode === 'request') return json(200, { status: 'in_progress', summary: 'need more', requests: [{ kind: 'budget', amount: '1.00', reason: 'bigger job' }] });
     if (mode === 'costly') return json(200, { result: { status: 'done', summary: 'expensive', evidence: [{ kind: 'text', value: 'out' }] }, cost_usd: 1.0 });
     if (mode === 'mention') return json(200, { status: 'in_progress', summary: 'bee, look', mentions: ['@bee'] });
+    if (mode === 'handback') return json(200, { status: 'done', summary: 'checked, back to ant', evidence: [{ kind: 'text', value: 'checked' }], mentions: ['ant'] });
     if (mode === 'handoff') return json(200, { status: 'done', summary: 'found it, bee checks', evidence: [{ kind: 'text', value: 'findings' }], mentions: ['bee'] });
     return json(200, { status: 'in_progress', summary: mode });
   });
@@ -311,9 +312,12 @@ async function main(): Promise<void> {
   await runAll();
   v = await view();
   check('done with a mention hands the ticket to the colleague in review', v.tickets.find((t: any) => t.id === t7b.id).state === 'review' && store.wakes().some((w) => w.ticket_id === t7b.id && w.agent_id === bee.body.agent.id && /handed over/.test(w.reason)));
+  modes.bee = 'handback';
   await runAll();
   v = await view();
   check('the colleague runs on the review ticket and closes it with evidence', v.tickets.find((t: any) => t.id === t7b.id).state === 'done' && v.runs[0].agent === 'bee' && v.runs[0].ticket_id === t7b.id);
+  check('a handed-over ticket is not handed back: mentions on a closed ticket wake no one', !store.wakes().some((w) => w.ticket_id === t7b.id));
+  modes.bee = 'pay';
   await api('POST', `/api/companies/${cid}/tickets/${t7.id}/comment`, { text: '@bee please look again' });
   check('an owner comment wakes the named agent', store.wakes().some((w) => w.ticket_id === t7.id && w.agent_id === bee.body.agent.id && /owner/.test(w.reason)));
   await runAll();

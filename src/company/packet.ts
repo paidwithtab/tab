@@ -166,7 +166,7 @@ export function validateResult(x: unknown): AgentResult | null {
       .map((r) => {
         const rr = r as Record<string, unknown>;
         const req: NonNullable<AgentResult['requests']>[number] = { kind: str(rr.kind, 32), amount: rr.amount === undefined ? undefined : str(rr.amount, 20), reason: str(rr.reason, 2000) };
-        if (req.kind === 'hire') { if (rr.name !== undefined) req.name = str(rr.name, 40).replace(/^@/, ''); if (rr.role !== undefined) req.role = str(rr.role, 200); if (rr.instructions !== undefined) req.instructions = str(rr.instructions, 20_000); }
+        if (req.kind === 'hire') { if (rr.name !== undefined) { const n = str(rr.name, 60).trim().replace(/^@/, ''); if (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/.test(n)) req.name = n; } if (rr.role !== undefined) req.role = str(rr.role, 200); if (rr.instructions !== undefined) req.instructions = str(rr.instructions, 20_000); }
         return req;
       });
   }

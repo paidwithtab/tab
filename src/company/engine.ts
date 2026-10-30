@@ -377,6 +377,8 @@ export class Engine {
       const r = o.result;
       ev('run', { run_id: run.id, status: r.status, summary: r.summary, spent: spentLine });
       if (r.comment) ev('comment', { text: r.comment });
+      // a ticket is handed over once: the colleague who finishes a handed-over ticket closes it
+      const handedOver = ticket?.state === 'review';
       if (ticket) {
         const evidence: Evidence[] = (r.evidence ?? []).map((e) => ({ ...e, run_id: run.id, at: now.toISOString() }));
         if (evidence.length) {
@@ -385,7 +387,7 @@ export class Engine {
         }
         if (r.status === 'done') {
           const handoff = (r.mentions ?? []).map((n) => this.store.agentByName(company.id, n)).filter((a) => a && a.id !== agent.id && a.state === 'active') as AgentRow[];
-          if ((evidence.length || ticket.evidence.length) && handoff.length) {
+          if ((evidence.length || ticket.evidence.length) && handoff.length && !handedOver) {
             // done, but handed to a colleague: the ticket waits in review until they report
             setState(ticket, 'review', `handed to ${handoff.map((a) => a.name).join(', ')}`);
             wakeParent('done');
@@ -430,6 +432,7 @@ export class Engine {
         ev('request', { approval_id: a.id, kind: req.kind, amount: req.amount ?? null, reason: req.reason ?? '', ...(req.kind === 'hire' && req.name ? { name: req.name, role: req.role ?? null } : {}) });
       }
       for (const name of r.mentions ?? []) {
+        if (r.status === 'done' && ticket?.state === 'done') break; // closed: a mention is a note, not a wake
         const other = this.store.agentByName(company.id, name);
         if (other && other.id !== agent.id && other.state === 'active') this.store.wake(other.id, ticket?.id ?? null, `${r.status === 'done' ? 'handed over' : 'mentioned'} by ${agent.name}`, now);
       }
