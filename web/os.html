@@ -105,7 +105,7 @@
   .search span { flex:1; }
   kbd { font:11px var(--mono); border:1px solid var(--line2); border-radius:6px; padding:2px 6px; color:var(--fg2); background:var(--surface2); }
   .dot { position:absolute; top:6px; right:6px; min-width:16px; height:16px; padding:0 4px; border-radius:999px; background:var(--accent); color:#fff; font-size:10px; font-weight:700; display:grid; place-items:center; }
-  main.app { padding:clamp(20px,3vw,32px); padding-bottom:96px; max-width:1480px; }
+  main.app { padding:clamp(20px,3vw,32px); padding-bottom:96px; max-width:1680px; margin:0 auto; }
   h1 { font-size:clamp(26px,3vw,34px); letter-spacing:-.03em; margin:4px 0 4px; font-weight:700; }
   .lede { color:var(--fg2); font-size:15.5px; margin:0 0 24px; max-width:70ch; }
   .head-row { display:flex; align-items:flex-end; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:22px; }
@@ -700,8 +700,8 @@
           ${bal === null ? '<p class="dim">Loading…</p>' : bal.length ? bal.map((b) => `<div class="wal"><div style="min-width:0"><div style="font-weight:500">${esc(b.rail || 'gateway')}</div><div class="dim mono wrap-any" style="font-size:11.5px">${esc(b.origin)}</div></div><div class="amt">${b.available !== undefined ? `${esc(b.available)} <span class="dim" style="font-size:13px">${esc(c.currency)}</span>` : `<span class="bad" style="font-size:13px">${esc(b.error || 'n/a')}</span>`}</div></div>`).join('') : '<p class="dim">No gateways.</p>'}
           <div class="acts"><button class="btn" data-act="fund">${ic('spark')} Claim starter credits</button></div></div></section>
       </div>
-      <section class="card"><header><h2>Owner wallet</h2></header><div class="body"><dl class="kv"><dt>Address</dt><dd class="mono wrap-any">${esc(c.owner_pub)}</dd><dt>Currency</dt><dd>${esc(c.currency)}</dd><dt>Spends at</dt><dd class="wrap-any">${esc(c.realms.join(', '))}</dd></dl>
-        <div class="acts"><button class="btn" data-act="export-key">${ic('key')} Export owner key</button></div><p class="hint">The owner key signs board actions and moves company funds. Exports are logged.</p></div></section>`;
+      <section class="card"><header><h2>Owner wallet</h2></header><div class="body"><dl class="kv"><dt>tab ledger</dt><dd class="mono wrap-any">${esc(c.owner_pub)}</dd>${c.owner_evm ? `<dt>Robinhood Chain</dt><dd class="mono wrap-any">${esc(c.owner_evm)}</dd>` : ''}<dt>Currency</dt><dd>${esc(c.currency)}</dd><dt>Spends at</dt><dd class="wrap-any">${esc(c.realms.join(', '))}</dd></dl>
+        <div class="acts"><button class="btn" data-act="export-key">${ic('key')} Export owner key</button></div><p class="hint">One owner key, two addresses: the ledger address spends sandbox credits at pay.paidwithtab.com, the Robinhood Chain address pays real USDG at mainnet.paidwithtab.com. The key signs board actions and moves company funds. Exports are logged.</p></div></section>`;
   };
 
   VIEWS.receipts = (v, d) => {

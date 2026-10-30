@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { microToUsd, usdToMicro, isCurrency, type Receipt } from '../protocol.js';
 import { newKeyPair } from '../keys.js';
+import { addressFromSeed } from '../evm/secp256k1.js';
 import { originIsPublic } from '../catalog.js';
 import { guardedFetch } from '../net.js';
 import { signBoardAction, verifyBoardAction, BOARD_ACTIONS, type SignedBoardAction, type BoardActionKind } from './board.js';
@@ -266,6 +267,8 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       ...rest,
       // where the claude agents' model key comes from: the company's own, the host's, or nowhere yet
       model_key: c.model_key ? 'company' : opts.hostModelKey ? 'host' : null,
+      // the same owner key's address on Robinhood Chain, where evm-rail gateways take payment from
+      owner_evm: addressFromSeed(new Uint8Array(Buffer.from(c.owner_priv, 'base64url'))),
       budget: microToUsd(c.budget),
       spent: { tab: microToUsd(s.tab), model: microToUsd(s.model), total: microToUsd(total), remaining: microToUsd(Math.max(0, c.budget - total)), percent: c.budget ? Math.min(100, Math.floor((total / c.budget) * 100)) : 100 },
     };
