@@ -112,7 +112,7 @@ test/evm.ts                 # 59 checks: crypto vectors, a mock EVM node, rpc fa
 cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
-npm test                    # 81 passed, 0 failed on the dev box
+npm test                    # 83 passed, 0 failed on the dev box
 npm run test:adversarial    # 48 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
 npm run test:evm            # 59 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
 npm run test:company        # 113 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests, signed board log, sealed model keys, the claude adapter against a fake Messages API

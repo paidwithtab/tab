@@ -56,9 +56,11 @@ const EVM_RPC: Record<number, string> = {
   4663: 'https://rpc.mainnet.chain.robinhood.com,https://robinhood-mainnet.drpc.org,https://robinhood-rpc.publicnode.com,https://4663.rpc.thirdweb.com',
   46630: 'https://rpc.testnet.chain.robinhood.com,https://robinhood-testnet.drpc.org,https://46630.rpc.thirdweb.com',
 };
-// an agent on an evm-rail gateway sends its own payment transactions, so it needs a little ETH for gas
-const GAS_FLOOR_WEI = 200_000_000_000_000n; // 0.0002 ETH
-const GAS_TOP_UP_WEI = 500_000_000_000_000n; // 0.0005 ETH
+// an agent on an evm-rail gateway sends its own payment transactions, so it needs a little ETH for gas: sized from the
+// chain's gas price at the 250k gas limit and twice the price that payments are signed with, topped up below 10 payments to 25
+const GAS_TX = 250_000n * 2n;
+const GAS_FLOOR_TXS = 10n;
+const GAS_TOP_UP_TXS = 25n;
 const seedOf = (priv: string) => new Uint8Array(Buffer.from(priv, 'base64url'));
 const eth = (wei: bigint) => (Number(wei / 1_000_000_000_000n) / 1e6).toFixed(6);
 
@@ -335,7 +337,13 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       runs: store.runsOf(c.id, 50).map((r) => ({ ...r, agent: nameOf(r.agent_id), spent: microToUsd(r.spent), model_cost: microToUsd(r.model_cost), mandate: r.mandate ? { id: r.mandate.id, budget: microToUsd(Number(r.mandate.budget)), allow: r.mandate.allow } : null, output: undefined })),
       events: store.events(c.id, { limit: 100 }).map((e) => ({ ...e, by: nameOf(e.agent_id) })),
       board: store.board(c.id).map((b) => ({ ...b, verified: verifyBoardAction(c.owner_pub, { ver: 'tab-board/0', company: b.company_id, seq: b.seq, action: b.action as BoardActionKind, payload: b.payload, at: b.at, id: b.id, sig: b.sig }).ok })),
-      receipts: store.receiptsOf(c.id, 50).map((r) => ({ ...r, agent: r.agent_id ? nameOf(r.agent_id) : null, amount: microToUsd(r.amount), signed: r.doc != null, doc: undefined })),
+      receipts: store.receiptsOf(c.id, 50).map((r) => {
+        // how the payment settled: an on-chain transaction links to the gateway's explorer
+        const ref = r.doc?.ref ?? null;
+        const explorer = chainMemo.get(r.origin)?.doc?.rail_info?.explorer;
+        const tx = ref && ref.startsWith('evm:') ? ref.slice(4) : null;
+        return { ...r, agent: r.agent_id ? nameOf(r.agent_id) : null, amount: microToUsd(r.amount), signed: r.doc != null, doc: undefined, ref, tx_url: tx && typeof explorer === 'string' ? `${explorer}/tx/${tx}` : null };
+      }),
     };
   }
 
@@ -791,7 +799,9 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         const address = addressFromSeed(seedOf(agent.agent_priv));
         const txs: Array<{ kind: string; hash: string }> = [];
         try {
-          if ((await ch.rpc.balance(address)) < GAS_FLOOR_WEI) txs.push({ kind: 'gas', hash: await evmSend(ch.rpc, owner, address, GAS_TOP_UP_WEI, new Uint8Array(0)) });
+          const perTx = (await ch.rpc.gasPrice()) * GAS_TX;
+          const have = await ch.rpc.balance(address);
+          if (have < perTx * GAS_FLOOR_TXS) txs.push({ kind: 'gas', hash: await evmSend(ch.rpc, owner, address, perTx * GAS_TOP_UP_TXS - have, new Uint8Array(0)) });
           txs.push({ kind: 'allowance', hash: await evmSend(ch.rpc, owner, ch.token, 0n, erc20.approve(address, microToBaseUnits(BigInt(micro), ch.decimals))) });
         } catch (err) {
           const msg = (err as Error).message;

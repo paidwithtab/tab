@@ -32,6 +32,7 @@ import { createRail, EvmRail, type Rail } from './rails/index.js';
 import type { KeyPair } from './keys.js';
 import { encodeX402, decodeX402, X402_VERSION, type X402PaymentPayload, type X402SettlementResponse } from './x402.js';
 import type { HoldRow, Store } from './store.js';
+import { homePage } from './home.js';
 
 // ---------------------------------------------------------------------------
 // spec
@@ -665,6 +666,17 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       }
 
       const match = matchRoute(spec, method, pathname);
+      if (!match && method === 'GET' && pathname === '/') {
+        // the root, when nothing is priced there: a page for a person, the terms for a program
+        const origin = (opts.origin ?? `https://${spec.realm}`).replace(/\/$/, '');
+        if (/text\/html/.test(String(req.headers.accept ?? ''))) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'max-age=300' });
+          res.end(homePage(discovery(), origin));
+        } else {
+          sendJson(res, 200, { realm: spec.realm, terms: `${origin}/.well-known/tab`, catalog: 'https://paidwithtab.com/catalog', routes: spec.services.reduce((n, sv) => n + sv.routes.length, 0) });
+        }
+        return;
+      }
       if (!match) {
         await respondProblem(res, 'not-found', `no priced route for ${method} ${pathname}`, 404);
         return;

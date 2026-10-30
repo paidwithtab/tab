@@ -145,7 +145,7 @@ The server signs them with the custodial owner key when you act on the dashboard
 
 ## Paying on chain
 
-A company whose gateway is on the evm rail (mainnet.paidwithtab.com, or any seller's Robinhood Chain gateway) pays in USDG from the owner key's 0x address. Each agent sends its own payment transactions, so it needs an allowance from the owner account and a little ETH for gas. `GET /api/companies/<id>/chain` shows the owner account's USDG and ETH and every agent's allowance; `POST /api/companies/<id>/chain/authorize {"agent_id": "...", "amount": "5.00"}` approves that agent for the amount (never more than the company budget) and tops its gas up to 0.0005 ETH when it is below 0.0002, both sent from the owner account. The Wallet shows the same with an Authorize button. Mandates still cap every run; the allowance caps everything the agent can ever move.
+A company whose gateway is on the evm rail (mainnet.paidwithtab.com, or any seller's Robinhood Chain gateway) pays in USDG from the owner key's 0x address. Each agent sends its own payment transactions, so it needs an allowance from the owner account and a little ETH for gas. `GET /api/companies/<id>/chain` shows the owner account's USDG and ETH and every agent's allowance; `POST /api/companies/<id>/chain/authorize {"agent_id": "...", "amount": "5.00"}` approves that agent for the amount (never more than the company budget) and tops its gas up to 25 payments worth at the chain's current gas price when it holds less than 10, both sent from the owner account. The Wallet shows the same with an Authorize button. Mandates still cap every run; the allowance caps everything the agent can ever move.
 
 ## The CLI
 

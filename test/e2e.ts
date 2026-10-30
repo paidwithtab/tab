@@ -131,6 +131,11 @@ async function main(): Promise<void> {
   check('discovery document', disc.ver === 'tab/0' && disc.realm === 'quotes.local'
     && disc.rail === 'ledger' && disc.recipient === seller.publicKey && disc.services.length === 4);
   check('body constraints stay out of discovery', !JSON.stringify(disc).includes('body_fixed') && !JSON.stringify(disc).includes('max_results'));
+  const homeHtml = await fetch(`${GW}/`, { headers: { accept: 'text/html' } });
+  const homeText = await homeHtml.text();
+  check('a browser at the root gets the gateway home page', homeHtml.status === 200 && /text\/html/.test(homeHtml.headers.get('content-type') ?? '') && homeText.includes('quotes.local') && homeText.includes('tab credits') && homeText.includes('/.well-known/tab'));
+  const homeJson = await (await fetch(`${GW}/`)).json() as any;
+  check('a program at the root gets pointers, not a 404', homeJson.realm === 'quotes.local' && /\/\.well-known\/tab$/.test(homeJson.terms));
 
   {
     const keyed = await fetch(`${GW}/keyed/free?x=1`);

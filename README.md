@@ -378,7 +378,7 @@ tab currently runs 289 automated checks across protocol behavior, adversarial co
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
-| `npm test` | 81 | Gateway, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate, catalog health and stale serving |
+| `npm test` | 83 | Gateway and its home page, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate, catalog health and stale serving |
 | `npm run test:adversarial` | 48 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts |
 | `npm run test:evm` | 59 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways |
 | `npm run test:company` | 113 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, hire requests, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary |
