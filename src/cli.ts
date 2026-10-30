@@ -14,9 +14,10 @@ import { loadSpec, createGateway, announce } from './gateway.js';
 import { createCatalog } from './catalog.js';
 import { TabClient, PaymentRefused, receiptOf, x402ResponseOf } from './client.js';
 import { runMcpServer } from './mcp.js';
-import { scalarFromSeed, addressFromSeed, checksumAddress } from './evm/secp256k1.js';
+import { addressFromSeed, checksumAddress } from './evm/secp256k1.js';
 import { EvmRpc } from './evm/rpc.js';
-import { signTx, erc20, isAddress } from './evm/tx.js';
+import { evmSend } from './evm/send.js';
+import { erc20, isAddress } from './evm/tx.js';
 import { companyCommand, COMPANY_USAGE } from './company/cli.js';
 
 // Node's fetch tries each address of a host for 250 ms before moving to the next (happy eyeballs). From far
@@ -34,7 +35,7 @@ const USAGE = `tab: a payment gateway for software agents (HTTP 402 + signed man
                     [--window total|day] [--max-per-call 0.05] [--allow realm]... [--days 7] [--out file]
   tab mint    --wallet <pub|file> --amount 5.00 [--db tab.db]
   tab balance --wallet <pub|file> [--db tab.db]
-  tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin url] [--x402-settler key.json]
+  tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin url] [--x402-settler key.json] [--upstream-timeout s]
               [--faucet 1.00]   ledger rail: starter credits any wallet can claim once
               [--faucet-per-ip 20]   claims per address per day (a hosted company server claims for all its users from one)
   tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
@@ -190,6 +191,8 @@ async function main(): Promise<void> {
         faucet: { type: 'string' },
         'faucet-per-ip': { type: 'string' },
         'x402-settler': { type: 'string' },
+        // seconds the upstream may take; a service whose work takes minutes (an agent team) needs more than the default 60
+        'upstream-timeout': { type: 'string' },
       });
       if (!values.spec) die('--spec is required');
       const spec = loadSpec(values.spec as string);
@@ -200,6 +203,7 @@ async function main(): Promise<void> {
         store, log, faucetUsd: values.faucet as string | undefined, x402Settler,
         faucetPerIpPerDay: values['faucet-per-ip'] ? Math.max(1, Number(values['faucet-per-ip']) || 20) : undefined,
         origin: values.origin as string | undefined,
+        upstreamTimeoutMs: values['upstream-timeout'] ? Math.max(1, Number(values['upstream-timeout']) || 60) * 1000 : undefined,
       });
       const port = Number(values.port);
       server.listen(port, () => {
@@ -448,36 +452,12 @@ Catalog: ${o.catalog}/catalog
 
 const EVM_RPC_DEFAULT = process.env.EVM_RPC || 'https://rpc.testnet.chain.robinhood.com';
 
-function evmScalar(pair: KeyPair) {
-  return scalarFromSeed(new Uint8Array(Buffer.from(pair.privateKey, 'base64url')));
-}
-
 function evmAddressOf(arg: string): string {
   if (/^0x[0-9a-fA-F]{40}$/.test(arg)) return arg.toLowerCase();
   if (arg.endsWith('.json')) {
     return addressFromSeed(new Uint8Array(Buffer.from(loadKey(arg).privateKey, 'base64url')));
   }
   die(`expected a key file or 0x address, got ${arg}`);
-}
-
-async function evmSend(rpc: EvmRpc, from: KeyPair, to: string, value: bigint, data: Uint8Array): Promise<string> {
-  const fromAddr = addressFromSeed(new Uint8Array(Buffer.from(from.privateKey, 'base64url')));
-  const gasPrice = await rpc.gasPrice();
-  const tip = await rpc.maxPriorityFeePerGas();
-  const tx = {
-    chainId: await rpc.chainId(),
-    nonce: await rpc.transactionCount(fromAddr),
-    maxPriorityFeePerGas: tip,
-    maxFeePerGas: gasPrice * 2n + tip,
-    gasLimit: 250_000n,
-    to,
-    value,
-    data,
-  };
-  const { raw, hash } = signTx(tx, evmScalar(from));
-  await rpc.sendRawTransaction(raw);
-  await rpc.waitForReceipt(hash);
-  return hash;
 }
 
 async function evmCommand(rest: string[]): Promise<void> {

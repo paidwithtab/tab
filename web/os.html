@@ -527,6 +527,7 @@
     const cid = S.cid;
     try { const b = await api(`${C()}/balances`); if (cid === S.cid) S.balances = b; } catch { S.balances = { balances: [] }; }
     try { const e = await api(`${C()}/earnings`); if (cid === S.cid) S.earnings = e; } catch { S.earnings = null; }
+    try { const ch = await api(`${C()}/chain`); if (cid === S.cid) S.chain = ch; } catch (e) { S.chain = { error: e.message }; }
     if (S.view) render();
   }
 
@@ -664,7 +665,7 @@
       <div class="board">${cols.map((s) => { const ts = by(s); return `<div class="col"><h3>${TSTATE[s]}<span class="dim">${ts.length}</span></h3>${ts.slice(0, 40).map((t) => { const a = d.byId.get(t.assignee_id); return `<button class="tcard" data-ticket="${esc(t.id)}"><span class="tt">${esc(t.title)}</span><span class="meta">${a ? `<img src="${a.img}" alt="">${esc(a.name)}` : 'Unassigned'}<span class="sp">${money(t.spent)}</span></span></button>`; }).join('') || '<div class="dim" style="font-size:12.5px;padding:4px">Nothing here.</div>'}</div>`; }).join('')}</div>`;
   };
 
-  const EVI = { comment: 'inbox', run: 'bolt', 'run-started': 'bolt', state: 'tasks', hire: 'agents', retire: 'agents', ticket: 'doc', request: 'alert', 'run-failed': 'alert', approval: 'check', 'budget-warning': 'alert', paused: 'pause', resumed: 'play', fund: 'wallet', 'model-key': 'key', 'key-exported': 'key', publish: 'globe', 'needs-model-key': 'key', 'late-spend': 'alert' };
+  const EVI = { comment: 'inbox', run: 'bolt', 'run-started': 'bolt', state: 'tasks', hire: 'agents', retire: 'agents', ticket: 'doc', request: 'alert', 'run-failed': 'alert', approval: 'check', 'budget-warning': 'alert', paused: 'pause', resumed: 'play', fund: 'wallet', 'model-key': 'key', 'key-exported': 'key', publish: 'globe', 'needs-model-key': 'key', 'late-spend': 'alert', 'chain-authorize': 'wallet', 'ticket-refused': 'alert', charter: 'building' };
   function evText(e, d) {
     const who = e.agent_id ? (d.byId.get(e.agent_id)?.name || 'an agent') : 'You';
     const b = e.body || {}; const t = e.ticket_id && d.ticket(e.ticket_id);
@@ -678,7 +679,7 @@
       request: b.kind === 'hire' && b.name ? `${esc(who)} asked to hire <b>${esc(b.name)}</b>${b.role ? `, ${esc(b.role)}` : ''}` : `${esc(who)} asked for ${b.amount ? money(b.amount) : esc(b.kind)}: <span class="s">${esc(b.reason || '')}</span>`,
       'budget-warning': 'The company passed 80 percent of its budget',
       paused: `The company paused <span class="s">${esc(b.reason || '')}</span>`, resumed: 'The company resumed',
-      hire: `Hired <b>${esc(b.name || '')}</b>`, 'needs-model-key': `${esc(who)} is waiting for a model key`, 'run-failed': `${esc(who)} could not start <span class="s">${esc(b.error || '')}</span>`, 'late-spend': `${esc(who)} spent after its run ended <span class="s">${esc(b.spent || '')}</span>`, approval: `${esc(b.decision === 'reject' ? 'Rejected' : 'Approved')} a request`, fund: 'Claimed starter credits', 'model-key': b.removed ? 'Removed the model key' : 'Set the model key', 'key-exported': 'The owner key was exported',
+      hire: `Hired <b>${esc(b.name || '')}</b>`, charter: b.to && b.from && b.to.name !== b.from.name ? `<b>${esc(b.from.name)}</b> is now <b>${esc(b.to.name)}</b>` : 'Changed the mission', 'chain-authorize': `Let <b>${esc(b.agent || '')}</b> spend ${money(b.amount || '0')} on chain`, 'ticket-refused': `${esc(who)} could not open <b>${esc(b.title || '')}</b> <span class="s">${esc(b.reason || '')}</span>`, 'needs-model-key': `${esc(who)} is waiting for a model key`, 'run-failed': `${esc(who)} could not start <span class="s">${esc(b.error || '')}</span>`, 'late-spend': `${esc(who)} spent after its run ended <span class="s">${esc(b.spent || '')}</span>`, approval: `${esc(b.decision === 'reject' ? 'Rejected' : 'Approved')} a request`, fund: 'Claimed starter credits', 'model-key': b.removed ? 'Removed the model key' : 'Set the model key', 'key-exported': 'The owner key was exported',
     }[e.kind] || `${esc(who)}: ${esc(e.kind)}`;
     return text;
   }
@@ -709,9 +710,26 @@
           ${bal === null ? '<p class="dim">Loading…</p>' : bal.length ? bal.map((b) => `<div class="wal"><div style="min-width:0"><div style="font-weight:500">${esc(b.rail || 'gateway')}</div><div class="dim mono wrap-any" style="font-size:11.5px">${esc(b.origin)}</div></div><div class="amt">${b.available !== undefined ? `${esc(b.available)} <span class="dim" style="font-size:13px">${esc(c.currency)}</span>` : `<span class="bad" style="font-size:13px">${esc(b.error || 'n/a')}</span>`}</div></div>`).join('') : '<p class="dim">No gateways.</p>'}
           <div class="acts"><button class="btn" data-act="fund">${ic('spark')} Claim starter credits</button></div></div></section>
       </div>
+      ${S.chain && S.chain.chain ? chainCard(S.chain) : S.chain && S.chain.error ? `<section class="card"><header><h2>Robinhood Chain</h2></header><div class="body"><p class="bad">${esc(S.chain.error)}</p></div></section>` : ''}
       <section class="card"><header><h2>Owner wallet</h2></header><div class="body"><dl class="kv"><dt>tab ledger</dt><dd class="mono wrap-any">${esc(c.owner_pub)}</dd>${c.owner_evm ? `<dt>Robinhood Chain</dt><dd class="mono wrap-any">${esc(c.owner_evm)}</dd>` : ''}<dt>Currency</dt><dd>${esc(c.currency)}</dd><dt>Spends at</dt><dd class="wrap-any">${esc(c.realms.join(', '))}</dd></dl>
         <div class="acts"><button class="btn" data-act="export-key">${ic('key')} Export owner key</button></div><p class="hint">One owner key, two addresses: the ledger address spends sandbox credits at pay.paidwithtab.com, the Robinhood Chain address pays real USDG at mainnet.paidwithtab.com. The key signs board actions and moves company funds. Exports are logged.</p></div></section>`;
   };
+
+  // a company that pays on chain: the owner account's USDG and gas, and each agent's allowance from it
+  function chainCard(x) {
+    const addr = (a) => x.chain.explorer ? `<a class="mono" href="${esc(x.chain.explorer)}/address/${esc(a)}" target="_blank" rel="noopener">${esc(a.slice(0, 6))}…${esc(a.slice(-4))}</a>` : `<span class="mono">${esc(a)}</span>`;
+    return `<section class="card"><header><h2>Robinhood Chain</h2><span class="dim mono" style="font-size:12px">${esc(x.chain.origin.replace(/^https:\/\//, ''))}</span></header><div class="body">
+      <dl class="kv"><dt>Owner account</dt><dd>${addr(x.owner.address)}</dd><dt>USDG</dt><dd class="mono">${money(x.owner.balance)}</dd><dt>Gas</dt><dd class="mono">${esc(x.owner.eth)} ETH</dd></dl>
+      <table class="t" style="margin-top:12px"><tr><th>Agent</th><th class="hide-s">Account</th><th style="text-align:right">May spend</th><th style="text-align:right" class="hide-s">Gas</th><th></th></tr>${x.agents.map((a) => `<tr><td>${esc(a.name)}</td><td class="hide-s">${addr(a.address)}</td><td class="mono" style="text-align:right">${money(a.allowance)}</td><td class="mono hide-s" style="text-align:right">${esc(a.eth)}</td><td style="text-align:right"><button class="btn sm" data-act="chain-auth" data-for="${esc(a.id)}" data-name="${esc(a.name)}">Authorize</button></td></tr>`).join('')}</table>
+      <p class="hint">Agents pay from their own account on chain, up to what the owner account lets them spend. Authorize sets that amount and tops up a little gas, both sent from the owner account. Every run is still capped by its mandate.</p></div></section>`;
+  }
+  function chainAuthModal(el) {
+    modal(`Authorize ${el.dataset.name}`, 'How much USDG this agent may spend from the owner account, in total. Mandates still cap each run. This sends a transaction from the owner account.', `<label class="f" for="ca-amt">Allowance</label><input id="ca-amt" value="5.00" inputmode="decimal" autofocus>`, 'Authorize', async () => {
+      const r = await api(`${C()}/chain/authorize`, { agent_id: el.dataset.for, amount: val('ca-amt') });
+      toast(`${el.dataset.name} may spend ${money(r.amount)}`);
+      loadMoney();
+    });
+  }
 
   VIEWS.receipts = (v, d) => {
     const q = S.filter.toLowerCase();
@@ -755,7 +773,7 @@
       </div>
       <div class="two">
         <section class="card"><header><h2>Company</h2></header><div class="body"><dl class="kv"><dt>Name</dt><dd>${esc(c.name)}</dd><dt>ID</dt><dd class="mono">${esc(c.id)}</dd><dt>Runs at once</dt><dd>${esc(c.concurrency)}</dd><dt>Ticket limit</dt><dd>${esc(c.max_tickets)}</dd><dt>Created</dt><dd>${new Date(c.created_at).toLocaleDateString()}</dd></dl>
-          <div class="acts"><button class="btn" data-act="pause">${c.state === 'paused' ? 'Resume company' : 'Pause company'}</button><button class="btn" data-act="new-company">${ic('plus')} New company</button></div></div></section>
+          <div class="acts"><button class="btn" data-act="charter">Rename or change mission</button><button class="btn" data-act="pause">${c.state === 'paused' ? 'Resume company' : 'Pause company'}</button><button class="btn" data-act="new-company">${ic('plus')} New company</button></div></div></section>
         <section class="card"><header><h2>Account</h2></header><div class="body"><dl class="kv"><dt>Signed in as</dt><dd>${esc(S.me.email)}</dd></dl><div class="acts"><button class="btn" data-act="logout">${ic('logout')} Sign out</button></div></div></section>
       </div>`;
   };
@@ -911,6 +929,7 @@
   function go(app) { closeOverlay(); $('notes').hidden = true; location.hash = `#/${app}`; }
   async function decide(id, decision) { const r = await api(`${C()}/approvals/${id}`, { decision }); toast(r && r.agent ? `${r.agent.name} is hired` : decision === 'approve' ? 'Approved' : 'Rejected'); await refresh(); }
   async function togglePause() { const paused = S.view.company.state === 'paused'; await api(`${C()}/${paused ? 'resume' : 'pause'}`, {}); toast(paused ? 'Company resumed' : 'Company paused'); await refresh(); }
+  function charterModal() { const c = S.view.company; modal('Name and mission', 'What every agent reads first. This is a signed board action.', `<label class="f" for="ch-name">Name</label><input id="ch-name" maxlength="80" value="${esc(c.name)}" autofocus><label class="f" for="ch-mission">Mission</label><textarea id="ch-mission">${esc(c.mission)}</textarea>`, 'Save', async () => { await api(`${C()}/charter`, { name: val('ch-name'), mission: val('ch-mission') }); toast('Company updated'); }); }
   function budgetModal() { modal('Change budget', 'The most the whole company can ever spend, models included. This is a signed board action.', `<label class="f" for="b-val">Budget</label><input id="b-val" value="${esc(S.view.company.budget)}" inputmode="decimal" autofocus>`, 'Save budget', async () => { await api(`${C()}/budget`, { budget: val('b-val') }); toast('Budget updated'); }); }
   function keyModal() { modal('Anthropic API key', 'Claude agents run on the company\'s own key. It is checked with Anthropic, sealed at rest, and never shown again.', `<label class="f" for="k-val">Key</label><input id="k-val" type="password" class="mono" placeholder="sk-ant-…" autocomplete="off" autofocus>`, 'Save key', async () => { await api(`${C()}/model-key`, { key: val('k-val') }); toast('Model key saved'); }); }
   function publishModal() { modal('Publish your company', 'Sell your company\'s work through a tab gateway. Other agents pay per call and get signed receipts.', `<label class="f" for="p-gw">Gateway</label><input id="p-gw" placeholder="https://pay.paidwithtab.com" value="${esc(S.earnings?.gateway || '')}" autofocus>`, 'Publish', async () => { await api(`${C()}/publish`, { gateway: val('p-gw') }); toast('Published'); loadMoney(); }); }
@@ -937,10 +956,10 @@
   }
 
   const ACTS = {
-    'new-agent': hireModal, 'new-task': (el) => taskModal(el.dataset.for), close: closeOverlay, pause: togglePause, budget: budgetModal,
+    'new-agent': hireModal, 'new-task': (el) => taskModal(el.dataset.for), close: closeOverlay, pause: togglePause, budget: budgetModal, charter: charterModal,
     'model-key': keyModal, 'model-key-rm': async () => { if (confirm('Remove the company model key? Claude agents stop until a new one is set.')) { await api(`${C()}/model-key`, { remove: true }); await refresh(); } },
     publish: publishModal, fund: async () => { const r = await api(`${C()}/fund`, {}); toast(r.results.map((x) => x.credited ? `Credited ${x.credited}` : x.already_claimed ? 'Already claimed' : x.error || 'No faucet here').join('; ')); loadMoney(); },
-    'reload-money': () => { S.balances = null; render(); loadMoney(); }, 'export-key': exportKey, logout, 'new-company': () => { closeOverlay(); gate('new'); },
+    'reload-money': () => { S.balances = null; S.chain = null; render(); loadMoney(); }, 'chain-auth': chainAuthModal, 'export-key': exportKey, logout, 'new-company': () => { closeOverlay(); gate('new'); },
     switch: (el) => switchMenu(el.parentElement), 'theme-toggle': () => setTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'),
     'fr-again': async (el) => { const topic = val('fr-topic'); if (!topic) return; await api(`${C()}/tickets`, { title: `Look up: ${topic}`, assignee: el.dataset.for, budget: '0.01' }); $('fr-topic').value = ''; await refresh(); },
     'hide-fr': () => { ls.set(`tab-os-fr-${S.cid}`, 'hidden'); render(); },

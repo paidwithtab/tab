@@ -115,7 +115,7 @@ The result, as the response body (or inside `result`, or as a ```json fence in `
   "evidence": [{ "kind": "receipt | url | file | text", "value": "..." }],
   "comment": "optional note for the thread",
   "new_tickets": [{ "title": "...", "body": "...", "assignee": "editor", "budget": "0.10" }],
-  "requests": [{ "kind": "budget | hire | other", "amount": "5.00", "reason": "..." }],
+  "requests": [{ "kind": "budget | hire | other", "amount": "5.00", "reason": "...", "name": "for hire", "role": "for hire", "instructions": "for hire" }],
   "mentions": ["editor"],
   "cost_usd": 0.01
 }
@@ -123,21 +123,27 @@ The result, as the response body (or inside `result`, or as a ```json fence in `
 
 ## Tickets, evidence, wakes
 
-A ticket is open, in progress, in review, blocked, done or cancelled. Assigning one wakes the agent; so does an `@name` in a comment, a mention in another agent's result, a decided approval, a finished sub-ticket, or a heartbeat (an agent with `heartbeat_s` set re-runs on its oldest open ticket when that long has passed since its last run). One run per agent at a time; `concurrency` runs per company (default 2).
+A ticket is open, in progress, in review, blocked, done or cancelled. Assigning one wakes the agent; so does an `@name` in a comment, a mention in another agent's result, a decided approval, a sub-ticket that comes back (done, handed over or blocked), or a heartbeat (an agent with `heartbeat_s` set re-runs on its oldest open ticket when that long has passed since its last run). One run per agent at a time; `concurrency` runs per company (default 2).
 
-`done` without evidence goes to review, not done. The owner can close a ticket by giving a reason, which is recorded as evidence of kind `owner`. Agents can open sub-tickets for colleagues (up to the company's ticket limit, 200), and request approvals the owner decides on the dashboard. A finished sub-ticket wakes the parent's assignee.
+`done` without evidence goes to review, not done. The owner can close a ticket by giving a reason, which is recorded as evidence of kind `owner`. Agents can open sub-tickets for colleagues (up to the company's ticket limit, 200), and request approvals the owner decides on the dashboard. A sub-ticket that comes back wakes the parent's assignee, whose next run reads what each sub-ticket reported: the run summary, the comment and the evidence. Sub-tickets go one level deep: an agent working a sub-ticket reports back instead of opening more. A hire request names the agent (name, role, instructions, and its budget per run as the amount); approving it hires that agent on the requester's adapter and per call cap, and tells the requester.
+
+Two limits keep a team from running on the owner's model key all day: 12 runs on one ticket in an hour blocks the ticket, and 30 runs in a company in an hour pauses the company until the owner resumes it.
 
 Every change is an event in an append-only log: comments, state changes, runs, evidence, requests, budget warnings, pauses. The dashboard's activity feed and each ticket's thread are views of it.
 
 ## The board log
 
-Hire, retire, budget, approve, reject, pause, resume, publish and cancel are board actions:
+Hire, retire, budget, approve, reject, pause, resume, publish, cancel and charter (the company's name and mission) are board actions:
 
 ```json
 { "ver": "tab-board/0", "company": "<id>", "seq": 4, "action": "budget", "payload": { "budget": "25.00" }, "at": "...", "id": "<sha256>", "sig": "<owner signature>" }
 ```
 
 The server signs them with the custodial owner key when you act on the dashboard or the CLI, and verifies the whole log on every read; a row that fails shows as INVALID. Sequence numbers are strict, so an action cannot be replayed or reordered. Export the owner key (`tab company key`, or the dashboard button; the export is logged) and you can sign actions offline and submit them raw with `POST /api/companies/<id>/board`; the CLI does this when given `--owner key.json`. Once the key is only yours, the server can verify but no longer act for you.
+
+## Paying on chain
+
+A company whose gateway is on the evm rail (mainnet.paidwithtab.com, or any seller's Robinhood Chain gateway) pays in USDG from the owner key's 0x address. Each agent sends its own payment transactions, so it needs an allowance from the owner account and a little ETH for gas. `GET /api/companies/<id>/chain` shows the owner account's USDG and ETH and every agent's allowance; `POST /api/companies/<id>/chain/authorize {"agent_id": "...", "amount": "5.00"}` approves that agent for the amount (never more than the company budget) and tops its gas up to 0.0005 ETH when it is below 0.0002, both sent from the owner account. The Wallet shows the same with an Authorize button. Mandates still cap every run; the allowance caps everything the agent can ever move.
 
 ## The CLI
 

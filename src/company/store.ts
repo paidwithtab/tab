@@ -529,6 +529,10 @@ export class CompanyStore {
       .map((r) => this.rowToRun(r));
   }
 
+  runsOfCompanySince(companyId: string, since: string): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM runs WHERE company_id = ? AND started_at >= ?').get(companyId, since) as { n: number }).n);
+  }
+
   runsOnTicketSince(ticketId: string, since: string): number {
     return Number((this.db.prepare('SELECT COUNT(*) AS n FROM runs WHERE ticket_id = ? AND started_at >= ?').get(ticketId, since) as { n: number }).n);
   }

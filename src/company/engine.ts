@@ -27,6 +27,7 @@ export interface EngineOptions {
   log?: (msg: string) => void;
   tickMs?: number; // default 3000
   runTimeoutMs?: number; // default 600 s
+  maxRunsPerCompanyHour?: number; // default 30; past it the company pauses for the owner
   fetch?: typeof fetch;
 }
 
@@ -35,6 +36,8 @@ const ACTIVE: ReadonlySet<string> = new Set(['open', 'in_progress']);
 const WAKEABLE: ReadonlySet<string> = new Set(['open', 'in_progress', 'review']);
 // runs on one ticket in an hour before it is blocked for the owner to look at
 const MAX_RUNS_PER_TICKET_HOUR = 12;
+// a team that keeps waking itself (new sub-tasks, hand-offs, mentions) would run on the owner's model key all day
+const MAX_RUNS_PER_COMPANY_HOUR = 30;
 const START_RETRY_MS = 60_000;
 
 export class Engine {
@@ -187,6 +190,11 @@ export class Engine {
       this.pauseForBudget(company);
       return null;
     }
+    const cap = this.opts.maxRunsPerCompanyHour ?? MAX_RUNS_PER_COMPANY_HOUR;
+    if (this.store.runsOfCompanySince(company.id, new Date(now.getTime() - 3_600_000).toISOString()) >= cap) {
+      this.pause(company, `${cap} runs in the last hour; look at the work, then resume`, now);
+      return null;
+    }
     // the mandate ceiling for this run: company remaining, the agent's per-run cap, the ticket's cap
     let ceiling = Math.min(remaining, agent.budget_per_run);
     if (ticket && ticket.budget !== null) {
@@ -232,10 +240,14 @@ export class Engine {
     const colleagues = this.store.agentsOf(company.id).filter((a) => a.id !== agent.id && a.state === 'active');
     const thread = ticket ? this.store.events(company.id, { ticketId: ticket.id, limit: 200 }) : [];
     const approvals = ticket ? this.store.approvalsOf(company.id).filter((a) => a.ticket_id === ticket.id && a.state !== 'pending') : [];
-    const queue = this.store.ticketsOf(company.id).filter((t) => t.assignee_id === agent.id && ACTIVE.has(t.state) && t.id !== ticket?.id);
+    const all = this.store.ticketsOf(company.id);
+    const queue = all.filter((t) => t.assignee_id === agent.id && ACTIVE.has(t.state) && t.id !== ticket?.id);
+    // the parent sees what its sub-tasks reported; without it, it waits for work it cannot read
+    const subtasks = ticket ? all.filter((t) => t.parent_id === ticket.id).map((t) => ({ ticket: t, assignee: t.assignee_id ? (this.store.agent(t.assignee_id)?.name ?? '?') : 'nobody', report: this.reportOf(company.id, t) })) : [];
+    const parent = ticket?.parent_id ? this.store.ticket(ticket.parent_id) : null;
     const packet = buildPacket({
       run_id: run.id, reason, company, agent, colleagues, ticket, thread, approvals, mandate,
-      remaining: Math.max(0, remaining - ceiling), queue,
+      remaining: Math.max(0, remaining - ceiling), queue, parent, subtasks,
     });
     const workDir = join(this.workDir, company.id);
     try { mkdirSync(workDir, { recursive: true, mode: 0o700 }); } catch { /* exists */ }
@@ -334,6 +346,12 @@ export class Engine {
       ev('state', { from: t.state, to, reason }, t.id);
       t.state = to;
     };
+    // a sub-task that comes back (done, handed over, blocked) wakes whoever owns the parent
+    const wakeParent = (how: string) => {
+      if (!ticket?.parent_id) return;
+      const parent = this.store.ticket(ticket.parent_id);
+      if (parent && parent.assignee_id && ACTIVE.has(parent.state)) this.store.wake(parent.assignee_id, parent.id, `sub-ticket #${ticket.id} ${how}`, now);
+    };
 
     this.store.finishRun(run.id, {
       state: o.error ? 'failed' : 'done', spent: o.spent, model_cost: o.modelCost,
@@ -370,23 +388,25 @@ export class Engine {
           if ((evidence.length || ticket.evidence.length) && handoff.length) {
             // done, but handed to a colleague: the ticket waits in review until they report
             setState(ticket, 'review', `handed to ${handoff.map((a) => a.name).join(', ')}`);
+            wakeParent('done');
           } else if (evidence.length || ticket.evidence.length) {
             setState(ticket, 'done');
-            // a finished sub-ticket wakes whoever owns the parent
-            if (ticket.parent_id) {
-              const parent = this.store.ticket(ticket.parent_id);
-              if (parent && parent.assignee_id && ACTIVE.has(parent.state)) this.store.wake(parent.assignee_id, parent.id, `sub-ticket #${ticket.id} done`, now);
-            }
+            wakeParent('done');
           } else {
             setState(ticket, 'review', 'done was claimed without evidence');
           }
         } else if (r.status === 'blocked') {
           setState(ticket, 'blocked', r.summary.slice(0, 200));
+          wakeParent('blocked');
         } else {
           setState(ticket, 'in_progress');
         }
       }
       for (const nt of r.new_tickets ?? []) {
+        if (ticket?.parent_id) {
+          ev('ticket-refused', { title: nt.title, reason: 'a sub-task reports back instead of opening sub-tasks' }, ticket.id);
+          continue;
+        }
         if (this.store.ticketCount(company.id) >= company.max_tickets) {
           ev('ticket-refused', { title: nt.title, reason: `company is at its ${company.max_tickets} ticket limit` });
           break;
@@ -424,6 +444,23 @@ export class Engine {
       this.store.updateCompany(company.id, { warned: true });
       ev('budget-warning', { spent: microToUsd(total), budget: microToUsd(fresh.budget), percent: Math.floor((total / fresh.budget) * 100) }, null, null);
     }
+  }
+
+  /** What a ticket's assignee last reported on it: the run summary, the comment, and the evidence. */
+  private reportOf(companyId: string, t: TicketRow): string {
+    const evs = this.store.events(companyId, { ticketId: t.id, limit: 200 });
+    const run = [...evs].reverse().find((e) => e.kind === 'run' && e.agent_id === t.assignee_id);
+    const comment = [...evs].reverse().find((e) => e.kind === 'comment' && e.agent_id === t.assignee_id);
+    const b = (run?.body ?? {}) as Record<string, unknown>;
+    const parts = [String(b.summary ?? ''), comment ? String(((comment.body ?? {}) as Record<string, unknown>).text ?? '') : '', t.evidence.length ? `Evidence: ${t.evidence.map((e) => `${e.kind} ${e.value}`).join('; ')}` : ''];
+    return parts.filter(Boolean).join('\n').slice(0, 6000);
+  }
+
+  private pause(company: CompanyRow, reason: string, now = new Date()): void {
+    if (company.state === 'paused') return;
+    this.store.updateCompany(company.id, { state: 'paused' });
+    this.store.addEvent({ company_id: company.id, ticket_id: null, agent_id: null, kind: 'paused', body: { reason } }, now);
+    this.log(`company ${company.name} paused: ${reason}`);
   }
 
   private pauseForBudget(company: CompanyRow, now = new Date()): void {

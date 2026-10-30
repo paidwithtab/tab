@@ -287,6 +287,19 @@ async function main(): Promise<void> {
   modes.ant = 'pay';
   await runAll();
   check('the parent closed on the next run', (await view()).tickets.find((t: any) => t.id === t6.id).state === 'done');
+  check('the parent run read what its sub-task reported', lastPacket?.subtasks?.[0]?.id === sub.id && /bought a quote/.test(lastPacket.subtasks[0].report) && /Sub-tasks of this ticket/.test(lastPacket.prompt));
+  modes.ant = 'spawn';
+  modes.bee = 'spawn';
+  const t6b = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'parent two', assignee: 'ant' })).body.ticket;
+  await runAll();
+  await runAll();
+  v = await view();
+  const sub2 = v.tickets.find((t: any) => t.parent_id === t6b.id);
+  check('a sub-task cannot open sub-tasks of its own', sub2 && !v.tickets.some((t: any) => t.parent_id === sub2.id) && v.events.some((e: any) => e.kind === 'ticket-refused' && e.ticket_id === sub2.id));
+  modes.bee = 'pay';
+  await runAll();
+  modes.ant = 'pay';
+  await runAll();
   modes.ant = 'mention';
   const t7 = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'mention', assignee: 'ant' })).body.ticket;
   await runAll();
@@ -330,6 +343,21 @@ async function main(): Promise<void> {
     && store.wakes().some((w) => w.ticket_id === t8b.id && /cy is hired/.test(w.reason)));
   modes.ant = 'progress';
   await runAll();
+
+  const renamed = await api('POST', `/api/companies/${cid}/charter`, { name: 'Acme Two', mission: 'A new mission.' });
+  v = await view();
+  check('a charter action renames the company and sets its mission, signed', renamed.status === 200 && v.company.name === 'Acme Two' && v.company.mission === 'A new mission.'
+    && v.board.some((b: any) => b.action === 'charter' && b.verified) && (await api('POST', `/api/companies/${cid}/charter`, { name: ' ' })).status === 400);
+  const noChain = await api('GET', `/api/companies/${cid}/chain`);
+  check('a company on a ledger gateway has no chain to authorize on', noChain.status === 200 && noChain.body.chain === null
+    && (await api('POST', `/api/companies/${cid}/chain/authorize`, { agent_id: store.agentByName(cid, 'ant')!.id, amount: '1.00' })).status === 409);
+
+  // a team that keeps waking itself pauses the company instead of running on the owner's key all hour
+  const capped = new Engine({ store, workDir: join(scratch, 'work'), tickMs: 3_600_000, runTimeoutMs: 10_000, secrets, anthropicUrl: ANT, maxRunsPerCompanyHour: 1 });
+  const ranCapped = await capped.runOnce(store.company(cid)!, store.agentByName(cid, 'ant')!, null, 'test');
+  check('too many runs in an hour pause the company', ranCapped === null && store.company(cid)!.state === 'paused'
+    && (await view()).events.some((e: any) => e.kind === 'paused' && /runs in the last hour/.test(e.body.reason)));
+  await api('POST', `/api/companies/${cid}/resume`, {});
 
   // -- 8. budget: warn at 80 percent, pause at 100 -----------------------------------
   const spentNow = usdToMicro((await view()).company.spent.total);

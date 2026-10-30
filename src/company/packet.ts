@@ -31,6 +31,8 @@ export interface PacketInput {
   mandate: Mandate | null;
   remaining: number; // micro the company may still spend after this run's ceiling
   queue: TicketRow[]; // other open tickets assigned to this agent
+  parent?: TicketRow | null; // the ticket this one is a sub-task of
+  subtasks?: Array<{ ticket: TicketRow; assignee: string; report: string }>; // sub-tasks of this ticket and what each reported
 }
 
 export interface Packet {
@@ -92,7 +94,7 @@ State: ${ticket.state}. Opened by ${nameOf(everyone, ticket.created_by === 'owne
 ${ticket.body}
 
 Thread:
-${renderThread(input.thread, everyone)}` : `No ticket this time (reason: ${input.reason}). Look at your queue and report.`}
+${renderThread(input.thread, everyone)}${input.parent ? `\n\nThis is a sub-task of #${input.parent.id} ${input.parent.title}. Report back here; a sub-task does not open sub-tasks of its own.` : ''}${input.subtasks?.length ? `\n\nSub-tasks of this ticket and what they reported:\n${input.subtasks.map((s) => `- #${s.ticket.id} ${s.ticket.title} (${s.ticket.state}, ${s.assignee}): ${s.report || 'nothing yet'}`).join('\n')}` : ''}` : `No ticket this time (reason: ${input.reason}). Look at your queue and report.`}
 ${input.queue.length ? `\nYour other open tickets: ${input.queue.map((t) => `#${t.id} ${t.title} (${t.state})`).join('; ')}` : ''}
 Why you were woken: ${input.reason}.
 
@@ -119,6 +121,8 @@ ${JSON.stringify(CONTRACT, null, 2)}
     } : null,
     thread: input.thread.map((e) => ({ at: e.at, by: nameOf(everyone, e.agent_id), kind: e.kind, body: e.body })),
     queue: input.queue.map((t) => ({ id: t.id, title: t.title, state: t.state })),
+    parent: input.parent ? { id: input.parent.id, title: input.parent.title } : null,
+    subtasks: (input.subtasks ?? []).map((s) => ({ id: s.ticket.id, title: s.ticket.title, state: s.ticket.state, assignee: s.assignee, report: s.report, evidence: s.ticket.evidence })),
     approvals: input.approvals.map((a) => ({ id: a.id, kind: a.kind, state: a.state, payload: a.payload })),
     budget: {
       mandate, currency: cur, gateways: company.gateways, catalog: company.catalog,

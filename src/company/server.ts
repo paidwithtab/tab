@@ -10,9 +10,12 @@ import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { randomBytes, createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { microToUsd, usdToMicro, normalizeUsd, isCurrency, type Receipt } from '../protocol.js';
+import { microToUsd, usdToMicro, normalizeUsd, isCurrency, microToBaseUnits, baseUnitsToMicro, type Receipt } from '../protocol.js';
 import { newKeyPair } from '../keys.js';
 import { addressFromSeed } from '../evm/secp256k1.js';
+import { EvmRpc } from '../evm/rpc.js';
+import { evmSend } from '../evm/send.js';
+import { erc20, hexToBig } from '../evm/tx.js';
 import { originIsPublic } from '../catalog.js';
 import { guardedFetch } from '../net.js';
 import { signBoardAction, verifyBoardAction, BOARD_ACTIONS, type SignedBoardAction, type BoardActionKind } from './board.js';
@@ -44,8 +47,20 @@ export interface CompanyServerOptions {
   hostModelKey?: boolean;
   /** Where model keys are verified; tests point it at a stub. */
   anthropicUrl?: string;
+  /** RPC endpoints by chain id, for companies that spend at an evm-rail gateway. Default: Robinhood Chain mainnet and testnet. */
+  evmRpc?: Record<number, string>;
   log?: (msg: string) => void;
 }
+
+const EVM_RPC: Record<number, string> = {
+  4663: 'https://rpc.mainnet.chain.robinhood.com,https://robinhood-mainnet.drpc.org,https://robinhood-rpc.publicnode.com,https://4663.rpc.thirdweb.com',
+  46630: 'https://rpc.testnet.chain.robinhood.com,https://robinhood-testnet.drpc.org,https://46630.rpc.thirdweb.com',
+};
+// an agent on an evm-rail gateway sends its own payment transactions, so it needs a little ETH for gas
+const GAS_FLOOR_WEI = 200_000_000_000_000n; // 0.0002 ETH
+const GAS_TOP_UP_WEI = 500_000_000_000_000n; // 0.0005 ETH
+const seedOf = (priv: string) => new Uint8Array(Buffer.from(priv, 'base64url'));
+const eth = (wei: bigint) => (Number(wei / 1_000_000_000_000n) / 1e6).toFixed(6);
 
 const MAX_BODY = 1_000_000;
 const COOKIE = 'tab_session';
@@ -180,6 +195,25 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
   // every fetch to an address a user named (gateways, the selling gateway) goes through the egress
   // guard: public addresses only, no redirects. Tests and local development opt out.
   const egress: typeof fetch = opts.allowPrivateOrigins ? fetch : guardedFetch({ timeoutMs: 10_000, maxBytes: 4 * 1024 * 1024 });
+
+  /** The first gateway this company spends at that settles on chain, with an RPC for it; null when all are ledger gateways. */
+  const chainMemo = new Map<string, { at: number; doc: Record<string, any> | null }>();
+  async function chainOf(c: CompanyRow) {
+    for (const origin of c.gateways) {
+      let hit = chainMemo.get(origin);
+      if (!hit || Date.now() - hit.at > 300_000) {
+        let doc: Record<string, any> | null = null;
+        try { const r = await egress(origin + '/.well-known/tab', { signal: AbortSignal.timeout(8_000), redirect: 'error' }); if (r.ok) doc = (await r.json()) as Record<string, any>; } catch { /* unreachable: try the next */ }
+        hit = { at: Date.now(), doc };
+        chainMemo.set(origin, hit);
+      }
+      const info = hit.doc?.rail === 'evm' ? hit.doc.rail_info : null;
+      const rpc = info && (opts.evmRpc ?? EVM_RPC)[Number(info.chain_id)];
+      if (!info || !rpc || typeof info.token !== 'string') continue;
+      return { origin, chain_id: Number(info.chain_id), token: info.token.toLowerCase() as string, decimals: Number(info.decimals ?? 6), explorer: typeof info.explorer === 'string' ? info.explorer : null, rpc: new EvmRpc(rpc) };
+    }
+    return null;
+  }
 
   /** A bare origin, or null: http(s), no credentials, no path, query or fragment. */
   function bareOrigin(raw: string): string | null {
@@ -421,6 +455,16 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         ev('publish', { gateway });
         return { ok: true };
       }
+      case 'charter': {
+        // the company's name and mission: what every agent reads first
+        const patch: { name?: string; mission?: string } = {};
+        if (p.name !== undefined) { const name = str(p.name, 80).trim(); if (!name) throw new HttpError(400, 'name is required'); patch.name = name; }
+        if (p.mission !== undefined) patch.mission = str(p.mission, 20_000);
+        if (!Object.keys(patch).length) throw new HttpError(400, 'nothing to change');
+        store.updateCompany(c.id, patch);
+        ev('charter', { from: { name: c.name, mission: c.mission }, to: { name: patch.name ?? c.name, mission: patch.mission ?? c.mission } });
+        return { ok: true };
+      }
       case 'cancel': {
         const t = store.ticket(str(p.ticket_id, 64));
         if (!t || t.company_id !== c.id) throw new HttpError(404, 'no such ticket');
@@ -633,10 +677,29 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
           sendJson(res, 200, { ticket: publicTicket(t), thread: store.events(c.id, { ticketId: t.id, limit: 500 }) });
           return;
         }
+        if (sub === 'chain') {
+          // the owner's account and each agent's spending allowance on the chain this company pays on
+          const ch = await chainOf(c);
+          if (!ch) { sendJson(res, 200, { chain: null }); return; }
+          const owner = addressFromSeed(seedOf(c.owner_priv));
+          const tokenOf = async (data: Uint8Array) => microToUsd(Number(baseUnitsToMicro(hexToBig(await ch.rpc.ethCall(ch.token, data)), ch.decimals)));
+          try {
+            const agents = await Promise.all(store.agentsOf(c.id).filter((a) => a.state === 'active' && a.agent_priv).map(async (a) => {
+              const address = addressFromSeed(seedOf(a.agent_priv!));
+              return { id: a.id, name: a.name, address, eth: eth(await ch.rpc.balance(address)), allowance: await tokenOf(erc20.allowance(owner, address)) };
+            }));
+            sendJson(res, 200, { chain: { origin: ch.origin, chain_id: ch.chain_id, token: ch.token, explorer: ch.explorer }, owner: { address: owner, eth: eth(await ch.rpc.balance(owner)), balance: await tokenOf(erc20.balanceOf(owner)) }, agents });
+          } catch (err) {
+            sendJson(res, 502, { error: `chain unreachable: ${(err as Error).message}` });
+          }
+          return;
+        }
         if (sub === 'balances') {
+          await chainOf(c); // learns which gateways settle on chain
           const balances = await Promise.all(c.gateways.map(async (origin) => {
             try {
-              const r = await egress(`${origin}/.well-known/tab/wallet/${encodeURIComponent(c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) });
+              const evm = chainMemo.get(origin)?.doc?.rail === 'evm';
+              const r = await egress(`${origin}/.well-known/tab/wallet/${encodeURIComponent(evm ? addressFromSeed(seedOf(c.owner_priv)) : c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) });
               return { origin, ...((await r.json()) as Record<string, unknown>) };
             } catch (err) { return { origin, error: (err as Error).message }; }
           }));
@@ -681,6 +744,31 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       const am = /^agents\/([A-Za-z0-9_-]+)\/retire$/.exec(sub);
       if (am) { sendJson(res, 200, boardAct(c, 'retire', { agent_id: am[1] }) as object); return; }
       if (sub === 'budget') { sendJson(res, 200, boardAct(c, 'budget', { budget: str(body.budget, 20) }) as object); return; }
+      if (sub === 'chain/authorize') {
+        // the on-chain half of an agent's spending: the owner account approves the agent's account for an amount
+        // of the token and tops up its gas. Mandates still cap every run; the allowance caps everything together.
+        const ch = await chainOf(c);
+        if (!ch) throw new HttpError(409, 'this company spends at no Robinhood Chain gateway');
+        const agent = store.agent(str(body.agent_id, 64));
+        if (!agent || agent.company_id !== c.id || agent.state !== 'active' || !agent.agent_priv) throw new HttpError(404, 'no such agent with its own key');
+        let micro: number;
+        try { micro = usdToMicro(normalizeUsd(str(body.amount, 20))); } catch { throw new HttpError(400, 'amount must be like 5.00'); }
+        if (micro > c.budget) throw new HttpError(400, `the allowance cannot be more than the company budget (${microToUsd(c.budget)})`);
+        const owner = { privateKey: c.owner_priv };
+        const address = addressFromSeed(seedOf(agent.agent_priv));
+        const txs: Array<{ kind: string; hash: string }> = [];
+        try {
+          if ((await ch.rpc.balance(address)) < GAS_FLOOR_WEI) txs.push({ kind: 'gas', hash: await evmSend(ch.rpc, owner, address, GAS_TOP_UP_WEI, new Uint8Array(0)) });
+          txs.push({ kind: 'allowance', hash: await evmSend(ch.rpc, owner, ch.token, 0n, erc20.approve(address, microToBaseUnits(BigInt(micro), ch.decimals))) });
+        } catch (err) {
+          const msg = (err as Error).message;
+          throw new HttpError(400, /insufficient funds|gas/i.test(msg) ? `the owner account ${addressFromSeed(seedOf(c.owner_priv))} needs a little ETH for gas on chain ${ch.chain_id}` : `chain refused: ${msg}`);
+        }
+        store.addEvent({ company_id: c.id, ticket_id: null, agent_id: null, kind: 'chain-authorize', body: { agent: agent.name, address, amount: microToUsd(micro), chain_id: ch.chain_id, txs, explorer: ch.explorer } });
+        sendJson(res, 200, { ok: true, address, amount: microToUsd(micro), txs, explorer: ch.explorer });
+        return;
+      }
+      if (sub === 'charter') { sendJson(res, 200, boardAct(c, 'charter', { ...(body.name !== undefined ? { name: str(body.name, 80) } : {}), ...(body.mission !== undefined ? { mission: str(body.mission, 20_000) } : {}) }) as object); return; }
       if (sub === 'pause' || sub === 'resume') { sendJson(res, 200, boardAct(c, sub, { reason: str(body.reason, 500) }) as object); return; }
       if (sub === 'publish') { await checkEgress('publish', { gateway: str(body.gateway, 300) }); sendJson(res, 200, boardAct(c, 'publish', { gateway: str(body.gateway, 300) }) as object); return; }
       if (sub === 'model-key') {

@@ -74,7 +74,7 @@ npx paidwithtab serve --spec spec.json \
   --origin https://api.example.com
 ```
 
-`--announce` registers you with a catalog so agents can find your routes; `--origin` is the public URL buyers will call. State lives in one SQLite file next to the process. Production hardening (systemd, nginx or Caddy with TLS, firewalling, backups) is [DEPLOY.md section 8](../DEPLOY.md); the short version is: put TLS in front, keep the raw port off the internet.
+`--announce` registers you with a catalog so agents can find your routes; `--origin` is the public URL buyers will call. The gateway gives your API 60 seconds to answer; when the work behind a route takes longer (a report your agents write, say), raise it with `--upstream-timeout 300`. The buyer is charged only once the answer arrives. State lives in one SQLite file next to the process. Production hardening (systemd, nginx or Caddy with TLS, firewalling, backups) is [DEPLOY.md section 8](../DEPLOY.md); the short version is: put TLS in front, keep the raw port off the internet.
 
 ## 4. Verify you get paid
 

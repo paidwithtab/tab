@@ -9,7 +9,7 @@ import { signBytes, verifyBytes, type KeyPair } from '../keys.js';
 
 export const BOARD_VERSION = 'tab-board/0';
 
-export const BOARD_ACTIONS = ['hire', 'retire', 'budget', 'approve', 'reject', 'pause', 'resume', 'publish', 'cancel'] as const;
+export const BOARD_ACTIONS = ['hire', 'retire', 'budget', 'approve', 'reject', 'pause', 'resume', 'publish', 'cancel', 'charter'] as const;
 export type BoardActionKind = (typeof BOARD_ACTIONS)[number];
 
 export interface BoardBody {
