@@ -33,6 +33,7 @@ export interface PacketInput {
   queue: TicketRow[]; // other open tickets assigned to this agent
   parent?: TicketRow | null; // the ticket this one is a sub-task of
   subtasks?: Array<{ ticket: TicketRow; assignee: string; report: string }>; // sub-tasks of this ticket and what each reported
+  books?: { spent_tab: number; spent_model: number; budget: number; earned: number | null; orders: number | null; gateway: string | null }; // micro
 }
 
 export interface Packet {
@@ -87,7 +88,7 @@ Mission: ${company.mission}
 ${agent.instructions ? `\nYour instructions: ${agent.instructions}\n` : ''}
 Colleagues: ${colleagues.length ? colleagues.map((c) => `${c.name} (${c.role})`).join(', ') : 'none yet'}. The owner is a person reading the dashboard; address them as @owner.
 
-Budget: ${budgetLine}. Company remaining after this run's ceiling: ${microToUsd(input.remaining)} ${cur}. Model cost counts against the company too. ${spendHow} Spend only what the ticket needs; a cheaper route that does the job is the right route.
+${input.books ? `Company books so far: ${microToUsd(input.books.spent_tab)} ${cur} paid through tab, ${microToUsd(input.books.spent_model)} ${cur} of model time, of a ${microToUsd(input.books.budget)} ${cur} budget${input.books.gateway ? `; earned ${input.books.earned === null ? 'unknown (gateway unreachable)' : `${microToUsd(input.books.earned)} ${cur} from ${input.books.orders} paid orders`} at ${input.books.gateway}` : ''}.\n\n` : ''}Budget: ${budgetLine}. Company remaining after this run's ceiling: ${microToUsd(input.remaining)} ${cur}. Model cost counts against the company too. ${spendHow} Spend only what the ticket needs; a cheaper route that does the job is the right route.
 
 ${ticket ? `Ticket #${ticket.id}: ${ticket.title}
 State: ${ticket.state}. Opened by ${nameOf(everyone, ticket.created_by === 'owner' ? null : ticket.created_by)}${ticket.budget !== null ? `. Ticket cap ${microToUsd(ticket.budget)} ${cur}, ${microToUsd(ticket.spent)} spent so far` : ''}.
@@ -122,6 +123,7 @@ ${JSON.stringify(CONTRACT, null, 2)}
     thread: input.thread.map((e) => ({ at: e.at, by: nameOf(everyone, e.agent_id), kind: e.kind, body: e.body })),
     queue: input.queue.map((t) => ({ id: t.id, title: t.title, state: t.state })),
     parent: input.parent ? { id: input.parent.id, title: input.parent.title } : null,
+    books: input.books ? { spent_tab: microToUsd(input.books.spent_tab), spent_model: microToUsd(input.books.spent_model), budget: microToUsd(input.books.budget), earned: input.books.earned === null ? null : microToUsd(input.books.earned), orders: input.books.orders, gateway: input.books.gateway } : null,
     subtasks: (input.subtasks ?? []).map((s) => ({ id: s.ticket.id, title: s.ticket.title, state: s.ticket.state, assignee: s.assignee, report: s.report, evidence: s.ticket.evidence })),
     approvals: input.approvals.map((a) => ({ id: a.id, kind: a.kind, state: a.state, payload: a.payload })),
     budget: {

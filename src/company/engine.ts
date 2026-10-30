@@ -245,9 +245,12 @@ export class Engine {
     // the parent sees what its sub-tasks reported; without it, it waits for work it cannot read
     const subtasks = ticket ? all.filter((t) => t.parent_id === ticket.id).map((t) => ({ ticket: t, assignee: t.assignee_id ? (this.store.agent(t.assignee_id)?.name ?? '?') : 'nobody', report: this.reportOf(company.id, t) })) : [];
     const parent = ticket?.parent_id ? this.store.ticket(ticket.parent_id) : null;
+    const spentNow = this.store.companySpent(company.id);
+    const sales = await this.earnings(company);
+    const books = { spent_tab: spentNow.tab, spent_model: spentNow.model, budget: company.budget, earned: sales?.earned ?? null, orders: sales?.orders ?? null, gateway: company.sell_gateway };
     const packet = buildPacket({
       run_id: run.id, reason, company, agent, colleagues, ticket, thread, approvals, mandate,
-      remaining: Math.max(0, remaining - ceiling), queue, parent, subtasks,
+      remaining: Math.max(0, remaining - ceiling), queue, parent, subtasks, books,
     });
     const workDir = join(this.workDir, company.id);
     try { mkdirSync(workDir, { recursive: true, mode: 0o700 }); } catch { /* exists */ }
@@ -447,6 +450,24 @@ export class Engine {
       this.store.updateCompany(company.id, { warned: true });
       ev('budget-warning', { spent: microToUsd(total), budget: microToUsd(fresh.budget), percent: Math.floor((total / fresh.budget) * 100) }, null, null);
     }
+  }
+
+  /** What the company has earned at the gateway it sells through: the receipts paid to its owner key. Cached for a minute. */
+  private sales = new Map<string, { at: number; v: { earned: number; orders: number } | null }>();
+  private async earnings(company: CompanyRow): Promise<{ earned: number; orders: number } | null> {
+    if (!company.sell_gateway) return null;
+    const hit = this.sales.get(company.id);
+    if (hit && Date.now() - hit.at < 60_000) return hit.v;
+    let v: { earned: number; orders: number } | null = null;
+    try {
+      const r = await (this.opts.fetch ?? fetch)(`${company.sell_gateway}/.well-known/tab/receipts?limit=200`, { signal: AbortSignal.timeout(5_000) });
+      if (r.ok) {
+        const mine = (((await r.json()) as { receipts?: Array<{ recipient: string; amount: string }> }).receipts ?? []).filter((x) => x.recipient === company.owner_pub);
+        v = { earned: mine.reduce((n, x) => n + Number(x.amount), 0), orders: mine.length };
+      }
+    } catch { /* unreachable: the books say so */ }
+    this.sales.set(company.id, { at: Date.now(), v });
+    return v;
   }
 
   /** What a ticket's assignee last reported on it: the run summary, the comment, and the evidence. */

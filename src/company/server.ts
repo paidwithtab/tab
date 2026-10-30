@@ -395,6 +395,27 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         ev('retire', { agent_id: agent.id, name: agent.name });
         return { ok: true };
       }
+      case 'configure': {
+        // an agent's settings after hiring: its model, what it may spend per run and per call, its instructions
+        const agent = store.agent(str(p.agent_id, 64));
+        if (!agent || agent.company_id !== c.id) throw new HttpError(404, 'no such agent');
+        const patch: Partial<Pick<AgentRow, 'budget_per_run' | 'heartbeat_s' | 'instructions' | 'config'>> = {};
+        const config = { ...agent.config };
+        if (p.budget_per_run !== undefined) { try { patch.budget_per_run = usdToMicro(normalizeUsd(str(p.budget_per_run, 20))); } catch { throw new HttpError(400, 'budget_per_run must be an amount like 0.50'); } }
+        if (p.heartbeat_s !== undefined) patch.heartbeat_s = Math.max(0, Math.min(86_400 * 7, Number(p.heartbeat_s) || 0));
+        if (p.instructions !== undefined) patch.instructions = str(p.instructions, 20_000);
+        if (p.model !== undefined) { const m = str(p.model, 80).trim(); if (m && !/^claude-[a-z0-9.-]+$/.test(m)) throw new HttpError(400, 'model must be a Claude model id like claude-haiku-5-5'); if (m) config.model = m; else delete config.model; }
+        if (p.max_per_call !== undefined) {
+          const v = str(p.max_per_call, 20).trim();
+          if (!v) delete config.max_per_call;
+          else { try { config.max_per_call = microToUsd(usdToMicro(normalizeUsd(v))); } catch { throw new HttpError(400, 'per call must be an amount like 0.05'); } }
+        }
+        if (p.model !== undefined || p.max_per_call !== undefined) patch.config = config;
+        if (!Object.keys(patch).length) throw new HttpError(400, 'nothing to change');
+        store.updateAgent(agent.id, patch);
+        ev('configure', { agent_id: agent.id, name: agent.name, ...(p.model !== undefined ? { model: config.model ?? 'default' } : {}), ...(patch.budget_per_run !== undefined ? { budget_per_run: microToUsd(patch.budget_per_run) } : {}), ...(p.max_per_call !== undefined ? { max_per_call: config.max_per_call ?? null } : {}), ...(patch.instructions !== undefined ? { instructions: true } : {}) });
+        return publicAgent(store.agent(agent.id)!);
+      }
       case 'budget': {
         let budget: number;
         try { budget = usdToMicro(normalizeUsd(str(p.budget, 20))); } catch { throw new HttpError(400, 'budget must be an amount like 25.00'); }
@@ -709,7 +730,12 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         if (sub === 'earnings') {
           if (!c.sell_gateway) { sendJson(res, 200, { gateway: null, earned: '0.00', receipts: [] }); return; }
           try {
-            const w = await (await egress(`${c.sell_gateway}/.well-known/tab/wallet/${encodeURIComponent(c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) })).json() as Record<string, unknown>;
+            // an evm-rail gateway knows the owner by its 0x address
+            let evm = chainMemo.get(c.sell_gateway)?.doc?.rail === 'evm';
+            if (!chainMemo.has(c.sell_gateway)) {
+              try { const d = (await (await egress(`${c.sell_gateway}/.well-known/tab`, { signal: AbortSignal.timeout(8_000), redirect: 'error' })).json()) as Record<string, any>; chainMemo.set(c.sell_gateway, { at: Date.now(), doc: d }); evm = d.rail === 'evm'; } catch { /* the wallet call below reports it */ }
+            }
+            const w = await (await egress(`${c.sell_gateway}/.well-known/tab/wallet/${encodeURIComponent(evm ? addressFromSeed(seedOf(c.owner_priv)) : c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) })).json() as Record<string, unknown>;
             let receipts: Receipt[] = [];
             try {
               const r = await egress(`${c.sell_gateway}/.well-known/tab/receipts?limit=200`, { signal: AbortSignal.timeout(8_000) });
@@ -743,6 +769,13 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       if (sub === 'agents') { await checkEgress('hire', body); sendJson(res, 200, { agent: boardAct(c, 'hire', body) }); return; }
       const am = /^agents\/([A-Za-z0-9_-]+)\/retire$/.exec(sub);
       if (am) { sendJson(res, 200, boardAct(c, 'retire', { agent_id: am[1] }) as object); return; }
+      const cfm = /^agents\/([A-Za-z0-9_-]+)\/configure$/.exec(sub);
+      if (cfm) {
+        const pick: Record<string, unknown> = { agent_id: cfm[1] };
+        for (const k of ['model', 'budget_per_run', 'max_per_call', 'instructions', 'heartbeat_s']) if (body[k] !== undefined) pick[k] = body[k];
+        sendJson(res, 200, boardAct(c, 'configure', pick) as object);
+        return;
+      }
       if (sub === 'budget') { sendJson(res, 200, boardAct(c, 'budget', { budget: str(body.budget, 20) }) as object); return; }
       if (sub === 'chain/authorize') {
         // the on-chain half of an agent's spending: the owner account approves the agent's account for an amount

@@ -127,13 +127,15 @@ A ticket is open, in progress, in review, blocked, done or cancelled. Assigning 
 
 `done` without evidence goes to review, not done. The owner can close a ticket by giving a reason, which is recorded as evidence of kind `owner`. Agents can open sub-tickets for colleagues (up to the company's ticket limit, 200), and request approvals the owner decides on the dashboard. A sub-ticket that comes back wakes the parent's assignee, whose next run reads what each sub-ticket reported: the run summary, the comment and the evidence. A ticket is handed over once: an agent that finishes with `done` and mentions a colleague sends it to review and wakes them, and the colleague who finishes it closes it (a mention on a closed ticket is a note, not a wake). Sub-tickets go one level deep: an agent working a sub-ticket reports back instead of opening more. A hire request names the agent (name, role, instructions, and its budget per run as the amount); approving it hires that agent on the requester's adapter and per call cap, and tells the requester.
 
+Every run also reads the company's books: what it has paid through tab, its model cost, its budget, and, once it sells through a published gateway, what it has earned there and from how many paid orders.
+
 Two limits keep a team from running on the owner's model key all day: 12 runs on one ticket in an hour blocks the ticket, and 30 runs in a company in an hour pauses the company until the owner resumes it.
 
 Every change is an event in an append-only log: comments, state changes, runs, evidence, requests, budget warnings, pauses. The dashboard's activity feed and each ticket's thread are views of it.
 
 ## The board log
 
-Hire, retire, budget, approve, reject, pause, resume, publish, cancel and charter (the company's name and mission) are board actions:
+Hire, retire, budget, approve, reject, pause, resume, publish, cancel, charter (the company's name and mission) and configure (an agent's model, budget per run, per call cap, instructions and heartbeat after hiring) are board actions:
 
 ```json
 { "ver": "tab-board/0", "company": "<id>", "seq": 4, "action": "budget", "payload": { "budget": "25.00" }, "at": "...", "id": "<sha256>", "sig": "<owner signature>" }

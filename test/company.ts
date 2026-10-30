@@ -348,6 +348,14 @@ async function main(): Promise<void> {
   modes.ant = 'progress';
   await runAll();
 
+  const beeId = store.agentByName(cid, 'bee')!.id;
+  const conf = await api('POST', `/api/companies/${cid}/agents/${beeId}/configure`, { model: 'claude-haiku-5-5', budget_per_run: '.07', max_per_call: '0.01' });
+  const bee2 = store.agent(beeId)!;
+  check('configure changes an agent\'s model and budgets by a signed action', conf.status === 200 && bee2.config.model === 'claude-haiku-5-5' && bee2.budget_per_run === 70_000 && bee2.config.max_per_call === '0.01'
+    && (await view()).board.some((b: any) => b.action === 'configure' && b.verified)
+    && (await api('POST', `/api/companies/${cid}/agents/${beeId}/configure`, { model: 'gpt-4' })).status === 400);
+  await api('POST', `/api/companies/${cid}/agents/${beeId}/configure`, { model: '', budget_per_run: '0.05', max_per_call: '' });
+  check('every run sees the company books', lastPacket?.books && typeof lastPacket.books.spent_tab === 'string' && /Company books so far/.test(lastPacket.prompt));
   const renamed = await api('POST', `/api/companies/${cid}/charter`, { name: 'Acme Two', mission: 'A new mission.' });
   v = await view();
   check('a charter action renames the company and sets its mission, signed', renamed.status === 200 && v.company.name === 'Acme Two' && v.company.mission === 'A new mission.'
