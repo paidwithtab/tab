@@ -160,3 +160,55 @@ scraper           $1/day,  max $0.005/call, allow *
 ```
 
 Budgets are per mandate, so one agent exhausting its tab never touches another's. [agents.md](agents.md) covers wiring each of those agents up and where their keys should live.
+
+## After the mandate is signed (3.0)
+
+**Revoke it.** A mandate you no longer trust dies at every gateway that hears about it, along with every sub-mandate under it:
+
+```sh
+npx paidwithtab mandate revoke --key owner.json --mandate mandate.json --reason "laptop lost" \
+  --gateway https://pay.paidwithtab.com --gateway https://mainnet.paidwithtab.com
+npx paidwithtab mandate status --mandate mandate.json --gateway https://pay.paidwithtab.com
+```
+
+Gateways started with `--peer` pass revocations on and poll each other every few seconds, so naming one of them is enough. On the evm rail a revocation binds gateways, not the chain: the agent's ERC-20 allowance is the hard cap, and an agent key with an allowance can move money without any gateway. Zero it in the same step:
+
+```sh
+npx paidwithtab mandate revoke --key owner.json --mandate mandate.json --gateway https://mainnet.paidwithtab.com \
+  --token 0x5fc5360d0400a0fd4f2af552add042d716f1d168 --evm-agent agent.json
+```
+
+**Let an agent hire help.** An agent with a mandate can sign a narrower one for another agent key. Every limit stays inside its own (budget, per call cap, allowed sellers, expiry, approval threshold), and whatever the helper spends counts against the parent too, so two helpers together can never spend more than the parent allows:
+
+```sh
+npx paidwithtab mandate delegate --agent-key agent.json --mandate mandate.json --to helper.json --budget 0.25 --out helper-mandate.json
+```
+
+Chains stop three delegations below you. Revoking the parent kills the helper's mandate with it.
+
+**Approve the big ones.** Issue the mandate with `--approve-above 0.50` and any payment over fifty cents waits for you. The agent's `tab fetch` stops with exit code 3 and writes the request it needs approved; you sign it and hand it to the gateway, and the agent's retry of the same call pays, once:
+
+```sh
+npx paidwithtab mandate approve --owner owner.json --request ~/.tab/approval-request-XXXX.json --gateway https://pay.paidwithtab.com
+```
+
+`tab fetch --wait-approval 300` waits for you instead of stopping. An approval covers exactly one call (the same route, query, body and amount) for at most an hour.
+
+**Pay on delivery.** Routes that offer it (discovery marks them `escrow`) hold your payment until the seller delivers, and give it back if it does not by the deadline:
+
+```sh
+npx paidwithtab fetch --escrow --wait 300 -X POST -d '{"topic":"Lisbon"}' https://seller.example.com/jobs/essay
+```
+
+The result comes with a delivery receipt that binds your request to what was delivered. Without `--wait`, the command prints how to follow the order (`tab escrow status <url> --token <token>`).
+
+**Open a tab at one gateway.** For many small calls at one gateway, open a payment channel: one deposit, then every call is a signed voucher with no transaction, settled once when you close it. Metered routes charge per unit (tokens, seconds), so a call can cost a fraction of a cent:
+
+```sh
+npx paidwithtab channel open --gateway https://pay.example.com --deposit 1.00
+npx paidwithtab fetch --channel https://pay.example.com/model/complete?tokens=1200
+npx paidwithtab channel list
+npx paidwithtab channel close --gateway https://pay.example.com
+```
+
+The deposit counts against the mandate while the channel is open; closing it gives back what was not spent.

@@ -15,7 +15,7 @@ export interface AgentResult {
   evidence?: Evidence[];
   comment?: string;
   new_tickets?: Array<{ title: string; body?: string; assignee?: string; budget?: string }>;
-  requests?: Array<{ kind: string; amount?: string; reason?: string; name?: string; role?: string; instructions?: string }>;
+  requests?: Array<{ kind: string; amount?: string; reason?: string; name?: string; role?: string; instructions?: string; model?: string; max_per_call?: string }>;
   mentions?: string[];
 }
 
@@ -47,9 +47,18 @@ export const CONTRACT = {
   evidence: [{ kind: 'receipt | url | file | text', value: 'a receipt id, a URL, a file path you wrote, or the literal output' }],
   comment: 'optional longer note for the ticket thread',
   new_tickets: [{ title: '...', body: '...', assignee: 'colleague name', budget: '0.50' }],
-  requests: [{ kind: 'budget | hire | other', amount: '5.00', reason: '...', name: 'for hire: the new agent', role: 'for hire', instructions: 'for hire; amount is then its budget per run' }],
+  requests: [{ kind: 'budget | hire | other', amount: '5.00', reason: '...', name: 'for hire: the new agent', role: 'for hire', instructions: 'for hire; amount is then its budget per run', model: 'for hire, optional: a Claude model id', max_per_call: 'for hire, optional: its per call cap, no higher than yours' }],
   mentions: ['colleague name to wake on this ticket'],
 };
+
+/** Payments above the approval threshold the owner decided since: approved ones go through when the same call is made again. */
+function paymentNotes(approvals: ApprovalRow[]): string {
+  const pay = approvals.filter((a) => a.kind === 'payment' && a.state !== 'pending').slice(0, 5);
+  if (!pay.length) return '';
+  return pay.map((a) => a.state === 'approved'
+    ? `The owner approved your payment of ${String(a.payload.amount ?? '')} ${String(a.payload.currency ?? '')} for ${String(a.payload.method ?? 'GET')} ${String(a.payload.url ?? a.payload.resource ?? '')}: call tab_fetch again with exactly the same request (method, URL and body) and it goes through.`
+    : `The owner declined your payment of ${String(a.payload.amount ?? '')} ${String(a.payload.currency ?? '')} for ${String(a.payload.url ?? a.payload.resource ?? '')}: do not try it again; find another way or report what blocks you.`).join('\n') + '\n';
+}
 
 function nameOf(agents: AgentRow[], id: string | null): string {
   if (id === null) return 'owner';
@@ -98,7 +107,7 @@ Thread:
 ${renderThread(input.thread, everyone)}${input.parent ? `\n\nThis is a sub-task of #${input.parent.id} ${input.parent.title}. Report back here; a sub-task does not open sub-tasks of its own.` : ''}${input.subtasks?.length ? `\n\nSub-tasks of this ticket and what they reported:\n${input.subtasks.map((s) => `- #${s.ticket.id} ${s.ticket.title} (${s.ticket.state}, ${s.assignee}): ${s.report || 'nothing yet'}`).join('\n')}` : ''}` : `No ticket this time (reason: ${input.reason}). Look at your queue and report.`}
 ${input.queue.length ? `\nYour other open tickets: ${input.queue.map((t) => `#${t.id} ${t.title} (${t.state})`).join('; ')}` : ''}
 Why you were woken: ${input.reason}.
-
+${paymentNotes(input.approvals)}
 Rules:
 1. Do the work in this run, or say exactly what blocks you.
 2. Nothing closes without evidence. "done" needs at least one evidence item: a tab receipt id, a URL, a file you wrote, or the literal output. Without evidence the ticket goes to review, not done.
@@ -168,7 +177,7 @@ export function validateResult(x: unknown): AgentResult | null {
       .map((r) => {
         const rr = r as Record<string, unknown>;
         const req: NonNullable<AgentResult['requests']>[number] = { kind: str(rr.kind, 32), amount: rr.amount === undefined ? undefined : str(rr.amount, 20), reason: str(rr.reason, 2000) };
-        if (req.kind === 'hire') { if (rr.name !== undefined) { const n = str(rr.name, 60).trim().replace(/^@/, ''); if (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/.test(n)) req.name = n; } if (rr.role !== undefined) req.role = str(rr.role, 200); if (rr.instructions !== undefined) req.instructions = str(rr.instructions, 20_000); }
+        if (req.kind === 'hire') { if (rr.name !== undefined) { const n = str(rr.name, 60).trim().replace(/^@/, ''); if (/^[A-Za-z0-9][A-Za-z0-9_.-]{0,39}$/.test(n)) req.name = n; } if (rr.role !== undefined) req.role = str(rr.role, 200); if (rr.instructions !== undefined) req.instructions = str(rr.instructions, 20_000); if (rr.model !== undefined) req.model = str(rr.model, 80).trim(); if (rr.max_per_call !== undefined) req.max_per_call = str(rr.max_per_call, 20).trim(); }
         return req;
       });
   }

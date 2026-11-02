@@ -7,12 +7,13 @@
 
 import { PayError, assertDecimals, baseUnitsToMicro, type Challenge } from '../protocol.js';
 import type { HoldRow } from '../store.js';
-import type { Rail, ReserveContext } from './index.js';
+import { PayoutPending, PayoutUnknown, LockTimeout, type Rail, type ReserveContext } from './index.js';
+import type { Store, PayoutRow } from '../store.js';
 import { EvmRpc, EvmRevert } from '../evm/rpc.js';
-import { parseTx, hexToBytes, bigToHex, isAddress, type ParsedTx } from '../evm/tx.js';
+import { parseTx, hexToBytes, bytesToHex, bigToHex, isAddress, type ParsedTx } from '../evm/tx.js';
 import { buildPaymentTx } from '../evm/pay.js';
 import { scalarFromSeed, addressFromSeed } from '../evm/secp256k1.js';
-import { signTx } from '../evm/tx.js';
+import { signTx, erc20 } from '../evm/tx.js';
 import { microToBaseUnits } from '../protocol.js';
 import type { KeyPair } from '../keys.js';
 import {
@@ -40,7 +41,8 @@ export interface X402Accepted {
   amount: bigint;
 }
 
-const GAS_LIMIT = 250_000; // transferFrom incl. Arbitrum-style L1 posting headroom
+const GAS_LIMIT = 250_000;
+const MAX_CANCELS = 5; // fee-bumped cancels at one nonce before the payout is left to the operator // transferFrom incl. Arbitrum-style L1 posting headroom
 const X402_GAS_LIMIT = 300_000; // transferWithAuthorization, a signature check more than transferFrom
 
 export class EvmRail implements Rail {
@@ -66,7 +68,7 @@ export class EvmRail implements Rail {
     };
   }
 
-  async challengeExtras(): Promise<Partial<Challenge>> {
+  async challengeExtras(o: { recipient?: string } = {}): Promise<Partial<Challenge>> {
     if (!this.chainChecked) {
       const actual = await this.rpc.chainId();
       if (actual !== BigInt(this.cfg.chain_id)) {
@@ -85,7 +87,7 @@ export class EvmRail implements Rail {
         chain_id: this.cfg.chain_id,
         token: this.cfg.token.toLowerCase(),
         decimals: this.cfg.decimals,
-        recipient: this.cfg.recipient.toLowerCase(),
+        recipient: (o.recipient ?? this.cfg.recipient).toLowerCase(),
         max_fee_per_gas: bigToHex(gasPrice * 2n + tip),
         max_priority_fee_per_gas: bigToHex(tip),
         gas_limit: GAS_LIMIT,
@@ -109,7 +111,7 @@ export class EvmRail implements Rail {
     } catch (err) {
       throw new PayError('malformed-credential', `evm transaction does not parse: ${(err as Error).message}`);
     }
-    const expected = buildPaymentTx(ctx.chal, evmOwner, parsed.nonce);
+    const expected = buildPaymentTx(ctx.chal, evmOwner, parsed.nonce, ctx.payTo);
     const mismatch =
       parsed.chainId !== expected.chainId ? 'chain id' :
       parsed.maxPriorityFeePerGas !== expected.maxPriorityFeePerGas ? 'priority fee' :
@@ -296,6 +298,198 @@ export class EvmRail implements Rail {
     const next = this.settling.then(run, run);
     this.settling = next.catch(() => undefined);
     return next;
+  }
+
+  // -- escrow (3.0) ----------------------------------------------------------------------
+  // Pay-on-delivery orders and channel deposits are paid into an escrow address the gateway
+  // holds the key of; the escrow key pays them out to the seller or back to the owner. The
+  // buyer trusts the gateway with the money for that while, as a seller trusts it already.
+
+  private escrowKey: KeyPair | null = null;
+  private escrowStore: Store | null = null;
+  private paying: Promise<unknown> = Promise.resolve(); // payouts send one at a time: one nonce sequence
+  /** How long a lock or a payout waits for its receipt before it counts as not confirmed. */
+  confirmMs = 60_000;
+
+  enableEscrow(key: KeyPair, store: Store): void {
+    this.escrowKey = key;
+    this.escrowStore = store;
+  }
+
+  escrowRecipient(): string | null {
+    return this.escrowKey ? addressFromSeed(new Uint8Array(Buffer.from(this.escrowKey.privateKey, 'base64url'))) : null;
+  }
+
+  /**
+   * The buyer's transfer into the escrow address, confirmed. Unlike a capture, a slow receipt is
+   * not good enough: an order or a channel must not open on money that may never arrive. Anything
+   * short of a revert (a refused or unanswered broadcast, a slow receipt) is a LockTimeout: the
+   * transfer may still land, so the gateway watches it rather than forgetting it.
+   */
+  async lock(hold: HoldRow): Promise<string> {
+    const raw = hexToBytes(hold.tx!);
+    const hash = parseTx(raw).hash;
+    try {
+      await this.rpc.sendRawTransaction(raw);
+    } catch (err) {
+      const known = await this.rpc.call('eth_getTransactionByHash', [hash]).catch(() => null);
+      if (!known) throw new LockTimeout(`evm:${hash}`, `the payment into escrow was not accepted by the node (${(err as Error).message})`);
+    }
+    try {
+      await this.rpc.waitForReceipt(hash, this.confirmMs);
+    } catch (err) {
+      if (/reverted/.test((err as Error).message)) throw err;
+      throw new LockTimeout(`evm:${hash}`, `the payment into escrow did not confirm within ${Math.round(this.confirmMs / 1000)} s`);
+    }
+    return `evm:${hash}`;
+  }
+
+  /**
+   * What a transaction of ours (or a buyer's) has come to. The account's mined nonce is read before
+   * the receipt, so a transaction that mines between the two reads shows its receipt, not a consumed
+   * nonce. A consumed nonce with no receipt is asked again by hash and by receipt; still unknown, it is
+   * 'unknown' (a node lagging, or a transaction that lost its nonce), which never counts as failed.
+   */
+  private async txOutcome(hash: string, from: string, nonce: bigint): Promise<'ok' | 'reverted' | 'pending' | 'unknown'> {
+    const mined = BigInt(await this.rpc.call('eth_getTransactionCount', [from, 'latest']));
+    const receipt = await this.receiptFor(hash);
+    if (receipt) return receipt;
+    if (mined <= nonce) return 'pending';
+    const byHash = await this.rpc.call('eth_getTransactionByHash', [hash]).catch(() => null);
+    const again = await this.receiptFor(hash);
+    if (again) return again;
+    return byHash ? 'pending' : 'unknown';
+  }
+
+  /**
+   * A receipt read strictly: ok on status 0x1, reverted on status 0x0, both only when the receipt
+   * names this hash. Anything else (no receipt, another transaction's receipt, an odd status) is null.
+   */
+  private async receiptFor(hash: string): Promise<'ok' | 'reverted' | null> {
+    const r = await this.rpc.call('eth_getTransactionReceipt', [hash]);
+    if (!r || (typeof r.transactionHash === 'string' && r.transactionHash.toLowerCase() !== hash.toLowerCase())) return null;
+    return r.status === '0x1' ? 'ok' : r.status === '0x0' ? 'reverted' : null;
+  }
+
+  /**
+   * What became of a lock that timed out: landed (the money is in escrow), failed (it reverted, or a
+   * day on its nonce is spent and nothing knows the transaction), or still pending.
+   */
+  async lockStatus(hold: HoldRow): Promise<'landed' | 'failed' | 'pending'> {
+    const tx = parseTx(hexToBytes(hold.tx!));
+    const out = await this.txOutcome(tx.hash, tx.from, tx.nonce);
+    if (out === 'ok') return 'landed';
+    if (out === 'reverted') return 'failed';
+    if (out === 'unknown' && Date.now() - Date.parse(hold.created_at) > 86_400_000) return 'failed';
+    return 'pending';
+  }
+
+  /**
+   * Pay out of the escrow address, once per key. The signed transaction is stored before it is
+   * sent; a retry looks that transaction up and rebroadcasts it. A new one is signed only when the
+   * chain shows the stored one cannot land: its own receipt says it reverted, or a cancel transaction
+   * of ours at the same nonce has mined. A consumed nonce without a receipt is never enough: that is
+   * how a lagging node looks too, so the payout is left for the operator instead.
+   */
+  async payoutLocked(hold: HoldRow, to: 'seller' | 'buyer', micro: number, key: string): Promise<string | null> {
+    if (micro <= 0) return null;
+    if (!this.escrowKey || !this.escrowStore) throw new Error('this gateway has no escrow key');
+    const addr = to === 'seller' ? this.cfg.recipient.toLowerCase() : hold.refund_to;
+    if (!addr || !isAddress(addr)) throw new Error(`no ${to} address to pay out to`);
+    const run = () => this.payoutOnce(hold, addr, micro, key);
+    const next = this.paying.then(run, run);
+    this.paying = next.catch(() => undefined);
+    return next;
+  }
+
+  /** A payout marked stuck whose transaction landed after all: true when it is now confirmed. */
+  async reconcilePayout(p: PayoutRow): Promise<boolean> {
+    if (!p.hash || p.nonce === null) return false;
+    const out = await this.txOutcome(p.hash, this.escrowRecipient()!, BigInt(p.nonce));
+    if (out !== 'ok') return false;
+    this.escrowStore!.putPayout({ ...p, state: 'confirmed', updated_at: new Date().toISOString() });
+    return true;
+  }
+
+  private sign(tx: { nonce: bigint; to: string; value: bigint; data: Uint8Array; tip: bigint; fee: bigint }) {
+    return signTx({ chainId: BigInt(this.cfg.chain_id), nonce: tx.nonce, maxPriorityFeePerGas: tx.tip, maxFeePerGas: tx.fee, gasLimit: BigInt(GAS_LIMIT), to: tx.to, value: tx.value, data: tx.data },
+      scalarFromSeed(new Uint8Array(Buffer.from(this.escrowKey!.privateKey, 'base64url'))));
+  }
+
+  private async payoutOnce(hold: HoldRow, addr: string, micro: number, key: string): Promise<string> {
+    const store = this.escrowStore!;
+    const from = this.escrowRecipient()!;
+    const now = () => new Date().toISOString();
+    let p: PayoutRow | undefined = store.payout(key);
+    if (p?.state === 'confirmed') return p.ref!;
+    if (p?.raw && p.hash && p.nonce !== null) {
+      // a transaction for this key exists: settle that one
+      const out = await this.txOutcome(p.hash, from, BigInt(p.nonce));
+      if (out === 'ok') { store.putPayout({ ...p, state: 'confirmed', updated_at: now() }); return p.ref!; }
+      if (out === 'unknown') {
+        // the nonce is spent and nothing shows this transaction: one of our cancels took it, or a node is behind.
+        // Only a receipt for one of our own transactions at this nonce settles which.
+        let freed = false;
+        for (const c of p.cancels ?? []) if ((await this.receiptFor(c.hash)) !== null) { freed = true; break; }
+        if (freed) {
+          store.putPayout({ ...p, state: 'pending', raw: null, hash: null, nonce: null, cancels: [], last_error: 'cancelled; signing it again', updated_at: now() });
+          p = store.payout(key);
+        } else {
+          throw new PayoutUnknown(p.ref!, `the nonce of ${p.hash} is spent but no node shows it; not signing again`);
+        }
+      } else if (out === 'reverted') {
+        // our own transaction, reverted: it can never land, so a new one is safe
+        store.putPayout({ ...p, state: 'pending', raw: null, hash: null, nonce: null, cancels: [], last_error: 'reverted on chain', updated_at: now() });
+        p = store.payout(key);
+      } else {
+        return this.sendAndWait(p, true);
+      }
+    }
+    // a new transaction: the nonce after anything of ours still in flight
+    const pendingCount = await this.rpc.transactionCount(from);
+    const inFlight = store.maxPendingNonce();
+    const nonce = inFlight !== null && BigInt(inFlight) + 1n > pendingCount ? BigInt(inFlight) + 1n : pendingCount;
+    const tip = await this.rpc.maxPriorityFeePerGas();
+    const { raw, hash } = this.sign({ nonce, tip, fee: (await this.rpc.gasPrice()) * 2n + tip, to: this.cfg.token.toLowerCase(), value: 0n, data: erc20.transfer(addr, microToBaseUnits(BigInt(micro), this.cfg.decimals)) });
+    const at = now();
+    const row: PayoutRow = {
+      key, hold_id: hold.id, to_addr: addr, amount: micro, state: 'sent', ref: `evm:${hash}`, raw: bytesToHex(raw), hash, nonce: Number(nonce),
+      attempts: p?.attempts ?? 0, last_error: null, next_try_at: at, created_at: p?.created_at ?? at, updated_at: at, cancels: [],
+    };
+    store.putPayout(row); // written before it is sent: whatever happens next, a retry finds this transaction
+    return this.sendAndWait(row, false);
+  }
+
+  private async sendAndWait(p: PayoutRow, rebroadcast: boolean): Promise<string> {
+    const store = this.escrowStore!;
+    // every cancel already signed for this nonce goes out again too: a refused or lost one must not leave a hole
+    for (const c of p.cancels ?? []) await this.rpc.sendRawTransaction(hexToBytes(c.raw)).catch(() => undefined);
+    try {
+      await this.rpc.sendRawTransaction(hexToBytes(p.raw!));
+    } catch (err) {
+      const known = await this.rpc.call('eth_getTransactionByHash', [p.hash]).catch(() => null);
+      const cancels = p.cancels ?? [];
+      const lastKnown = cancels.length ? await this.rpc.call('eth_getTransactionByHash', [cancels.at(-1)!.hash]).catch(() => null) : null;
+      if (!known && rebroadcast && p.attempts >= 2 && !lastKnown && cancels.length < MAX_CANCELS) {
+        // the node keeps refusing it: free its nonce with a zero-value transaction to ourselves at the same
+        // nonce, so later payouts are not stalled behind it; each further cancel pays more, so it can replace
+        // the one before. Once any of ours at this nonce mines, this payout is signed again.
+        const bump = 3n + BigInt(cancels.length) * 2n;
+        const tip = (await this.rpc.maxPriorityFeePerGas()) * bump + 1n;
+        const cancel = this.sign({ nonce: BigInt(p.nonce!), tip, fee: (await this.rpc.gasPrice()) * bump * 2n + tip, to: this.escrowRecipient()!, value: 0n, data: new Uint8Array(0) });
+        const next = [...cancels, { raw: bytesToHex(cancel.raw), hash: cancel.hash }];
+        store.putPayout({ ...store.payout(p.key)!, cancels: next, updated_at: new Date().toISOString() }); // kept before it is sent
+        await this.rpc.sendRawTransaction(cancel.raw).catch(() => { /* rebroadcast on the next try */ });
+      }
+      if (!known) throw new PayoutPending(p.ref!, `payout sent, the node answered: ${(err as Error).message}`);
+    }
+    try {
+      await this.rpc.waitForReceipt(p.hash!, this.confirmMs);
+      store.putPayout({ ...store.payout(p.key)!, state: 'confirmed', updated_at: new Date().toISOString() });
+      return p.ref!;
+    } catch (err) {
+      throw new PayoutPending(p.ref!, `payout ${p.hash} not confirmed: ${(err as Error).message}`);
+    }
   }
 
   /** Pending nonce for an agent account, served via the gateway so clients need no RPC. */

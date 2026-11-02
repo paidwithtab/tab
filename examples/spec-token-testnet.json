@@ -12,6 +12,7 @@
   "explorer": "https://explorer.testnet.chain.robinhood.com"
  },
  "public_receipts": true,
+ "about": "What we are testing: a gateway that prices every route in a project token instead of dollars.\n\nTTT is a stand-in test token on Robinhood Chain testnet. Anyone can mint it, it has 18 decimals like most tokens, and it has no value. Every route here costs TTT, agents pay in TTT under a budget their owner signed in TTT, and every paid call comes back with a signed receipt, the same as on the dollar gateways.\n\nWhen this works end to end, the same gateway can take a real token.",
  "services": [
   {
    "name": "reader",
@@ -43,163 +44,190 @@
      "method": "GET",
      "path": "/api/rest_v1/page/summary/:title",
      "price": "0.001",
-     "description": "Summary of a Wikipedia article by title, e.g. /api/rest_v1/page/summary/Lisbon"
+     "description": "Summary of a Wikipedia article by title, e.g. /api/rest_v1/page/summary/Lisbon",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/search/page",
      "price": "0.001",
-     "description": "Search Wikipedia articles: ?q=<terms>&limit=5"
+     "description": "Search Wikipedia articles: ?q=<terms>&limit=5",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/page/summary/:title/:revision",
      "price": "0.001",
-     "description": "English Wikipedia: article summary as of a revision id: /api/rest_v1/page/summary/Albert_Einstein/1379354586"
+     "description": "English Wikipedia: article summary as of a revision id: /api/rest_v1/page/summary/Albert_Einstein/1379354586",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/page/html/:title",
      "price": "0.002",
-     "description": "English Wikipedia: full article as Parsoid HTML: /api/rest_v1/page/html/Albert_Einstein"
+     "description": "English Wikipedia: full article as Parsoid HTML: /api/rest_v1/page/html/Albert_Einstein",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/page/html/:title/:revision",
      "price": "0.002",
-     "description": "English Wikipedia: article Parsoid HTML at a revision id: /api/rest_v1/page/html/Albert_Einstein/1379354586"
+     "description": "English Wikipedia: article Parsoid HTML at a revision id: /api/rest_v1/page/html/Albert_Einstein/1379354586",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/page/mobile-html/:title",
      "price": "0.002",
-     "description": "English Wikipedia: article as mobile HTML split into sections: /api/rest_v1/page/mobile-html/Albert_Einstein"
+     "description": "English Wikipedia: article as mobile HTML split into sections: /api/rest_v1/page/mobile-html/Albert_Einstein",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/page/mobile-html-offline-resources/:title",
      "price": "0.001",
-     "description": "English Wikipedia: list of style and script URLs needed to show mobile HTML offline: /api/rest_v1/page/mobile-html-offline-resources/Albert_Einstein"
+     "description": "English Wikipedia: list of style and script URLs needed to show mobile HTML offline: /api/rest_v1/page/mobile-html-offline-resources/Albert_Einstein",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/page/media-list/:title",
      "price": "0.001",
-     "description": "English Wikipedia: images, video and audio used in an article with captions and srcsets: /api/rest_v1/page/media-list/Albert_Einstein"
+     "description": "English Wikipedia: images, video and audio used in an article with captions and srcsets: /api/rest_v1/page/media-list/Albert_Einstein",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/page/title/:title",
      "price": "0.001",
-     "description": "English Wikipedia: title metadata and latest revision id of a page: /api/rest_v1/page/title/Albert_Einstein"
+     "description": "English Wikipedia: title metadata and latest revision id of a page: /api/rest_v1/page/title/Albert_Einstein",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/page/talk/:title",
      "price": "0.002",
-     "description": "English Wikipedia: structured discussion threads of the talk page: /api/rest_v1/page/talk/Albert_Einstein"
+     "description": "English Wikipedia: structured discussion threads of the talk page: /api/rest_v1/page/talk/Albert_Einstein",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/feed/featured/:yyyy/:mm/:dd",
      "price": "0.002",
-     "description": "English Wikipedia: featured article, most read, picture of the day and news for a date: /api/rest_v1/feed/featured/2026/10/20"
+     "description": "English Wikipedia: featured article, most read, picture of the day and news for a date: /api/rest_v1/feed/featured/2026/10/20",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/api/rest_v1/feed/onthisday/:type/:mm/:dd",
      "price": "0.002",
-     "description": "English Wikipedia: events, births, deaths, holidays or selected (type) on a calendar day: /api/rest_v1/feed/onthisday/births/10/20"
+     "description": "English Wikipedia: events, births, deaths, holidays or selected (type) on a calendar day: /api/rest_v1/feed/onthisday/births/10/20",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/search/title",
      "price": "0.002",
-     "description": "English Wikipedia: title prefix autocomplete: ?q=...&limit=10: /w/rest.php/v1/search/title?q=Albert Einstein&limit=2"
+     "description": "English Wikipedia: title prefix autocomplete: ?q=...&limit=10: /w/rest.php/v1/search/title?q=Albert Einstein&limit=2",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/page/:title",
      "price": "0.002",
-     "description": "English Wikipedia: page wikitext source with latest revision metadata: /w/rest.php/v1/page/Albert_Einstein"
+     "description": "English Wikipedia: page wikitext source with latest revision metadata: /w/rest.php/v1/page/Albert_Einstein",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/page/:title/bare",
      "price": "0.001",
-     "description": "English Wikipedia: page metadata without content, latest revision and license: /w/rest.php/v1/page/Albert_Einstein/bare"
+     "description": "English Wikipedia: page metadata without content, latest revision and license: /w/rest.php/v1/page/Albert_Einstein/bare",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/page/:title/with_html",
      "price": "0.002",
-     "description": "English Wikipedia: page metadata plus rendered HTML in JSON: /w/rest.php/v1/page/Albert_Einstein/with_html"
+     "description": "English Wikipedia: page metadata plus rendered HTML in JSON: /w/rest.php/v1/page/Albert_Einstein/with_html",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/page/:title/html",
      "price": "0.002",
-     "description": "English Wikipedia: rendered page HTML: /w/rest.php/v1/page/Albert_Einstein/html"
+     "description": "English Wikipedia: rendered page HTML: /w/rest.php/v1/page/Albert_Einstein/html",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/page/:title/links/language",
      "price": "0.001",
-     "description": "English Wikipedia: the same article in other language editions: /w/rest.php/v1/page/Albert_Einstein/links/language"
+     "description": "English Wikipedia: the same article in other language editions: /w/rest.php/v1/page/Albert_Einstein/links/language",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/page/:title/links/media",
      "price": "0.001",
-     "description": "English Wikipedia: media files used on a page with URLs: /w/rest.php/v1/page/Albert_Einstein/links/media"
+     "description": "English Wikipedia: media files used on a page with URLs: /w/rest.php/v1/page/Albert_Einstein/links/media",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/page/:title/history",
      "price": "0.002",
-     "description": "English Wikipedia: latest 20 revisions of a page, older with ?older_than=revid: /w/rest.php/v1/page/Albert_Einstein/history"
+     "description": "English Wikipedia: latest 20 revisions of a page, older with ?older_than=revid: /w/rest.php/v1/page/Albert_Einstein/history",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/page/:title/history/counts/:type",
      "price": "0.001",
-     "description": "English Wikipedia: count of edits, editors, anonymous, bot, minor or reverted revisions (type): /w/rest.php/v1/page/Albert_Einstein/history/counts/edits"
+     "description": "English Wikipedia: count of edits, editors, anonymous, bot, minor or reverted revisions (type): /w/rest.php/v1/page/Albert_Einstein/history/counts/edits",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/revision/:id",
      "price": "0.002",
-     "description": "English Wikipedia: one revision with its wikitext: /w/rest.php/v1/revision/1379354586"
+     "description": "English Wikipedia: one revision with its wikitext: /w/rest.php/v1/revision/1379354586",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/revision/:id/bare",
      "price": "0.001",
-     "description": "English Wikipedia: revision metadata without content: /w/rest.php/v1/revision/1379354586/bare"
+     "description": "English Wikipedia: revision metadata without content: /w/rest.php/v1/revision/1379354586/bare",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/revision/:id/with_html",
      "price": "0.002",
-     "description": "English Wikipedia: revision metadata plus rendered HTML in JSON: /w/rest.php/v1/revision/1379354586/with_html"
+     "description": "English Wikipedia: revision metadata plus rendered HTML in JSON: /w/rest.php/v1/revision/1379354586/with_html",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/revision/:id/html",
      "price": "0.002",
-     "description": "English Wikipedia: rendered HTML of a revision: /w/rest.php/v1/revision/1379354586/html"
+     "description": "English Wikipedia: rendered HTML of a revision: /w/rest.php/v1/revision/1379354586/html",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/rest.php/v1/revision/:from/compare/:to",
      "price": "0.002",
-     "description": "English Wikipedia: diff between two revisions: /w/rest.php/v1/revision/1376862306/compare/1379354586"
+     "description": "English Wikipedia: diff between two revisions: /w/rest.php/v1/revision/1376862306/compare/1379354586",
+     "escrow": true
     },
     {
      "method": "GET",
      "path": "/w/api.php",
      "price": "0.002",
-     "description": "English Wikipedia: MediaWiki action API for read-only queries (action=query, parse, opensearch), add format=json: /w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=Albert_Einstein&format=json&formatversion=2"
+     "description": "English Wikipedia: MediaWiki action API for read-only queries (action=query, parse, opensearch), add format=json: /w/api.php?action=query&prop=extracts&exintro=1&explaintext=1&titles=Albert_Einstein&format=json&formatversion=2",
+     "escrow": true
     }
    ],
    "rate_limit_per_minute": 180,
@@ -215,7 +243,8 @@
      "method": "GET",
      "path": "/forecast",
      "price": "0.001",
-     "description": "Forecast for coordinates: ?latitude=38.72&longitude=-9.14&current=temperature_2m,wind_speed_10m&daily=temperature_2m_max,precipitation_sum&timezone=auto (Lisbon is 38.72,-9.14; London 51.51,-0.13; New York 40.71,-74.01)"
+     "description": "Forecast for coordinates: ?latitude=38.72&longitude=-9.14&current=temperature_2m,wind_speed_10m&daily=temperature_2m_max,precipitation_sum&timezone=auto (Lisbon is 38.72,-9.14; London 51.51,-0.13; New York 40.71,-74.01)",
+     "escrow": true
     }
    ],
    "upstream_headers": {
@@ -57480,5 +57509,8 @@
     }
    ]
   }
- ]
+ ],
+ "channels": {
+  "min_deposit": "0.01"
+ }
 }

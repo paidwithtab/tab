@@ -8,6 +8,7 @@
 //   npm run test:dashboard -- --live   also loads the public site and app read-only
 // The browser is the one Playwright installed, or $CHROME.
 
+import { createServer as createNetServer } from 'node:net';
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -36,6 +37,18 @@ const listen = (server: Server): Promise<number> =>
 const live = process.argv.includes('--live');
 const SITE = process.env.SITE_URL ?? 'https://paidwithtab.com';
 const LIVE_APP = process.env.APP_URL ?? 'https://app.paidwithtab.com';
+const freePort = (): Promise<number> => new Promise((resolve) => {
+  const s = createNetServer();
+  s.listen(0, () => { const p = (s.address() as { port: number }).port; s.close(() => resolve(p)); });
+});
+/** A gateway on a port chosen first, so its --origin is known: pay on delivery and channels require one. */
+const gatewayAt = async (spec: Spec, o: Omit<Parameters<typeof createGateway>[1], 'origin'>): Promise<{ server: Server; url: string }> => {
+  const port = await freePort();
+  const url = `http://127.0.0.1:${port}`;
+  const server = createGateway(spec, { ...o, origin: url });
+  await new Promise<void>((r) => server.listen(port, () => r()));
+  return { server, url };
+};
 
 /** Console errors, page errors and failed requests on a page, for the checks. */
 function watch(page: Page): { errors: string[]; failed: string[] } {
@@ -64,7 +77,7 @@ async function main(): Promise<void> {
   });
   const wikiPort = await listen(wiki);
   const spec: Spec = {
-    realm: 'quotes.local', recipient: seller.publicKey, public_receipts: true,
+    realm: 'quotes.local', recipient: seller.publicKey, public_receipts: true, channels: {},
     services: [
       { name: 'q', prefix: '', upstream: `http://127.0.0.1:${upPort}`, routes: [{ method: 'GET', path: '/quote', price: '0.01' }] },
       { name: 'wikipedia', prefix: '/wikipedia', upstream: `http://127.0.0.1:${wikiPort}`, routes: [
@@ -74,8 +87,7 @@ async function main(): Promise<void> {
     ],
   };
   const gwStore = new Store(join(scratch, 'gw.db'));
-  const gateway = createGateway(spec, { store: gwStore, faucetUsd: '1.00', faucetPerIpPerDay: 100 });
-  const GW = `http://127.0.0.1:${await listen(gateway)}`;
+  const { server: gateway, url: GW } = await gatewayAt(spec, { store: gwStore, faucetUsd: '1.00', faucetPerIpPerDay: 100 });
 
   // -- a fake Messages API: limits, one paid fetch, finish with the receipt -----------
   const GOOD_KEY = 'sk-ant-api03-dash-' + 'x'.repeat(24);
@@ -212,6 +224,91 @@ async function main(): Promise<void> {
     await run();
     await page.locator(`${doneCol} .tcard`).filter({ hasText: 'second brief' }).waitFor({ timeout: 15_000 });
     check('a task opened in tab OS runs to done', true);
+
+    // -- 3.0: a payment above the threshold, approved from a phone; revoke; a channel; an order ------
+    // SHOTS=dir saves a screenshot of each 3.0 screen, to look at them by eye
+    const shot = async (name: string) => { if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `${name}.png`), fullPage: false }); };
+    // at phone width nothing in a card may run past its edge
+    const fitsPhone = async (name: string) => {
+      const size = page.viewportSize()!;
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page.waitForTimeout(150);
+      if (process.env.SHOTS) await page.screenshot({ path: join(process.env.SHOTS, `${name}-phone.png`), fullPage: true });
+      const over: string[] = await page.evaluate(() => { const d = (globalThis as any).document; const w = (globalThis as any).window;
+        return [...d.querySelectorAll('main .card, main .appr, .drawer')].filter((c: any) => c.scrollWidth > c.clientWidth + 1).map((c: any) => String(c.className))
+          .concat(d.documentElement.scrollWidth > w.innerWidth + 1 ? ['page'] : []); });
+      await page.setViewportSize(size);
+      await page.waitForTimeout(100);
+      return over;
+    };
+    await open('agents');
+    await page.locator('main .acard').filter({ hasText: 'scout' }).click();
+    await page.click('.drawer [data-act="agent-settings"]');
+    await page.fill('#as-appr', '0.005');
+    await page.click('#msub');
+    await page.locator('.toast').filter({ hasText: /updated/ }).first().waitFor();
+    check('the agent settings take an approval threshold', (await page.evaluate(async (c) => ((await (await fetch(`/api/companies/${c}`)).json()) as any).agents.find((a: any) => a.name === 'scout').config.approve_above, await page.evaluate(() => localStorage.getItem('tab-os-company')))) === '0.005');
+    await open('tasks');
+    await page.click('main [data-act="new-task"]');
+    await page.fill('#t-title', 'pricey brief');
+    await page.selectOption('#t-as', 'scout');
+    await page.click('#msub');
+    await page.locator('.board .tcard').filter({ hasText: 'pricey brief' }).waitFor();
+    await run();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await open('inbox');
+    const card = page.locator('main .appr').filter({ hasText: /scout wants to pay \$0\.01/ }).first();
+    await card.waitFor({ timeout: 15_000 });
+    const box = await card.locator('[data-approve]').boundingBox();
+    await shot('3-approval-phone');
+    const apprOver: number = await page.evaluate(() => [...(globalThis as any).document.querySelectorAll('main .appr, main .card')].filter((c: any) => c.scrollWidth > c.clientWidth + 1).length);
+    check('the payment card and its request line fit a phone screen', apprOver === 0);
+    check('a payment above the threshold waits in the Inbox with the call it pays for', /GET http:\/\/127\.0\.0\.1:\d+\/quote/.test(await card.textContent() ?? '') && await card.locator('[data-reject]').filter({ hasText: 'Deny' }).isVisible());
+    check('on a phone the approve button is a full thumb target', !!box && box.height >= 44 && box.width >= 120, box);
+    await card.locator('[data-approve]').click();
+    await page.locator('.toast').filter({ hasText: /the agent retries the call/ }).first().waitFor();
+    const receiptsBefore = await page.evaluate(async (c) => ((await (await fetch(`/api/companies/${c}`)).json()) as any).receipts.length, await page.evaluate(() => localStorage.getItem('tab-os-company')));
+    await run();
+    const after: any = await page.evaluate(async (c) => (await (await fetch(`/api/companies/${c}`)).json()), await page.evaluate(() => localStorage.getItem('tab-os-company')));
+    check('after approval the agent resumes and the payment goes through', after.receipts.length === receiptsBefore + 1 && after.approvals.some((a: any) => a.kind === 'payment' && a.state === 'approved'));
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const cid = await page.evaluate(() => localStorage.getItem('tab-os-company'));
+    const lastRun = after.runs.find((r: any) => r.mandate);
+    const rv = await page.evaluate(async ([c, r]) => (await fetch(`/api/companies/${c}/runs/${r}/revoke`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, [cid, lastRun.id]);
+    await page.reload();
+    await page.locator('main[data-app]').waitFor();
+    await open('agents');
+    await page.locator('main .acard').filter({ hasText: 'scout' }).click();
+    await page.locator('.drawer .tag.bad').filter({ hasText: 'revoked' }).first().waitFor();
+    await shot('3-revoked');
+    { const over = await fitsPhone('3-revoked'); check('3-revoked fits a phone screen', over.length === 0, over); }
+    check('a revoked run shows revoked on the agent', rv === 200);
+    await page.click('.drawer [data-act="close"]');
+    await open('wallet');
+    await page.click('main [data-act="open-channel"]');
+    await page.selectOption('#pc-agent', { label: 'scout' });
+    await page.fill('#pc-dep', '0.10');
+    await page.click('#msub');
+    await page.locator('main .st.open').first().waitFor();
+    check('the channel shows what is left of its deposit', /\$0\.10 left/.test(await text('main')));
+    await shot('3-channel-open');
+    { const over = await fitsPhone('3-channel-open'); check('3-channel-open fits a phone screen', over.length === 0, over); }
+    check('a payment channel opens from the Wallet', /Payment channels/.test(await text('main')));
+    await page.click('main [data-act="close-channel"]');
+    await page.locator('main .st.settled').waitFor();
+    await shot('3-channel-settled');
+    { const over = await fitsPhone('3-channel-settled'); check('3-channel-settled fits a phone screen', over.length === 0, over); }
+    check('closing it settles it in the Wallet', /paid out|back/.test(await text('main')));
+    const t0 = new Date().toISOString();
+    store.addOrder({ id: 'order-dash-1', company_id: cid!, run_id: null, agent_id: null, origin: GW, url: `${GW}/essay`, status_url: `${GW}/.well-known/tab/escrow/order-dash-1`, token: 't', amount: 50_000, currency: 'USD', state: 'delivered', deadline: t0,
+      receipt: { id: 'order-dash-1', realm: 'quotes.local', resource: 'POST /essay', amount: '50000', currency: 'USD', rail: 'ledger', payer: 'x', owner: 'y', recipient: 'z', ref: 'ledger:order-dash-1', at: t0 }, refund_ref: null, reason: null, created_at: t0, updated_at: t0 });
+    await page.reload();
+    await page.locator('main[data-app]').waitFor();
+    await open('receipts');
+    await page.locator('main .st.released').waitFor();
+    await shot('3-order-released');
+    { const over = await fitsPhone('3-order-released'); check('3-order-released fits a phone screen', over.length === 0, over); }
+    check('an order paid on delivery shows released with its delivery receipt', /delivery receipt/.test(await text('main')) && /Orders paid on delivery/.test(await text('main')));
 
     // -- the old addresses and sign out --------------------------------------------------
     const old = await fetch(APP + '/os', { redirect: 'manual' });

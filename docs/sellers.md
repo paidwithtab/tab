@@ -63,6 +63,7 @@ The rules that matter:
 - `upstream_headers` are injected on the way through and the buyer's `Authorization` is stripped, so buyers never see your internal credentials and your API never sees theirs.
 - `${UPPER_CASE}` in the spec is expanded from the environment at load time. Keep secrets in an env file, not the spec.
 - `requires: ["MY_INTERNAL_TOKEN"]` on a service lists the variables it cannot run without. If one is unset at start, the gateway skips that service and logs it, rather than listing routes that would fail upstream.
+- `about` (optional) is a few plain sentences on what your gateway is for. A browser opening your gateway's root gets a home page with your routes, prices and how to pay; `about` appears there and in `/.well-known/tab`. Blank lines separate paragraphs.
 - `public_receipts: true` exposes your last 200 receipts, which the catalog's live feed reads. Turn it off if payer wallet ids should stay private.
 - For chain ids, RPC endpoints and the mainnet USDG address, see [DEPLOY.md section 9](../DEPLOY.md).
 
@@ -101,6 +102,16 @@ npx paidwithtab serve --spec spec.json --origin https://pay.example.com --x402-s
 ```
 
 Every 402 then carries x402 requirements next to the tab challenge. The money still goes straight from the buyer to your payout address; the settler only pays gas, about 0.00001 ETH a call on Robinhood Chain. Calls are settled after your API answered, and a payment that does not settle withholds the response, exactly as for tab buyers. SPEC section 5.3 has the details.
+
+## Pay on delivery, metered routes and channels (3.0)
+
+**Long jobs, paid on delivery.** Mark a route `"escrow": true` (or `{"timeout_s": 600}`) and buyers may ask to pay on delivery. Your API answers `202 Accepted` at once and delivers later: it POSTs the result bytes to the URL the gateway sent it in `Tab-Deliver`, with the `Tab-Delivery-Token` header it was sent (and `Tab-Result-Status` if not 200). The held money is then paid to you, and the buyer gets a receipt binding its request to your result. If you cannot deliver, POST to the same URL with `/fail` instead of `/deliver` and the buyer is refunded; past the deadline that happens by itself. An API that answers 200 at once is paid at once, as before.
+
+**Per token, per second, per unit.** Add `"meter": {"unit": "token", "per_unit": "0.000002"}` to a route and report usage in a `Tab-Units` response header. Buyers paying from a channel are charged `units × per_unit`, never more than the route's `price`; buyers paying per call pay `price`.
+
+**Channels.** Put `"channels": {}` at the top of the spec (optional `"min_deposit": "0.05"`, `"max_ttl_s": 604800`) and buyers can open a channel with one deposit and pay each call with a voucher, no transaction per call. Calls look the same to your upstream (`Tab-Hold` is the channel id). You are paid what was spent when the channel closes.
+
+**On the evm rail** both need somewhere to hold money: start the gateway with `--escrow-key escrow.json`, a key whose address holds escrowed payments and deposits and pays the gas to pay them out. Give that address a little ETH and nothing else; buyers trust your gateway with what it holds until it is paid out.
 
 ## Attribution, refund-free by design
 

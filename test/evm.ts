@@ -3,6 +3,7 @@
 // network allows, read-only checks against the live Robinhood Chain testnet.
 //   npm run test:evm
 
+import { createServer as createNetServer } from 'node:net';
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,10 +14,13 @@ import { createHash, randomBytes } from 'node:crypto';
 
 import { newKeyPair, saveKey } from '../src/keys.js';
 import { signCredential, encodeCredentialHeader, parseChallengeHeader, encodeChallengeHeader, microToBaseUnits, baseUnitsToMicro } from '../src/protocol.js';
-import { issueMandate } from '../src/mandate.js';
+import { issueMandate, delegateMandate, saveMandate } from '../src/mandate.js';
+import { CompanyStore } from '../src/company/store.js';
+import { Engine } from '../src/company/engine.js';
+import { createCompanyServer } from '../src/company/server.js';
 import { Store } from '../src/store.js';
 import { createGateway, loadSpec, type Spec } from '../src/gateway.js';
-import { TabClient, PaymentRefused, receiptOf, x402ResponseOf } from '../src/client.js';
+import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf } from '../src/client.js';
 import { EvmRail } from '../src/rails/evm.js';
 import { keccak256Hex } from '../src/evm/keccak.js';
 import {
@@ -46,6 +50,18 @@ const listen = (server: Server): Promise<number> =>
   new Promise((resolve) => server.listen(0, () => resolve((server.address() as { port: number }).port)));
 
 const execFileP = promisify(execFile);
+const freePort = (): Promise<number> => new Promise((resolve) => {
+  const s = createNetServer();
+  s.listen(0, () => { const p = (s.address() as { port: number }).port; s.close(() => resolve(p)); });
+});
+/** A gateway on a port chosen first, so its --origin is known: pay on delivery and channels require one. */
+const gatewayAt = async (spec: Spec, o: Omit<Parameters<typeof createGateway>[1], 'origin'>): Promise<{ server: Server; url: string }> => {
+  const port = await freePort();
+  const url = `http://127.0.0.1:${port}`;
+  const server = createGateway(spec, { ...o, origin: url });
+  await new Promise<void>((r) => server.listen(port, () => r()));
+  return { server, url };
+};
 // async so the mock EVM node (which lives in THIS process) can answer the CLI
 async function cli(...args: string[]): Promise<string> {
   const { stdout } = await execFileP(
@@ -64,13 +80,17 @@ const TOKEN = '0x5b6c7caf7f99f99154fd8375ec935fcf03f326f5'; // shape of the real
 
 class MockChain {
   /** The one ERC-20 this node hosts, and its decimals (testnet USDC by default). */
-  constructor(readonly token: string = TOKEN, readonly decimals: bigint = 6n) {}
+  constructor(readonly token: string = TOKEN, readonly decimals: bigint = 6n, readonly mintable = false) {}
   eth = new Map<string, bigint>();
   bal = new Map<string, bigint>();
   allowance = new Map<string, bigint>();
   nonce = new Map<string, bigint>();
   receipts = new Map<string, '0x1' | '0x0'>();
   broadcasts = 0;
+  pool: string[] | null = null; // while set, transactions wait here unmined, as in a congested mempool
+  receiptFailures = 0; // the next this many receipt lookups fail, as an RPC that times out
+  rejectSends = 0; // the next this many broadcasts are refused
+  flush(): void { const p = this.pool ?? []; this.pool = null; for (const raw of p) this.sendRaw(raw); }
   used = new Set<string>(); // EIP-3009 authorizations spent
   eip712 = { name: 'Mock USD', version: '1' };
 
@@ -86,6 +106,19 @@ class MockChain {
     if (sel === bytesToHex(selector('balanceOf(address)'))) return { ok: true, result: ret(this.bal.get(addr(0)) ?? 0n) };
     if (sel === bytesToHex(selector('allowance(address,address)'))) {
       return { ok: true, result: ret(this.allowance.get(this.key(addr(0), addr(1))) ?? 0n) };
+    }
+    if (sel === bytesToHex(selector('mint(address,uint256)'))) {
+      // the open-mint test token: anyone mints up to 1000 whole tokens per call
+      if (!this.mintable) return { ok: false, result: '0x', error: 'unknown selector' };
+      if (uint(1) > 1000n * 10n ** this.decimals) return { ok: false, result: '0x', error: 'max 1000 per mint' };
+      this.bal.set(addr(0), (this.bal.get(addr(0)) ?? 0n) + uint(1));
+      return { ok: true, result: '0x' };
+    }
+    if (sel === bytesToHex(selector('transfer(address,uint256)'))) {
+      if ((this.bal.get(from) ?? 0n) < uint(1)) return { ok: false, result: '0x', error: 'ERC20: transfer amount exceeds balance' };
+      this.bal.set(from, this.bal.get(from)! - uint(1));
+      this.bal.set(addr(0), (this.bal.get(addr(0)) ?? 0n) + uint(1));
+      return { ok: true, result: ret(1n) };
     }
     if (sel === bytesToHex(selector('approve(address,uint256)'))) {
       this.allowance.set(this.key(from, addr(0)), uint(1));
@@ -175,8 +208,14 @@ class MockChain {
             const out = this.call(params[0].from?.toLowerCase(), params[0].to.toLowerCase(), hexToBytes(params[0].data));
             return out.ok ? reply(out.result) : fail(`execution reverted: ${out.error}`);
           }
-          case 'eth_sendRawTransaction': return reply(this.sendRaw(params[0]).hash);
+          case 'eth_sendRawTransaction': {
+            if (this.rejectSends > 0) { this.rejectSends--; return fail('txpool is full'); }
+            if (this.pool) { this.pool.push(params[0]); return reply(parseTx(hexToBytes(params[0])).hash); }
+            return reply(this.sendRaw(params[0]).hash);
+          }
+          case 'eth_getTransactionByHash': return reply(this.receipts.has(params[0]) || (this.pool ?? []).some((r) => parseTx(hexToBytes(r)).hash === params[0]) ? { hash: params[0] } : null);
           case 'eth_getTransactionReceipt': {
+            if (this.receiptFailures > 0) { this.receiptFailures--; return fail('upstream request timeout'); }
             const status = this.receipts.get(params[0]);
             return reply(status ? { status, transactionHash: params[0] } : null);
           }
@@ -485,6 +524,15 @@ async function main(): Promise<void> {
     check('the client refuses past the budget, past the per-call cap, off the allow list, and in a token it does not know',
       /budget/.test(reasons[0]) && /per-call cap/.test(reasons[1]) && /allow list/.test(reasons[2]) && /nothing this client pays in/.test(reasons[3])
       && (chain.bal.get(siteAddr) ?? 0n) === 10_000n, reasons);
+    // B3: the approval threshold, and every level of a chain, bind x402 payments too
+    const gated = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1', allow: ['*'], approveAboveUsd: '0.001', evmOwner: ownerAddr });
+    await tryPay(new TabClient({ agent, mandate: gated }));
+    const xParent = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '0.005', allow: ['*'], evmOwner: ownerAddr });
+    const xKids = [1, 2].map((days) => delegateMandate(agent, xParent, { agent: agent.publicKey, days }));
+    const shared = join(scratch, 'x402-chain.json');
+    await tryPay(new TabClient({ agent, mandate: xKids[0], x402Ledger: shared }));
+    await tryPay(new TabClient({ agent, mandate: xKids[1], x402Ledger: shared }));
+    check('B3: x402 payments respect the approval threshold, and siblings count against their parent', /approval threshold/.test(reasons[4]) && reasons[5] === 'paid' && /parent mandate budget/.test(reasons[6]), reasons.slice(4));
     const fresh = new TabClient({ agent, mandate: xm, x402Ledger: ledger });
     let afterRestart = '';
     try { await fresh.fetch(`${SITE}/x`); afterRestart = 'paid'; } catch (e) { afterRestart = (e as PaymentRefused).reason; }
@@ -615,6 +663,158 @@ async function main(): Promise<void> {
       && /gas/.test(((await r.json()) as any).detail));
   }
 
+  // -- 5a. re-review: payout and lock races against a scripted RPC ---------------------------------
+  {
+    // a node scripted per call: a mempool, a chain, and a hook that runs between two reads
+    const scripted = () => {
+      const st = { latest: 0n, mempool: new Map<string, bigint>(), mined: new Map<string, any>(), transfers: 0, between: null as null | (() => void), lagReceipts: false, lagByHash: false, refuse: null as null | ((h: string) => boolean) };
+      // like a real node: transactions whose nonce is spent leave the mempool
+      const mine = () => { for (const [h, n] of [...st.mempool].sort((x, y) => Number(x[1] - y[1]))) if (n === st.latest) { st.mined.set(h, { status: '0x1', transactionHash: h }); st.mempool.delete(h); st.latest++; st.transfers++; } for (const [h, n] of [...st.mempool]) if (n < st.latest) st.mempool.delete(h); };
+      const rpc = {
+        async call(m: string, p: any[]) {
+          if (m === 'eth_getTransactionReceipt') return st.lagReceipts ? null : st.mined.get(p[0]) ?? null;
+          if (m === 'eth_getTransactionCount') { if (st.between) { const f = st.between; st.between = null; f(); } return '0x' + st.latest.toString(16); }
+          if (m === 'eth_getTransactionByHash') return st.lagByHash ? null : st.mempool.has(p[0]) || st.mined.has(p[0]) ? { hash: p[0] } : null;
+          throw new Error(`unscripted ${m}`);
+        },
+        async transactionCount() { return st.latest + BigInt(st.mempool.size); },
+        async maxPriorityFeePerGas() { return 1n; },
+        async gasPrice() { return 1n; },
+        async sendRawTransaction(raw: Uint8Array) { const t = parseTx(raw); if (st.refuse?.(t.hash)) throw new Error('rejected'); if (!st.mined.has(t.hash)) st.mempool.set(t.hash, t.nonce); return t.hash; },
+        async waitForReceipt(h: string) { if (st.mined.has(h) && !st.lagReceipts) return; throw new Error('no receipt yet'); },
+      };
+      return { st, rpc, mine };
+    };
+    const railWith = (rpc: unknown) => {
+      const r = new EvmRail({ rpc: 'http://127.0.0.1:1', chain_id: Number(CHAIN_ID), token: TOKEN, decimals: 6, recipient: '0x' + '22'.repeat(20) });
+      const st = new Store(join(scratch, `race-${randomBytes(4).toString('hex')}.db`));
+      r.enableEscrow(newKeyPair(), st);
+      r.confirmMs = 10;
+      (r as unknown as { rpc: unknown }).rpc = rpc;
+      return { r, st };
+    };
+    const hold: any = { id: 'h1', refund_to: '0x' + '33'.repeat(20), amount: 1000, created_at: new Date().toISOString() };
+    const tryPay = async (r: EvmRail) => { try { return await r.payoutLocked(hold, 'seller', 1000, 'escrow:h1:seller'); } catch (e) { return (e as Error).name; } };
+
+    // C1a: our transaction mines between the nonce read and the receipt read
+    const a = scripted(); const ra = railWith(a.rpc);
+    await tryPay(ra.r);
+    a.st.between = a.mine;
+    await tryPay(ra.r);
+    a.mine();
+    check('C1: a payout whose transaction mines between two reads is not signed again', a.st.transfers === 1 && ra.st.payout('escrow:h1:seller')?.state === 'confirmed', { transfers: a.st.transfers });
+
+    // C1b: nodes that lag: the nonce is spent, no receipt, no transaction by hash
+    const b = scripted(); const rb = railWith(b.rpc);
+    await tryPay(rb.r);
+    b.mine();
+    b.st.lagReceipts = true; b.st.lagByHash = true;
+    const lagged = await tryPay(rb.r);
+    const signedBefore = b.st.transfers + b.st.mempool.size;
+    check('C1: a spent nonce with no receipt anywhere is left for the operator, never signed again', lagged === 'PayoutUnknown' && signedBefore === 1 && b.st.mempool.size === 0);
+    b.st.lagReceipts = false; b.st.lagByHash = false;
+    check('C1: once the node catches up the payout reconciles to confirmed', await rb.r.reconcilePayout(rb.st.payout('escrow:h1:seller')!) && rb.st.payout('escrow:h1:seller')?.state === 'confirmed');
+
+    // C2: a buyer's deposit that mines between the reads is landed, and a spent nonce without a receipt is pending, not failed
+    const c = scripted(); const rc = railWith(c.rpc);
+    const buyerKey = newKeyPair();
+    const dep = signTx({ chainId: CHAIN_ID, nonce: 0n, maxPriorityFeePerGas: 1n, maxFeePerGas: 2n, gasLimit: 250_000n, to: TOKEN, value: 0n, data: erc20.transfer('0x' + '44'.repeat(20), 1n) }, scalarFromSeed(seed(buyerKey)));
+    const depHold: any = { id: 'd1', tx: bytesToHex(dep.raw), created_at: new Date().toISOString() };
+    c.st.mempool.set(dep.hash, 0n);
+    c.st.between = c.mine;
+    const landed = await rc.r.lockStatus(depHold);
+    c.st.lagReceipts = true; c.st.lagByHash = true;
+    const lagging = await rc.r.lockStatus(depHold);
+    check('C2: a deposit that lands between the reads counts as landed, and a lagging node leaves it pending', landed === 'landed' && lagging === 'pending', { landed, lagging });
+
+    // LOW c: a payout the node keeps refusing frees its nonce with a cancel, then pays once
+    const d = scripted(); const rd = railWith(d.rpc);
+    let refusing = true;
+    d.st.refuse = (h) => refusing && h === rd.st.payout('escrow:h1:seller')?.hash;
+    for (let i = 0; i < 4; i++) { const p = rd.st.payout('escrow:h1:seller'); if (p) rd.st.putPayout({ ...p, attempts: i }); await tryPay(rd.r); d.mine(); }
+    refusing = false;
+    await tryPay(rd.r); d.mine(); await tryPay(rd.r);
+    const fin = rd.st.payout('escrow:h1:seller')!;
+    check('LOW c: a payout the node refuses frees its nonce with a cancel, and is then paid exactly once', fin.state === 'confirmed' && d.st.mined.size === 2 && d.st.transfers === 2, { state: fin.state, mined: d.st.mined.size });
+
+    // M2 (the reviewer's cancel_hole.mts): a refused cancel is sent again, fee-bumped, so the nonce is freed
+    {
+      const e = scripted(); const re = railWith(e.rpc);
+      let refuseAll = true; let cancelSends = 0;
+      const escrowAddr = re.r.escrowRecipient()!;
+      e.rpc.sendRawTransaction = async (raw: Uint8Array) => { const t = parseTx(raw); if (t.to === escrowAddr) cancelSends++; if (refuseAll) throw new Error('node down'); if (t.nonce === 0n && t.to !== escrowAddr) throw new Error('evicted'); if (t.nonce < e.st.latest) throw new Error('nonce too low'); e.st.mempool.set(t.hash, t.nonce); e.mine(); return t.hash; };
+      const bump = (k: string) => { const p = re.st.payout(k)!; re.st.putPayout({ ...p, attempts: p.attempts + 1 }); };
+      const pay = async (h: any, micro: number, key: string) => { try { await re.r.payoutLocked(h, 'seller', micro, key); } catch { /* retried */ } };
+      for (let i = 0; i < 4; i++) { await pay(hold, 1000, 'A'); bump('A'); }
+      refuseAll = false;
+      for (let i = 0; i < 6 && re.st.payout('A')!.state !== 'confirmed'; i++) { await pay(hold, 1000, 'A'); bump('A'); }
+      await pay({ ...hold, id: 'h2' }, 500, 'B');
+      const pa = re.st.payout('A')!, pb = re.st.payout('B')!;
+      check('M2: a cancel the node refused is sent again, its nonce is freed, and the payout and the next one land', pa.state === 'confirmed' && pb.state === 'confirmed'
+        && cancelSends >= 2 && pa.nonce !== 0 && e.st.latest === 3n, { a: pa.state, b: pb.state, cancelSends, latest: String(e.st.latest) });
+    }
+
+    // L1: a stuck payout keeps its nonce: a new payout never takes it
+    {
+      const f = scripted(); const rf = railWith(f.rpc);
+      await (async () => { try { await rf.r.payoutLocked(hold, 'seller', 1000, 'S'); } catch { /* pending */ } })();
+      const s1 = rf.st.payout('S')!;
+      rf.st.putPayout({ ...s1, state: 'stuck' });
+      f.st.mempool.clear(); // the stuck one is nowhere to be seen
+      await (async () => { try { await rf.r.payoutLocked({ ...hold, id: 'h3' }, 'seller', 1000, 'T'); } catch { /* pending */ } })();
+      check('L1: a new payout never takes the nonce a stuck one holds', s1.nonce === 0 && rf.st.payout('T')!.nonce === 1 && rf.st.maxPendingNonce() === 1);
+    }
+
+    // L2: a receipt that names another transaction, or an odd status, is not a revert
+    {
+      const g = scripted(); const rg = railWith(g.rpc);
+      await (async () => { try { await rg.r.payoutLocked(hold, 'seller', 1000, 'R'); } catch { /* pending */ } })();
+      const r1 = rg.st.payout('R')!;
+      g.st.mempool.clear(); g.st.latest = 1n; // the nonce is spent; nodes hand back a stranger's receipt for our hash
+      const realCall = g.rpc.call;
+      g.rpc.call = async (m: string, p: any[]) => (m === 'eth_getTransactionReceipt' ? { status: '0x0', transactionHash: '0x' + 'ab'.repeat(32) } : realCall(m, p));
+      let outcome = '';
+      try { await rg.r.payoutLocked(hold, 'seller', 1000, 'R'); } catch (e2) { outcome = (e2 as Error).name; }
+      g.rpc.call = async (m: string, p: any[]) => (m === 'eth_getTransactionReceipt' ? { status: '0x2', transactionHash: r1.hash } : realCall(m, p));
+      let odd = '';
+      try { await rg.r.payoutLocked(hold, 'seller', 1000, 'R'); } catch (e2) { odd = (e2 as Error).name; }
+      check('L2: a receipt for another transaction, or with an odd status, never counts as a revert', outcome === 'PayoutUnknown' && odd === 'PayoutUnknown' && rg.st.payout('R')!.hash === r1.hash, { outcome, odd });
+    }
+  }
+
+  // -- 5b. security review B2: on chain the allowance is the hard cap, so revoking zeroes it too ---------
+  {
+    const k = `${ownerAddr}|${agentAddr}`;
+    const before = chain.allowance.get(k) ?? 0n;
+    chain.allowance.set(k, 5_000n);
+    const rm = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '0.10', allow: ['quotes.local'], evmOwner: ownerAddr });
+    saveMandate(join(scratch, 'revoke-m.json'), rm);
+    const out = await cli('mandate', 'revoke', '--key', join(scratch, 'owner.json'), '--mandate', join(scratch, 'revoke-m.json'), '--gateway', GW,
+      '--token', TOKEN, '--evm-agent', join(scratch, 'agent.json'), '--rpc', RPC);
+    check('B2: tab mandate revoke on an evm mandate also drops the agent\'s allowance to zero', JSON.parse(out).mandate === rm.id && (chain.allowance.get(k) ?? 0n) === 0n
+      && ((await (await fetch(`${GW}/.well-known/tab/revocations/${rm.id}`)).json()) as any).revoked === true);
+    chain.allowance.set(k, before);
+
+    // a company on this gateway: retiring an agent sets its allowance from the owner account to zero
+    const cstore = new CompanyStore(join(scratch, 'evm-company.db'));
+    const engine = new Engine({ store: cstore, workDir: join(scratch, 'evm-work'), tickMs: 3_600_000 });
+    const app = createCompanyServer({ store: cstore, engine, hosts: [], allowPrivateOrigins: true, defaultGateway: GW, secureCookies: false, evmRpc: { [Number(CHAIN_ID)]: RPC } });
+    const APP = `http://127.0.0.1:${await listen(app)}`;
+    const token = ((await (await fetch(`${APP}/api/signup`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'evm@example.com', password: 'correct horse' }) })).json()) as any).token;
+    const api = async (path: string, body?: unknown) => (await fetch(APP + path, { method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })).json() as Promise<any>;
+    const co = (await api('/api/companies', { name: 'OnChain', budget: '5.00', gateways: [GW] })).company;
+    chain.eth.set(co.owner_evm.toLowerCase(), 10n ** 17n);
+    const hired = (await api(`/api/companies/${co.id}/agents`, { name: 'payer', role: 'buyer', adapter: 'starter', budget_per_run: '0.05' })).agent;
+    await api(`/api/companies/${co.id}/chain/authorize`, { agent_id: hired.id, amount: '1.00' });
+    const agentEvm = addressFromSeed(new Uint8Array(Buffer.from(cstore.agent(hired.id)!.agent_priv!, 'base64url')));
+    const allowed = chain.allowance.get(`${co.owner_evm.toLowerCase()}|${agentEvm}`) ?? 0n;
+    await api(`/api/companies/${co.id}/agents/${hired.id}/retire`, {});
+    const view = await api(`/api/companies/${co.id}`);
+    check('B2: on a company that pays on chain, retiring an agent zeroes its allowance', allowed === 1_000_000n && (chain.allowance.get(`${co.owner_evm.toLowerCase()}|${agentEvm}`) ?? 0n) === 0n
+      && view.events.some((e: any) => e.kind === 'chain-revoke'), { allowed: String(allowed) });
+    app.close(); engine.stop(); cstore.close();
+  }
+
   // -- 6. the allowance is a hard cap; revoke ends it ------------------------
 
   {
@@ -649,7 +849,7 @@ async function main(): Promise<void> {
     && (() => { try { microToBaseUnits(1n, 19); return false; } catch { return true; } })());
 
   const TTT = '0x' + 'ab'.repeat(20);
-  const chainT = new MockChain(TTT, 18n);
+  const chainT = new MockChain(TTT, 18n, true);
   chainT.eth.set(ownerAddr, 10n ** 18n);
   chainT.eth.set(agentAddr, 10n ** 16n);
   chainT.bal.set(ownerAddr, 100n * 10n ** 18n); // 100 TTT
@@ -701,6 +901,26 @@ async function main(): Promise<void> {
   check('balances and receipts come back in micro units of the token', walletT.micro === 100_000_000 - 10_000
     && walletT.available === '99.99' && recsT.receipts[0].currency === 'TTT');
 
+  // the testnet faucet: mints the token to a new wallet and sends it gas, once per wallet
+  {
+    const faucetKey = newKeyPair();
+    const faucetAddr = addressFromSeed(new Uint8Array(Buffer.from(faucetKey.privateKey, 'base64url')));
+    chainT.eth.set(faucetAddr, 10n ** 18n);
+    const gwF = createGateway({ ...specT, realm: 'faucet.local' }, { store: new Store(join(scratch, 'tab-faucet.db')), faucetUsd: '100', faucetKey, faucetGas: '0.001' });
+    const GWF = `http://127.0.0.1:${await listen(gwF)}`;
+    const claimer = '0x' + 'c1'.repeat(20);
+    const claim = (wallet: string) => fetch(`${GWF}/.well-known/tab/faucet`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wallet }) });
+    const first = await (await claim(claimer)).json() as any;
+    check('the evm faucet mints the token and sends gas to a new wallet', first.credited === '100.00' && first.currency === 'TTT' && first.txs?.[0]?.kind === 'mint'
+      && chainT.bal.get(claimer) === 100n * 10n ** 18n && chainT.eth.get(claimer) === 10n ** 15n);
+    const again = await (await claim(claimer.toUpperCase().replace('0X', '0x'))).json() as any;
+    check('the evm faucet pays a wallet once', again.already_claimed === true && chainT.bal.get(claimer) === 100n * 10n ** 18n);
+    check('the evm faucet wants a 0x address', (await claim('not-a-wallet')).status === 400);
+    let mainnetErr = '';
+    try { createGateway({ ...specT, evm: { ...specT.evm!, chain_id: 4663 } }, { store: new Store(join(scratch, 'tab-faucet-main.db')), faucetUsd: '100', faucetKey }); } catch (e) { mainnetErr = (e as Error).message; }
+    check('the evm faucet refuses to run on a mainnet', /for testnets/.test(mainnetErr));
+  }
+
   {
     let err = '';
     try { await new EvmRail({ rpc: RPC_T, chain_id: Number(CHAIN_ID), token: TTT, decimals: 6, recipient: sellerAddr }).challengeExtras(); } catch (e) { err = (e as Error).message; }
@@ -715,6 +935,138 @@ async function main(): Promise<void> {
   gatewayT.close();
   nodeT.close();
   storeT.close();
+
+  // -- 7b. 3.0 on the evm rail: escrow and channels through a gateway-held escrow address --------
+  {
+    const o3 = newKeyPair(), a3 = newKeyPair(), esc = newKeyPair(), s3 = newKeyPair();
+    const o3Addr = addressFromSeed(seed(o3)), a3Addr = addressFromSeed(seed(a3)), escAddr = addressFromSeed(seed(esc)), s3Addr = addressFromSeed(seed(s3));
+    chain.eth.set(a3Addr, 10n ** 16n);
+    chain.eth.set(escAddr, 10n ** 17n); // the escrow key pays gas for payouts
+    chain.bal.set(o3Addr, 5_000_000n); // 5.00
+    chain.allowance.set(`${o3Addr}|${a3Addr}`, 5_000_000n);
+    let delivery: { url: string; token: string } | null = null;
+    const up3 = createServer(async (req, res) => {
+      const u = new URL(req.url ?? '/', 'http://x');
+      for await (const _ of req) { /* drain */ }
+      if (u.pathname === '/job') { delivery = { url: String(req.headers['tab-deliver']), token: String(req.headers['tab-delivery-token']) }; res.writeHead(202); res.end('{"accepted":true}'); return; }
+      if (u.pathname === '/model') { res.writeHead(200, { 'tab-units': '1500' }); res.end('{"completion":"ok"}'); return; }
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}');
+    });
+    const spec3: Spec = {
+      realm: 'v3.local', recipient: s3.publicKey, rail: 'evm', public_receipts: true, channels: {},
+      evm: { rpc: RPC, chain_id: Number(CHAIN_ID), token: TOKEN, decimals: 6, recipient: s3Addr },
+      services: [{ name: 'v3', prefix: '', upstream: `http://127.0.0.1:${await listen(up3)}`, routes: [
+        { method: 'GET', path: '/quote', price: '0.01' },
+        { method: 'POST', path: '/job', price: '0.25', escrow: { timeout_s: 60 } },
+        { method: 'GET', path: '/model', price: '0.01', meter: { unit: 'token', per_unit: '0.000001' } },
+      ] }],
+    };
+    const noKey = createGateway(spec3, { store: new Store(join(scratch, 'v3-nokey.db')) });
+    const NK = `http://127.0.0.1:${await listen(noKey)}`;
+    const nkDisc = await (await fetch(`${NK}/.well-known/tab`)).json() as any;
+    const nkChal = parseChallengeHeader((await fetch(`${NK}/job`, { method: 'POST' })).headers.get('www-authenticate'))!;
+    check('without an escrow key an evm gateway offers neither escrow nor channels', !nkDisc.features.includes('escrow') && !nkDisc.features.includes('channels') && nkChal.escrow === undefined);
+    noKey.close();
+    let ledgerKey = '';
+    try { createGateway({ ...spec3, rail: 'ledger', evm: undefined }, { store: new Store(join(scratch, 'v3-l.db')), escrowKey: esc }); } catch (e) { ledgerKey = (e as Error).message; }
+    check('an escrow key is refused on the ledger rail', /evm rail/.test(ledgerKey));
+
+    const st3 = new Store(join(scratch, 'v3.db'));
+    const { server: gw3, url: G3 } = await gatewayAt(spec3, { store: st3, escrowKey: esc, sweepMs: 200 });
+    const d3 = await (await fetch(`${G3}/.well-known/tab`)).json() as any;
+    const jobChal = parseChallengeHeader((await fetch(`${G3}/job`, { method: 'POST' })).headers.get('www-authenticate'))!;
+    check('with one, escrow routes name the escrow address in the challenge', d3.features.includes('escrow') && d3.features.includes('channels')
+      && jobChal.escrow?.recipient === escAddr && jobChal.evm?.recipient === s3Addr);
+    const m3 = issueMandate(o3, { agent: a3.publicKey, budgetUsd: '3.00', maxPerCallUsd: '0.50', allow: ['v3.local'], evmOwner: o3Addr });
+    const c3 = new TabClient({ agent: a3, mandate: m3 });
+    const bal = (a: string) => chain.bal.get(a) ?? 0n;
+
+    // a credential that asks for escrow but pays the seller directly is refused
+    const nonce3 = BigInt(((await (await fetch(`${G3}/.well-known/tab/evm/nonce/${a3Addr}`)).json()) as any).nonce);
+    const sneaky = signCredential(a3, jobChal, m3, { escrow: true, body: '{}', evm: { tx: buildSignedPaymentTxEvm(jobChal, o3Addr, a3, nonce3) } });
+    const sneakyRes = await fetch(`${G3}/job`, { method: 'POST', body: '{}', headers: { authorization: encodeCredentialHeader(sneaky) } });
+    check('an escrow credential whose transfer skips the escrow address is refused', sneakyRes.status === 402 && /calldata/.test(((await sneakyRes.json()) as any).detail));
+
+    const o0 = bal(o3Addr), e0 = bal(escAddr), s0 = bal(s3Addr);
+    const held = await c3.fetch(`${G3}/job`, { method: 'POST', body: '{"t":1}' }, { escrow: true });
+    const t3 = escrowOf(held)!;
+    check('on chain, an order the seller accepts sits in the escrow address', held.status === 202 && t3.state === 'held'
+      && bal(o3Addr) === o0 - 250_000n && bal(escAddr) === e0 + 250_000n && bal(s3Addr) === s0);
+    const dl = await fetch(delivery!.url, { method: 'POST', headers: { 'tab-delivery-token': delivery!.token }, body: 'the work' });
+    const dlDoc = await dl.json() as any;
+    check('delivery pays the seller out of escrow on chain', dl.status === 200 && /^evm:0x[0-9a-f]{64}$/.test(dlDoc.receipt.ref)
+      && dlDoc.receipt.escrow.held_ref.startsWith('evm:0x') && bal(s3Addr) === s0 + 250_000n && bal(escAddr) === e0);
+    const got = await c3.escrowResult(t3);
+    check('the buyer reads the result and its delivery receipt verifies', got.state === 'delivered' && got.verified?.ok === true && new TextDecoder().decode(got.body!) === 'the work');
+    const held2 = await c3.fetch(`${G3}/job`, { method: 'POST', body: '{"t":2}' }, { escrow: true });
+    await fetch(delivery!.url.replace('/deliver', '/fail'), { method: 'POST', headers: { 'tab-delivery-token': delivery!.token } });
+    const st2 = await (await fetch(`${escrowOf(held2)!.status}?token=${escrowOf(held2)!.token}`)).json() as any;
+    check('a seller that cannot deliver: the escrow address pays the owner back on chain', st2.state === 'refunded' && /^evm:0x/.test(st2.refund_ref)
+      && bal(o3Addr) === o0 - 250_000n && bal(escAddr) === e0);
+    const direct = await c3.fetch(`${G3}/job`, { method: 'POST', body: '{"t":3}' });
+    check('a buyer that does not opt in pays the seller directly, as in 2.x', direct.status === 202 && !escrowOf(direct) && bal(s3Addr) === s0 + 500_000n);
+
+    // a channel: one deposit transaction, vouchers with no transaction, one settlement
+    const o1 = bal(o3Addr), s1 = bal(s3Addr);
+    const ch = await c3.openChannel(G3, '1.00');
+    const sent = chain.broadcasts;
+    const calls = [await c3.fetch(`${G3}/quote`), await c3.fetch(`${G3}/model`), await c3.fetch(`${G3}/quote`)];
+    check('the deposit is one transfer into escrow, and calls send no transaction at all', ch.state === 'open' && bal(o3Addr) === o1 - 1_000_000n
+      && calls.every((r) => r.status === 200 && receiptOf(r)?.channel?.kind === 'call') && chain.broadcasts === sent && receiptOf(calls[1])!.amount === '1500');
+    const closed = await c3.closeChannel(G3);
+    check('closing settles on chain: 0.0215 to the seller, the rest to the owner', closed.channel.state === 'closed' && /^evm:0x/.test(closed.channel.settle_ref ?? '') && /^evm:0x/.test(closed.channel.refund_ref ?? '')
+      && bal(s3Addr) === s1 + 21_500n && bal(o3Addr) === o1 - 21_500n && chain.broadcasts === sent + 2);
+    // review fixes: a payment into escrow that does not confirm opens nothing and is sent back if it lands late;
+    // a payout whose receipt lookup fails is settled by the same transaction, never a second one
+    const rail4 = new EvmRail(spec3.evm!);
+    rail4.confirmMs = 400;
+    const st4 = new Store(join(scratch, 'v3-review.db'));
+    const { server: gw4, url: G4 } = await gatewayAt(spec3, { store: st4, rail: rail4, escrowKey: esc, sweepMs: 100, payoutRetryMs: 100 });
+    const o4 = bal(o3Addr), e4 = bal(escAddr);
+    chain.pool = [];
+    const slow = await c3.fetch(`${G4}/job`, { method: 'POST', body: '{"t":4}' }, { escrow: true });
+    const slowBody = await slow.text();
+    const watched = st4.lockWatches();
+    check('E3: an escrow payment that does not confirm in time opens no order and the response is withheld', slow.status === 402 && !escrowOf(slow) && !slowBody.includes('accepted')
+      && watched.length === 1 && bal(o3Addr) === o4, { status: slow.status, watched: watched.length });
+    chain.flush(); // it lands after all
+    for (let i = 0; i < 40 && st4.lockWatches().length; i++) await new Promise((r) => setTimeout(r, 100));
+    check('E3: when it lands late, the gateway sends it back from the escrow address', st4.lockWatches().length === 0 && bal(o3Addr) === o4 && bal(escAddr) === e4
+      && st4.payout(`lock:${watched[0].id}:buyer`)?.state === 'confirmed');
+    const ok4 = await c3.fetch(`${G4}/job`, { method: 'POST', body: '{"t":5}' }, { escrow: true });
+    const t4 = escrowOf(ok4)!;
+    const s4 = bal(s3Addr), sent4 = chain.broadcasts;
+    chain.receiptFailures = 1; // the payout goes out, then the receipt lookup times out
+    const d4 = await (await fetch(delivery!.url, { method: 'POST', headers: { 'tab-delivery-token': delivery!.token }, body: 'late work' })).json() as any;
+    for (let i = 0; i < 40 && st4.payout(`escrow:${t4.id}:seller`)?.state !== 'confirmed'; i++) await new Promise((r) => setTimeout(r, 100));
+    check('E2: an unconfirmed payout is settled by rebroadcasting the same transaction: the seller is paid once', d4.state === 'delivered' && /^evm:0x/.test(d4.receipt?.ref ?? '')
+      && st4.payout(`escrow:${t4.id}:seller`)?.state === 'confirmed' && bal(s3Addr) === s4 + 250_000n && chain.broadcasts === sent4 + 1, { d4, broadcasts: chain.broadcasts - sent4 });
+    // LOW b: a payment into escrow the node refuses to take is watched, not forgotten
+    chain.rejectSends = 1;
+    const refused = await c3.fetch(`${G4}/job`, { method: 'POST', body: '{"t":6}' }, { escrow: true });
+    check('LOW b: an escrow payment the node would not take fails the call and is watched in case it lands', refused.status === 402 && st4.lockWatches().length === 1);
+        gw4.close(); st4.close();
+    // M1: a gateway killed while a transfer into escrow is in flight; the next start finds it and sends it back
+    {
+      const st5 = new Store(join(scratch, 'v3-crash.db'));
+      const dying = new EvmRail(spec3.evm!);
+      dying.lock = async (h: any) => { await dying.rpc.sendRawTransaction(hexToBytes(h.tx)); return new Promise<string>(() => { /* the process dies here */ }); };
+      const { server: gw5, url: G5 } = await gatewayAt(spec3, { store: st5, rail: dying, escrowKey: esc, sweepMs: 60_000 });
+      const o5 = bal(o3Addr);
+      void c3.fetch(`${G5}/job`, { method: 'POST', body: '{"t":7}' }, { escrow: true }).catch(() => null);
+      for (let i = 0; i < 50 && !st5.holdsInState('locking').length; i++) await new Promise((r) => setTimeout(r, 50));
+      const inFlight = st5.holdsInState('locking');
+      gw5.close();
+      check('M1: a hold being locked is on record before its transfer is broadcast', inFlight.length === 1 && /^evm:0x/.test(inFlight[0].ref ?? '') && bal(o3Addr) === o5 - 250_000n);
+      const { server: gw6 } = await gatewayAt(spec3, { store: st5, rail: new EvmRail(spec3.evm!), escrowKey: esc, sweepMs: 100, payoutRetryMs: 100 });
+      for (let i = 0; i < 40 && st5.getHold(inFlight[0].id)!.state !== 'voided'; i++) await new Promise((r) => setTimeout(r, 100));
+      check('M1: the next start finds it, and money that landed in escrow goes back to the owner', st5.getHold(inFlight[0].id)!.state === 'voided' && bal(o3Addr) === o5
+        && st5.payout(`lock:${inFlight[0].id}:buyer`)?.state === 'confirmed');
+      gw6.close(); st5.close();
+    }
+
+    gw3.close(); up3.close(); st3.close();
+  }
 
   // -- 8. the real Robinhood Chain testnet, read-only ------------------------
 

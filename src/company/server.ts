@@ -11,7 +11,11 @@ import { randomBytes, createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { microToUsd, usdToMicro, normalizeUsd, isCurrency, microToBaseUnits, baseUnitsToMicro, type Receipt } from '../protocol.js';
-import { newKeyPair } from '../keys.js';
+import { newKeyPair, type KeyPair } from '../keys.js';
+import { issueMandate, mandateChain, approvalThreshold, type Mandate } from '../mandate.js';
+import { signRevocation, type Revocation } from '../revoke.js';
+import { signApproval, approvalRequestValid, type ApprovalRequest } from '../approval.js';
+import { TabClient } from '../client.js';
 import { addressFromSeed } from '../evm/secp256k1.js';
 import { EvmRpc } from '../evm/rpc.js';
 import { evmSend } from '../evm/send.js';
@@ -23,7 +27,7 @@ import { ADAPTERS, type AdapterName } from './adapters.js';
 import { ANTHROPIC_URL } from './model.js';
 import type { Engine } from './engine.js';
 import type { Secrets } from './secrets.js';
-import type { AgentRow, CompanyRow, CompanyStore, TicketRow, TicketState, UserRow } from './store.js';
+import type { AgentRow, CompanyRow, CompanyStore, TicketRow, TicketState, UserRow, OrderRow } from './store.js';
 
 export interface CompanyServerOptions {
   store: CompanyStore;
@@ -200,15 +204,20 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
 
   /** The first gateway this company spends at that settles on chain, with an RPC for it; null when all are ledger gateways. */
   const chainMemo = new Map<string, { at: number; doc: Record<string, any> | null }>();
+  /** A gateway's discovery document, cached for five minutes; null when it does not answer. */
+  async function discoveryOf(origin: string): Promise<Record<string, any> | null> {
+    let hit = chainMemo.get(origin);
+    if (!hit || Date.now() - hit.at > 300_000) {
+      let doc: Record<string, any> | null = null;
+      try { const r = await egress(origin + '/.well-known/tab', { signal: AbortSignal.timeout(8_000), redirect: 'error' }); if (r.ok) doc = (await r.json()) as Record<string, any>; } catch { /* unreachable */ }
+      hit = { at: Date.now(), doc };
+      chainMemo.set(origin, hit);
+    }
+    return hit.doc;
+  }
   async function chainOf(c: CompanyRow) {
     for (const origin of c.gateways) {
-      let hit = chainMemo.get(origin);
-      if (!hit || Date.now() - hit.at > 300_000) {
-        let doc: Record<string, any> | null = null;
-        try { const r = await egress(origin + '/.well-known/tab', { signal: AbortSignal.timeout(8_000), redirect: 'error' }); if (r.ok) doc = (await r.json()) as Record<string, any>; } catch { /* unreachable: try the next */ }
-        hit = { at: Date.now(), doc };
-        chainMemo.set(origin, hit);
-      }
+      const hit = { doc: await discoveryOf(origin) };
       const info = hit.doc?.rail === 'evm' ? hit.doc.rail_info : null;
       const rpc = info && (opts.evmRpc ?? EVM_RPC)[Number(info.chain_id)];
       if (!info || !rpc || typeof info.token !== 'string') continue;
@@ -262,7 +271,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
     const gateways = (Array.isArray(body.gateways) ? body.gateways.map((g) => str(g, 300).replace(/\/$/, '')) : [opts.defaultGateway ?? '']).filter(Boolean).slice(0, 10);
     const { realms, currency: discovered } = await checkGateways(gateways);
     const currency = str(body.currency, 10) || discovered;
-    if (!isCurrency(currency)) throw new HttpError(400, 'currency must be 2 to 10 upper-case letters or digits');
+    if (!isCurrency(currency)) throw new HttpError(400, 'currency must be 2 to 10 upper-case letters or digits, after at most two lowercase ones (USD, USDG, tTAB)');
     const owner = newKeyPair();
     const catalog = body.catalog === null ? null : str(body.catalog, 300).replace(/\/$/, '') || opts.defaultCatalog || null;
     if (catalog && !bareOrigin(catalog)) throw new HttpError(400, 'catalog must be an origin like https://paidwithtab.com');
@@ -295,7 +304,10 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
   async function claimCredits(c: CompanyRow): Promise<Array<Record<string, unknown>>> {
     const results = await Promise.all(c.gateways.map(async (origin) => {
       try {
-        const r = await egress(`${origin}/.well-known/tab/faucet`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wallet: c.owner_pub }), signal: AbortSignal.timeout(8_000) });
+        // a faucet on a gateway that settles on chain wants the owner's 0x address
+        const evm = (await discoveryOf(origin))?.rail === 'evm';
+        // an on-chain faucet sends real transactions, so it gets longer than a ledger credit
+        const r = await egress(`${origin}/.well-known/tab/faucet`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wallet: evm ? addressFromSeed(seedOf(c.owner_priv)) : c.owner_pub }), signal: AbortSignal.timeout(evm ? 60_000 : 8_000) });
         return { origin, status: r.status, ...((await r.json()) as Record<string, unknown>) };
       } catch (err) { return { origin, error: (err as Error).message }; }
     }));
@@ -325,16 +337,40 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
   };
   const publicTicket = (t: TicketRow) => ({ ...t, budget: t.budget === null ? null : microToUsd(t.budget), spent: microToUsd(t.spent) });
 
+  /** A mandate as the dashboard shows it: limits, the chain above it by agent name, and whether the owner revoked it or anything above it. */
+  function mandateView(m: Mandate, byPub: Map<string, string>, revoked: Set<string>) {
+    const chain = mandateChain(m);
+    return {
+      id: m.id, budget: microToUsd(Number(m.budget)), allow: m.allow, expires_at: m.expires_at,
+      max_per_call: m.max_per_call === null ? null : microToUsd(Number(m.max_per_call)),
+      approve_above: approvalThreshold(m) === null ? null : microToUsd(approvalThreshold(m)!),
+      delegated_by: m.parent ? (byPub.get(m.parent.agent) ?? m.parent.agent) : null,
+      chain: chain.slice(1).map((x) => ({ id: x.id, agent: byPub.get(x.agent) ?? x.agent, budget: microToUsd(Number(x.budget)) })),
+      revoked: chain.some((x) => revoked.has(x.id)),
+    };
+  }
+
   function companyView(c: CompanyRow) {
     const agents = store.agentsOf(c.id);
     const names = new Map(agents.map((a) => [a.id, a.name]));
+    const byPub = new Map(agents.map((a) => [a.agent_pub, a.name]));
+    const revoked = new Set(store.revocationsOf(c.id).map((r) => r.mandate_id));
     const nameOf = (id: string | null) => (id === null ? 'owner' : names.get(id) ?? id);
     return {
       company: publicCompany(c),
       agents: agents.map(publicAgent),
       tickets: store.ticketsOf(c.id).map((t) => ({ ...publicTicket(t), assignee: nameOf(t.assignee_id), created_by_name: t.created_by === 'owner' ? 'owner' : nameOf(t.created_by) })),
       approvals: store.approvalsOf(c.id).map((a) => ({ ...a, agent: a.agent_id ? nameOf(a.agent_id) : null })),
-      runs: store.runsOf(c.id, 50).map((r) => ({ ...r, agent: nameOf(r.agent_id), spent: microToUsd(r.spent), model_cost: microToUsd(r.model_cost), mandate: r.mandate ? { id: r.mandate.id, budget: microToUsd(Number(r.mandate.budget)), allow: r.mandate.allow } : null, output: undefined })),
+      runs: store.runsOf(c.id, 50).map((r) => ({ ...r, agent: nameOf(r.agent_id), spent: microToUsd(r.spent), model_cost: microToUsd(r.model_cost), mandate: r.mandate ? mandateView(r.mandate, byPub, revoked) : null, output: undefined })),
+      // 3.0: delegated budgets, pay-on-delivery orders, payment channels, revocations
+      delegations: store.delegationsOf(c.id).map((d) => {
+        const subRuns = store.runsOf(c.id, 500).filter((r) => r.mandate?.parent?.id === d.mandate.id);
+        return { ticket_id: d.ticket_id, manager: nameOf(d.agent_id), agent_id: d.agent_id, mandate: mandateView(d.mandate, byPub, revoked), created_at: d.created_at,
+          runs: subRuns.length, spent: microToUsd(subRuns.reduce((n, r) => n + r.spent, 0)), to: [...new Set(subRuns.map((r) => nameOf(r.agent_id)))] };
+      }),
+      orders: store.ordersOf(c.id, 50).map((o) => ({ ...o, token: undefined, agent: o.agent_id ? nameOf(o.agent_id) : null, amount: microToUsd(o.amount) })),
+      channels: store.channelsOf(c.id).map((ch) => ({ ...ch, mandate: mandateView(ch.mandate, byPub, revoked), agent: nameOf(ch.agent_id), deposit: microToUsd(ch.deposit), spent: microToUsd(ch.spent), left: microToUsd(Math.max(0, ch.deposit - ch.spent)) })),
+      revocations: store.revocationsOf(c.id).map((r) => ({ ...r, doc: undefined, agent: r.agent_id ? nameOf(r.agent_id) : null })),
       events: store.events(c.id, { limit: 100 }).map((e) => ({ ...e, by: nameOf(e.agent_id) })),
       board: store.board(c.id).map((b) => ({ ...b, verified: verifyBoardAction(c.owner_pub, { ver: 'tab-board/0', company: b.company_id, seq: b.seq, action: b.action as BoardActionKind, payload: b.payload, at: b.at, id: b.id, sig: b.sig }).ok })),
       receipts: store.receiptsOf(c.id, 50).map((r) => {
@@ -342,7 +378,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         const ref = r.doc?.ref ?? null;
         const explorer = chainMemo.get(r.origin)?.doc?.rail_info?.explorer;
         const tx = ref && ref.startsWith('evm:') ? ref.slice(4) : null;
-        return { ...r, agent: r.agent_id ? nameOf(r.agent_id) : null, amount: microToUsd(r.amount), signed: r.doc != null, doc: undefined, ref, tx_url: tx && typeof explorer === 'string' ? `${explorer}/tx/${tx}` : null };
+        return { ...r, agent: r.agent_id ? nameOf(r.agent_id) : null, amount: microToUsd(r.amount), signed: r.doc != null, doc: undefined, ref, tx_url: tx && typeof explorer === 'string' ? `${explorer}/tx/${tx}` : null, escrow: !!r.doc?.escrow, channel: r.doc?.channel?.kind ?? null };
       }),
     };
   }
@@ -418,10 +454,16 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
           if (!v) delete config.max_per_call;
           else { try { config.max_per_call = microToUsd(usdToMicro(normalizeUsd(v))); } catch { throw new HttpError(400, 'per call must be an amount like 0.05'); } }
         }
-        if (p.model !== undefined || p.max_per_call !== undefined) patch.config = config;
+        // 3.0: payments above this wait for the owner's approval in the Inbox
+        if (p.approve_above !== undefined) {
+          const v = str(p.approve_above, 20).trim();
+          if (!v) delete config.approve_above;
+          else { try { config.approve_above = microToUsd(usdToMicro(normalizeUsd(v))); } catch { throw new HttpError(400, 'approve above must be an amount like 0.25'); } }
+        }
+        if (p.model !== undefined || p.max_per_call !== undefined || p.approve_above !== undefined) patch.config = config;
         if (!Object.keys(patch).length) throw new HttpError(400, 'nothing to change');
         store.updateAgent(agent.id, patch);
-        ev('configure', { agent_id: agent.id, name: agent.name, ...(p.model !== undefined ? { model: config.model ?? 'default' } : {}), ...(patch.budget_per_run !== undefined ? { budget_per_run: microToUsd(patch.budget_per_run) } : {}), ...(p.max_per_call !== undefined ? { max_per_call: config.max_per_call ?? null } : {}), ...(patch.instructions !== undefined ? { instructions: true } : {}) });
+        ev('configure', { agent_id: agent.id, name: agent.name, ...(p.model !== undefined ? { model: config.model ?? 'default' } : {}), ...(patch.budget_per_run !== undefined ? { budget_per_run: microToUsd(patch.budget_per_run) } : {}), ...(p.max_per_call !== undefined ? { max_per_call: config.max_per_call ?? null } : {}), ...(p.approve_above !== undefined ? { approve_above: config.approve_above ?? null } : {}), ...(patch.instructions !== undefined ? { instructions: true } : {}) });
         return publicAgent(store.agent(agent.id)!);
       }
       case 'budget': {
@@ -452,16 +494,34 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         }
         let hired: AgentRow | null = null;
         if (a.action === 'approve' && ap.kind === 'hire' && typeof ap.payload.name === 'string' && ap.payload.name) {
-          // the agent the requester described joins on the requester's adapter and per call cap
+          // the agent the requester described joins on the requester's adapter, with the model and per call cap it
+          // asked for (checked when it asked: a cap no higher than its own); the owner may change either when approving
           const by = ap.agent_id ? store.agent(ap.agent_id) : null;
           const adapter = by && by.adapter !== 'http' ? by.adapter : adapters.has('claude') ? 'claude' : 'starter';
+          const config: Record<string, unknown> = {};
+          const model = p.model !== undefined ? str(p.model, 80).trim() : typeof ap.payload.model === 'string' ? ap.payload.model : '';
+          if (model) { if (!/^claude-[a-z0-9.-]+$/.test(model)) throw new HttpError(400, 'model must be a Claude model id like claude-haiku-5-5'); config.model = model; }
+          const cap = p.max_per_call !== undefined ? str(p.max_per_call, 20).trim() : typeof ap.payload.max_per_call === 'string' ? ap.payload.max_per_call : typeof by?.config.max_per_call === 'string' ? by.config.max_per_call : '';
+          if (cap) config.max_per_call = cap;
           hired = hire({
-            name: ap.payload.name, role: ap.payload.role ?? '', instructions: ap.payload.instructions ?? '', adapter,
-            config: by?.config.max_per_call ? { max_per_call: by.config.max_per_call } : {},
+            name: ap.payload.name, role: ap.payload.role ?? '', instructions: ap.payload.instructions ?? '', adapter, config,
             budget_per_run: typeof ap.payload.amount === 'string' && ap.payload.amount ? ap.payload.amount : '0.25',
           });
         }
-        if (ap.agent_id && ap.ticket_id) store.wake(ap.agent_id, ap.ticket_id, `request ${a.action === 'approve' ? 'approved' : 'rejected'}${hired ? `: ${hired.name} is hired` : ''}`, now);
+        if (ap.kind === 'payment' && a.action === 'approve') {
+          // the owner key signs the approval for exactly the request the gateway named; the handler posts it to that gateway
+          const req = ap.payload.request as ApprovalRequest | undefined;
+          if (!req || !approvalRequestValid(req) || req.owner !== c.owner_pub) throw new HttpError(409, 'this payment request is not for this company\'s owner key');
+          store.patchApproval(ap.id, { approval: signApproval({ publicKey: c.owner_pub, privateKey: c.owner_priv }, req, 3_600_000, now) });
+          // the run that asked may have stopped on it: the ticket goes back to work so the agent's wake runs
+          const t = ap.ticket_id ? store.ticket(ap.ticket_id) : undefined;
+          if (t && t.state === 'blocked') {
+            store.updateTicket(t.id, { state: 'in_progress' }, now);
+            ev('state', { from: 'blocked', to: 'in_progress', reason: 'payment approved' }, t.id);
+          }
+        }
+        const what = ap.kind === 'payment' ? `payment of ${String(ap.payload.amount ?? '')} ${String(ap.payload.currency ?? '')} ${a.action === 'approve' ? 'approved: make the same call again' : 'declined'}` : `request ${a.action === 'approve' ? 'approved' : 'rejected'}${hired ? `: ${hired.name} is hired` : ''}`;
+        if (ap.agent_id && (ap.ticket_id || ap.kind === 'payment')) store.wake(ap.agent_id, ap.ticket_id, what, now);
         if (hired) return { ok: true, agent: publicAgent(hired) };
         return { ok: true };
       }
@@ -494,6 +554,25 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         ev('charter', { from: { name: c.name, mission: c.mission }, to: { name: patch.name ?? c.name, mission: patch.mission ?? c.mission } });
         return { ok: true };
       }
+      case 'revoke': {
+        // the owner kills mandates at every gateway: a run's, a delegated budget (and every sub-ticket run under it), a channel's
+        const ids = Array.isArray(p.mandate_ids) ? (p.mandate_ids as unknown[]).map((x) => str(x, 64)).filter((x) => /^[A-Za-z0-9_-]{43}$/.test(x)) : [];
+        if (!ids.length) throw new HttpError(400, 'nothing to revoke');
+        const reason = str(p.reason, 500) || 'revoked by the owner';
+        const scope = (['run', 'delegation', 'channel'] as const).includes(p.scope as 'run') ? (p.scope as 'run' | 'delegation' | 'channel') : 'run';
+        const owner = { publicKey: c.owner_pub, privateKey: c.owner_priv };
+        const docs: Revocation[] = [];
+        for (const id of ids) {
+          const doc = signRevocation(owner, id, reason, now);
+          if (store.addRevocation({ mandate_id: id, company_id: c.id, run_id: p.run_id ? str(p.run_id, 64) : null, agent_id: p.agent_id ? str(p.agent_id, 64) : null, scope, reason, doc, results: [], at: now.toISOString() })) docs.push(doc);
+        }
+        ev('revoke', { mandate_ids: ids, scope, reason, run_id: p.run_id ?? null, agent_id: p.agent_id ?? null });
+        return { revoked: ids, docs };
+      }
+      case 'channel':
+        // opening or closing a payment channel: logged and signed here, the gateway call follows
+        ev('channel', { op: str(p.op, 10), origin: str(p.origin, 300), agent_id: p.agent_id ?? null, deposit: p.deposit ?? null, channel: p.channel ?? null });
+        return { ok: true };
       case 'cancel': {
         const t = store.ticket(str(p.ticket_id, 64));
         if (!t || t.company_id !== c.id) throw new HttpError(404, 'no such ticket');
@@ -519,6 +598,84 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
     if (!target || target === 'null') return;
     const pub = await originIsPublic(target);
     if (!pub.ok) throw new HttpError(400, `${target} refused: ${pub.reason}`);
+  }
+
+  // -- 3.0: revocations and orders -------------------------------------------
+
+  /** Mandates of an agent's runs in flight (or every agent's): what a pause or retire revokes. */
+  function runMandates(c: CompanyRow, agentId?: string): Mandate[] {
+    return store.runningRuns(c.id).filter((r) => r.mandate && (!agentId || r.agent_id === agentId)).map((r) => r.mandate!);
+  }
+
+  /**
+   * Sign revocations with the owner key (a signed board action) and tell every gateway the company
+   * spends at, each with its mandate so a gateway that has not seen it yet can check the owner's
+   * authority. On a company that pays on chain the mandate is only half the limit: the agents named
+   * in `zero` also lose their ERC-20 allowance, which is what the chain itself enforces.
+   */
+  async function revokeMandates(c: CompanyRow, mandates: Mandate[], scope: 'run' | 'delegation' | 'channel', reason: string, who: { run_id?: string; agent_id?: string } = {}, zero: string[] = []): Promise<{ revoked: string[]; results: Array<{ origin: string; ok: boolean; error?: string }>; chain?: Array<{ agent: string; ok: boolean; tx?: string; error?: string }> }> {
+    const held = new Set(store.revocationsOf(c.id).map((r) => r.mandate_id));
+    const fresh = mandates.filter((m) => !held.has(m.id));
+    let results: Array<{ origin: string; ok: boolean; error?: string }> = [];
+    if (fresh.length) {
+      const out = boardAct(c, 'revoke', { mandate_ids: fresh.map((m) => m.id), scope, reason, ...who }) as { docs: Revocation[] };
+      const body = out.docs.map((r) => ({ revocation: r, mandate: fresh.find((m) => m.id === r.mandate) }));
+      results = await Promise.all(c.gateways.map(async (origin) => {
+        try {
+          const r = await egress(`${origin}/.well-known/tab/revocations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(8_000) });
+          const doc = (await r.json().catch(() => ({}))) as { results?: Array<{ error?: string }> };
+          const bad = (doc.results ?? []).find((x) => x.error);
+          return { origin, ok: r.ok && !bad, ...(r.ok && !bad ? {} : { error: bad?.error ?? `HTTP ${r.status}` }) };
+        } catch (err) {
+          return { origin, ok: false, error: (err as Error).message };
+        }
+      }));
+      for (const m of fresh) store.setRevocationResults(m.id, results);
+      log(`company ${c.id}: revoked ${fresh.length} mandate${fresh.length === 1 ? '' : 's'} (${reason}) at ${results.filter((x) => x.ok).length} of ${results.length} gateways`);
+    }
+    const chain = zero.length ? await zeroAllowances(c, zero) : undefined;
+    return { revoked: fresh.map((m) => m.id), results, ...(chain ? { chain } : {}) };
+  }
+
+  /** On a company that pays on chain: drop agents' ERC-20 allowances from the owner account to zero. */
+  async function zeroAllowances(c: CompanyRow, agentIds: string[]): Promise<Array<{ agent: string; ok: boolean; tx?: string; error?: string }> | undefined> {
+    const ch = await chainOf(c);
+    if (!ch) return undefined;
+    const owner = { privateKey: c.owner_priv };
+    const out: Array<{ agent: string; ok: boolean; tx?: string; error?: string }> = [];
+    for (const id of [...new Set(agentIds)]) {
+      const a = store.agent(id);
+      if (!a?.agent_priv) continue;
+      const address = addressFromSeed(seedOf(a.agent_priv));
+      try {
+        if ((await ch.rpc.erc20Allowance(ch.token, addressFromSeed(seedOf(c.owner_priv)), address)) === 0n) { out.push({ agent: a.name, ok: true }); continue; }
+        out.push({ agent: a.name, ok: true, tx: await evmSend(ch.rpc, owner, ch.token, 0n, erc20.approve(address, 0n)) });
+      } catch (err) {
+        out.push({ agent: a.name, ok: false, error: (err as Error).message });
+      }
+    }
+    if (out.length) store.addEvent({ company_id: c.id, ticket_id: null, agent_id: null, kind: 'chain-revoke', body: { agents: out, chain_id: ch.chain_id, explorer: ch.explorer } });
+    return out;
+  }
+
+  /** Ask the gateway about every held order; a refund gives the money back to the run's books. */
+  async function refreshOrders(c: CompanyRow): Promise<void> {
+    const held = store.ordersOf(c.id, 100).filter((o) => o.state === 'held' || o.amount === 0);
+    await Promise.all(held.map(async (o: OrderRow) => {
+      try {
+        const r = await egress(o.status_url, { headers: { 'tab-escrow-token': o.token }, signal: AbortSignal.timeout(8_000) });
+        if (!r.ok) return;
+        const st = (await r.json()) as { state?: string; micro?: number; receipt?: Receipt | null; refund_ref?: string | null; reason?: string | null; deadline?: string };
+        if (st.state !== 'held' && st.state !== 'delivered' && st.state !== 'refunded') return;
+        const amount = Number.isSafeInteger(st.micro) && st.micro! > 0 ? st.micro! : o.amount;
+        if (amount !== o.amount) store.setOrderAmount(c.id, o.id, amount);
+        if (st.state === o.state) return;
+        store.updateOrder(c.id, o.id, { state: st.state, receipt: st.receipt ?? null, refund_ref: st.refund_ref ?? null, reason: st.reason ?? null });
+        store.addEvent({ company_id: c.id, ticket_id: null, agent_id: o.agent_id, kind: 'order', body: { order: o.id, url: o.url, state: st.state, amount: microToUsd(amount), ...(st.reason ? { reason: st.reason } : {}) } });
+        // the run booked the held amount when the gateway counted it; a refund takes it back off
+        if (st.state === 'refunded' && o.run_id) store.addRunSpend(o.run_id, -Math.min(amount, store.run(o.run_id)?.spent ?? 0));
+      } catch { /* try again on the next look */ }
+    }));
   }
 
   /** Sign an action with the custodial owner key and apply it, in one transaction. */
@@ -723,11 +880,23 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
           }
           return;
         }
+        if (sub === 'orders') {
+          // pay-on-delivery orders: ask the gateway about every one still held, then list them
+          await refreshOrders(c);
+          sendJson(res, 200, { orders: store.ordersOf(c.id, 100).map((o) => ({ ...o, token: undefined, amount: microToUsd(o.amount) })) });
+          return;
+        }
+        const om = /^orders\/([A-Za-z0-9_-]+)$/.exec(sub);
+        if (om) {
+          const o = store.order(c.id, om[1]);
+          if (!o) { sendJson(res, 404, { error: 'no such order' }); return; }
+          sendJson(res, 200, { order: { ...o, token: undefined, amount: microToUsd(o.amount) }, receipt: o.receipt });
+          return;
+        }
         if (sub === 'balances') {
-          await chainOf(c); // learns which gateways settle on chain
           const balances = await Promise.all(c.gateways.map(async (origin) => {
             try {
-              const evm = chainMemo.get(origin)?.doc?.rail === 'evm';
+              const evm = (await discoveryOf(origin))?.rail === 'evm';
               const r = await egress(`${origin}/.well-known/tab/wallet/${encodeURIComponent(evm ? addressFromSeed(seedOf(c.owner_priv)) : c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) });
               return { origin, ...((await r.json()) as Record<string, unknown>) };
             } catch (err) { return { origin, error: (err as Error).message }; }
@@ -739,10 +908,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
           if (!c.sell_gateway) { sendJson(res, 200, { gateway: null, earned: '0.00', receipts: [] }); return; }
           try {
             // an evm-rail gateway knows the owner by its 0x address
-            let evm = chainMemo.get(c.sell_gateway)?.doc?.rail === 'evm';
-            if (!chainMemo.has(c.sell_gateway)) {
-              try { const d = (await (await egress(`${c.sell_gateway}/.well-known/tab`, { signal: AbortSignal.timeout(8_000), redirect: 'error' })).json()) as Record<string, any>; chainMemo.set(c.sell_gateway, { at: Date.now(), doc: d }); evm = d.rail === 'evm'; } catch { /* the wallet call below reports it */ }
-            }
+            const evm = (await discoveryOf(c.sell_gateway))?.rail === 'evm';
             const w = await (await egress(`${c.sell_gateway}/.well-known/tab/wallet/${encodeURIComponent(evm ? addressFromSeed(seedOf(c.owner_priv)) : c.owner_pub)}`, { signal: AbortSignal.timeout(8_000) })).json() as Record<string, unknown>;
             let receipts: Receipt[] = [];
             try {
@@ -776,11 +942,84 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       }
       if (sub === 'agents') { await checkEgress('hire', body); sendJson(res, 200, { agent: boardAct(c, 'hire', body) }); return; }
       const am = /^agents\/([A-Za-z0-9_-]+)\/retire$/.exec(sub);
-      if (am) { sendJson(res, 200, boardAct(c, 'retire', { agent_id: am[1] }) as object); return; }
+      if (am) {
+        const out = boardAct(c, 'retire', { agent_id: am[1] }) as object;
+        // a retired agent's runs in flight lose their money at once
+        await revokeMandates(c, runMandates(c, am[1]), 'run', 'the agent was retired', { agent_id: am[1] }, [am[1]]);
+        sendJson(res, 200, out);
+        return;
+      }
+      // 3.0: revoke a run's mandate, every mandate an agent holds now, or a delegated budget
+      const rvm = /^runs\/([A-Za-z0-9_-]+)\/revoke$/.exec(sub);
+      if (rvm) {
+        const run = store.run(rvm[1]);
+        if (!run || run.company_id !== c.id || !run.mandate) throw new HttpError(404, 'no such run with a mandate');
+        sendJson(res, 200, await revokeMandates(c, [run.mandate], 'run', str(body.reason, 500) || 'revoked by the owner', { run_id: run.id, agent_id: run.agent_id }, [run.agent_id]));
+        return;
+      }
+      const ravm = /^agents\/([A-Za-z0-9_-]+)\/revoke$/.exec(sub);
+      if (ravm) {
+        const agent = store.agent(ravm[1]);
+        if (!agent || agent.company_id !== c.id) throw new HttpError(404, 'no such agent');
+        const live = [...runMandates(c, agent.id), ...store.delegationsOf(c.id).filter((d) => d.agent_id === agent.id && Date.parse(d.mandate.expires_at) > Date.now()).map((d) => d.mandate)];
+        if (!live.length) throw new HttpError(409, `${agent.name} holds no live mandate right now`);
+        sendJson(res, 200, await revokeMandates(c, live, 'run', str(body.reason, 500) || `every mandate ${agent.name} holds, revoked by the owner`, { agent_id: agent.id }, [agent.id]));
+        return;
+      }
+      const rdm = /^delegations\/([A-Za-z0-9_-]+)\/revoke$/.exec(sub);
+      if (rdm) {
+        const d = store.delegation(rdm[1]);
+        if (!d || d.company_id !== c.id) throw new HttpError(404, 'no such delegation');
+        sendJson(res, 200, await revokeMandates(c, [d.mandate], 'delegation', str(body.reason, 500) || 'delegated budget revoked by the owner', { agent_id: d.agent_id }));
+        return;
+      }
+      // 3.0: payment channels, opened and closed by the server for an agent with a custodial key
+      if (sub === 'channels') {
+        const origin = bareOrigin(str(body.origin, 300));
+        if (!origin || !c.gateways.includes(origin)) throw new HttpError(400, 'open a channel at one of the company\'s gateways');
+        const agent = store.agent(str(body.agent_id, 64));
+        if (!agent || agent.company_id !== c.id || agent.state !== 'active' || !agent.agent_priv) throw new HttpError(404, 'no such agent with its own key');
+        let deposit: number;
+        try { deposit = usdToMicro(normalizeUsd(str(body.deposit, 20))); } catch { throw new HttpError(400, 'deposit must be an amount like 1.00'); }
+        const spent = store.companySpent(c.id);
+        if (deposit <= 0 || deposit > c.budget - spent.tab - spent.model) throw new HttpError(400, `the deposit must fit in what the company has left (${microToUsd(Math.max(0, c.budget - spent.tab - spent.model))})`);
+        const disc = await discoveryOf(origin);
+        if (!disc?.channels) throw new HttpError(409, `${origin} takes no payment channels`);
+        const days = Math.max(1, Math.min(30, Number(body.days ?? 7) || 7));
+        const owner = { publicKey: c.owner_pub, privateKey: c.owner_priv };
+        const mandate = issueMandate(owner, { agent: agent.agent_pub, budgetUsd: microToUsd(deposit), window: 'total', allow: [String(disc.realm)], days, evmOwner: addressFromSeed(seedOf(c.owner_priv)) });
+        boardAct(c, 'channel', { op: 'open', origin, agent_id: agent.id, deposit: microToUsd(deposit), mandate_id: mandate.id });
+        const client = new TabClient({ agent: { publicKey: agent.agent_pub, privateKey: agent.agent_priv }, mandate, currency: c.currency, fetch: egress });
+        let held;
+        try { held = await client.openChannel(origin, microToUsd(deposit), days * 86_400); } catch (err) { throw new HttpError(502, (err as Error).message); }
+        const now = new Date().toISOString();
+        store.addChannel({ id: held.id, company_id: c.id, agent_id: agent.id, origin, mandate, currency: c.currency, deposit, spent: 0, calls: 0, state: 'open', opened_at: held.opened_at, expires_at: held.expires_at, settle_ref: null, refund_ref: null, updated_at: now });
+        store.addEvent({ company_id: c.id, ticket_id: null, agent_id: agent.id, kind: 'channel-open', body: { channel: held.id, origin, agent: agent.name, deposit: microToUsd(deposit), expires_at: held.expires_at } });
+        sendJson(res, 200, { channel: held });
+        return;
+      }
+      const chc = /^channels\/([A-Za-z0-9_-]+)\/close$/.exec(sub);
+      if (chc) {
+        const ch = store.channel(c.id, chc[1]);
+        if (!ch) throw new HttpError(404, 'no such channel');
+        if (ch.state !== 'open') throw new HttpError(409, 'channel is already closed');
+        const agent = store.agent(ch.agent_id);
+        if (!agent?.agent_priv) throw new HttpError(409, 'the channel agent has no key here');
+        boardAct(c, 'channel', { op: 'close', origin: ch.origin, agent_id: agent.id, channel: ch.id });
+        const client = new TabClient({ agent: { publicKey: agent.agent_pub, privateKey: agent.agent_priv }, mandate: ch.mandate, currency: c.currency, fetch: egress });
+        // the client closes the channel it holds; seed its book with this one
+        client.holdChannel({ id: ch.id, origin: ch.origin, realm: '', agent: agent.agent_pub, owner: c.owner_pub, mandate: ch.mandate.id, currency: ch.currency, deposit: String(ch.deposit), authorized: String(ch.spent), spent: String(ch.spent), held: '0', calls: ch.calls, state: 'open', opened_at: ch.opened_at, expires_at: ch.expires_at });
+        let out;
+        try { out = await client.closeChannel(ch.origin); } catch (err) { throw new HttpError(502, (err as Error).message); }
+        store.updateChannel(c.id, ch.id, { state: 'closed', spent: Number(out.channel.spent), calls: out.channel.calls, settle_ref: out.channel.settle_ref ?? null, refund_ref: out.channel.refund_ref ?? null });
+        store.addEvent({ company_id: c.id, ticket_id: null, agent_id: agent.id, kind: 'channel-close', body: { channel: ch.id, origin: ch.origin, spent: microToUsd(Number(out.channel.spent)), calls: out.channel.calls, refunded: microToUsd(ch.deposit - Number(out.channel.spent)) } });
+        sendJson(res, 200, { channel: out.channel, receipt: out.receipt });
+        return;
+      }
       const cfm = /^agents\/([A-Za-z0-9_-]+)\/configure$/.exec(sub);
       if (cfm) {
         const pick: Record<string, unknown> = { agent_id: cfm[1] };
-        for (const k of ['model', 'budget_per_run', 'max_per_call', 'instructions', 'heartbeat_s']) if (body[k] !== undefined) pick[k] = body[k];
+        for (const k of ['model', 'budget_per_run', 'max_per_call', 'approve_above', 'instructions', 'heartbeat_s']) if (body[k] !== undefined) pick[k] = body[k];
         sendJson(res, 200, boardAct(c, 'configure', pick) as object);
         return;
       }
@@ -812,7 +1051,13 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         return;
       }
       if (sub === 'charter') { sendJson(res, 200, boardAct(c, 'charter', { ...(body.name !== undefined ? { name: str(body.name, 80) } : {}), ...(body.mission !== undefined ? { mission: str(body.mission, 20_000) } : {}) }) as object); return; }
-      if (sub === 'pause' || sub === 'resume') { sendJson(res, 200, boardAct(c, sub, { reason: str(body.reason, 500) }) as object); return; }
+      if (sub === 'pause' || sub === 'resume') {
+        const out = boardAct(c, sub, { reason: str(body.reason, 500) }) as object;
+        // pausing stops the money too: every run in flight loses its mandate at the gateways
+        if (sub === 'pause') { const live = runMandates(c); await revokeMandates(c, live, 'run', 'the company was paused', {}, store.runningRuns(c.id).filter((r) => r.mandate).map((r) => r.agent_id)); }
+        sendJson(res, 200, out);
+        return;
+      }
       if (sub === 'publish') { await checkEgress('publish', { gateway: str(body.gateway, 300) }); sendJson(res, 200, boardAct(c, 'publish', { gateway: str(body.gateway, 300) }) as object); return; }
       if (sub === 'model-key') {
         // the company's own Anthropic API key: verified against the API, sealed at rest, never returned
@@ -842,9 +1087,25 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       }
       const apm = /^approvals\/([A-Za-z0-9_-]+)$/.exec(sub);
       if (apm) {
-        const decision = body.decision === 'approve' ? 'approve' : body.decision === 'reject' ? 'reject' : null;
+        const decision = body.decision === 'approve' ? 'approve' : body.decision === 'reject' || body.decision === 'deny' ? 'reject' : null;
         if (!decision) throw new HttpError(400, 'decision must be approve or reject');
-        sendJson(res, 200, boardAct(c, decision, { approval_id: apm[1] }) as object);
+        // the owner may change a hire's model or per call cap while approving it
+        const extra: Record<string, unknown> = {};
+        for (const k of ['model', 'max_per_call']) if (body[k] !== undefined) extra[k] = str(body[k], 80);
+        const out = boardAct(c, decision, { approval_id: apm[1], ...extra }) as Record<string, unknown>;
+        const ap = store.approval(apm[1]);
+        if (ap && ap.kind === 'payment' && decision === 'approve') {
+          // the gateway keeps the approval, so the agent's next try of the same call finds it
+          const origin = String(ap.payload.origin ?? '');
+          try {
+            const r = await egress(`${origin}/.well-known/tab/approvals`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ request: ap.payload.request, approval: ap.payload.approval }), signal: AbortSignal.timeout(8_000) });
+            store.patchApproval(ap.id, { posted: r.ok ? 'ok' : `HTTP ${r.status}: ${String(((await r.json().catch(() => ({}))) as { error?: string }).error ?? '')}` });
+          } catch (err) {
+            store.patchApproval(ap.id, { posted: `failed: ${(err as Error).message}` });
+          }
+          out.posted = store.approval(ap.id)?.payload.posted;
+        }
+        sendJson(res, 200, out);
         return;
       }
       if (sub === 'fund') {

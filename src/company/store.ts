@@ -136,6 +136,68 @@ export interface CompanyReceipt {
   doc: Receipt | null; // the receipt as the gateway signed it
 }
 
+/** 3.0: a mandate the owner revoked, and what the gateways said when told. */
+export interface RevocationRow {
+  mandate_id: string;
+  company_id: string;
+  run_id: string | null;
+  agent_id: string | null;
+  scope: 'run' | 'delegation' | 'channel';
+  reason: string;
+  doc: unknown; // the signed revocation
+  results: Array<{ origin: string; ok: boolean; error?: string }>;
+  at: string;
+}
+
+/** 3.0: the mandate the owner gives a manager for the sub-tickets of one of its tickets; sub-ticket runs are delegated from it. */
+export interface DelegationRow {
+  ticket_id: string;
+  company_id: string;
+  agent_id: string; // the manager
+  mandate: Mandate;
+  created_at: string;
+}
+
+/** 3.0: a pay-on-delivery order an agent placed, as the gateway last reported it. */
+export interface OrderRow {
+  id: string; // the gateway's escrow (hold) id
+  company_id: string;
+  run_id: string | null;
+  agent_id: string | null;
+  origin: string;
+  url: string;
+  status_url: string;
+  token: string;
+  amount: number;
+  currency: string;
+  state: 'held' | 'delivered' | 'refunded';
+  deadline: string;
+  receipt: Receipt | null;
+  refund_ref: string | null;
+  reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 3.0: a payment channel the company holds at a gateway for one of its agents. */
+export interface ChannelRow {
+  id: string;
+  company_id: string;
+  agent_id: string;
+  origin: string;
+  mandate: Mandate;
+  currency: string;
+  deposit: number;
+  spent: number;
+  calls: number;
+  state: 'open' | 'closed';
+  opened_at: string;
+  expires_at: string;
+  settle_ref: string | null;
+  refund_ref: string | null;
+  updated_at: string;
+}
+
 const parse = <T>(s: unknown, fallback: T): T => {
   if (s == null) return fallback;
   try { return JSON.parse(String(s)) as T; } catch { return fallback; }
@@ -201,6 +263,25 @@ export class CompanyStore {
         realm TEXT NOT NULL, resource TEXT NOT NULL, amount INTEGER NOT NULL, currency TEXT NOT NULL, at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS limits (key TEXT NOT NULL, at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS revocations (
+        mandate_id TEXT PRIMARY KEY, company_id TEXT NOT NULL, run_id TEXT, agent_id TEXT, scope TEXT NOT NULL,
+        reason TEXT NOT NULL, doc TEXT NOT NULL, results TEXT NOT NULL, at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS delegations (
+        ticket_id TEXT PRIMARY KEY, company_id TEXT NOT NULL, agent_id TEXT NOT NULL, mandate TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS orders (
+        id TEXT NOT NULL, company_id TEXT NOT NULL, run_id TEXT, agent_id TEXT, origin TEXT NOT NULL, url TEXT NOT NULL,
+        status_url TEXT NOT NULL, token TEXT NOT NULL, amount INTEGER NOT NULL, currency TEXT NOT NULL, state TEXT NOT NULL,
+        deadline TEXT NOT NULL, receipt TEXT, refund_ref TEXT, reason TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (company_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS channels (
+        id TEXT NOT NULL, company_id TEXT NOT NULL, agent_id TEXT NOT NULL, origin TEXT NOT NULL, mandate TEXT NOT NULL,
+        currency TEXT NOT NULL, deposit INTEGER NOT NULL, spent INTEGER NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0,
+        state TEXT NOT NULL, opened_at TEXT NOT NULL, expires_at TEXT NOT NULL, settle_ref TEXT, refund_ref TEXT, updated_at TEXT NOT NULL,
+        PRIMARY KEY (company_id, id)
+      );
       CREATE INDEX IF NOT EXISTS limits_key ON limits (key, at);
     `);
     // 2.2: a sealed model key per company
@@ -357,11 +438,16 @@ export class CompanyStore {
     this.db.prepare(`UPDATE companies SET ${sets.join(', ')} WHERE id = ?`).run(...args);
   }
 
-  /** Micro spent by a company: what its runs paid through tab plus what the model cost. */
+  /**
+   * Micro spent by a company: what its runs paid through tab plus what the model cost. Payment
+   * channels count too: an open one for its whole deposit (that money is committed), a closed one
+   * for what was spent from it.
+   */
   companySpent(id: string): { tab: number; model: number } {
     const r = this.db.prepare('SELECT COALESCE(SUM(spent),0) AS tab, COALESCE(SUM(model_cost),0) AS model FROM runs WHERE company_id = ?')
       .get(id) as { tab: number; model: number };
-    return { tab: Number(r.tab), model: Number(r.model) };
+    const ch = this.db.prepare("SELECT COALESCE(SUM(CASE WHEN state = 'open' THEN deposit ELSE spent END),0) AS n FROM channels WHERE company_id = ?").get(id) as { n: number };
+    return { tab: Number(r.tab) + Number(ch.n), model: Number(r.model) };
   }
 
   // -- agents --------------------------------------------------------------
@@ -576,6 +662,13 @@ export class CompanyStore {
       .map((r) => this.rowToApproval(r));
   }
 
+  /** Merge into a pending or decided approval's payload (a signed payment approval, the gateway's answer). */
+  patchApproval(id: string, patch: Record<string, unknown>): void {
+    const a = this.approval(id);
+    if (!a) return;
+    this.db.prepare('UPDATE approvals SET payload = ? WHERE id = ?').run(JSON.stringify({ ...a.payload, ...patch }), id);
+  }
+
   decideApproval(id: string, state: 'approved' | 'rejected', now = new Date()): boolean {
     const res = this.db.prepare("UPDATE approvals SET state = ?, decided_at = ? WHERE id = ? AND state = 'pending'")
       .run(state, now.toISOString(), id);
@@ -642,6 +735,111 @@ export class CompanyStore {
       resource: String(r.resource), amount: Number(r.amount), currency: String(r.currency), at: String(r.at),
       verified: Number(r.verified) === 1, doc: r.doc ? (JSON.parse(String(r.doc)) as Receipt) : null,
     });
+  }
+
+  // -- 3.0: revocations, delegations, orders, channels ------------------------
+
+  addRevocation(r: RevocationRow): boolean {
+    return Number(this.db.prepare(`INSERT OR IGNORE INTO revocations (mandate_id, company_id, run_id, agent_id, scope, reason, doc, results, at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(r.mandate_id, r.company_id, r.run_id, r.agent_id, r.scope, r.reason, JSON.stringify(r.doc), JSON.stringify(r.results), r.at).changes) > 0;
+  }
+
+  setRevocationResults(mandateId: string, results: RevocationRow['results']): void {
+    this.db.prepare('UPDATE revocations SET results = ? WHERE mandate_id = ?').run(JSON.stringify(results), mandateId);
+  }
+
+  revocationsOf(companyId: string): RevocationRow[] {
+    return (this.db.prepare('SELECT * FROM revocations WHERE company_id = ? ORDER BY at DESC').all(companyId) as Record<string, unknown>[]).map((r) => ({
+      mandate_id: String(r.mandate_id), company_id: String(r.company_id), run_id: r.run_id == null ? null : String(r.run_id),
+      agent_id: r.agent_id == null ? null : String(r.agent_id), scope: r.scope as RevocationRow['scope'], reason: String(r.reason),
+      doc: parse(r.doc, null), results: parse(r.results, []), at: String(r.at),
+    }));
+  }
+
+  delegation(ticketId: string): DelegationRow | undefined {
+    const r = this.db.prepare('SELECT * FROM delegations WHERE ticket_id = ?').get(ticketId) as Record<string, unknown> | undefined;
+    return r ? { ticket_id: String(r.ticket_id), company_id: String(r.company_id), agent_id: String(r.agent_id), mandate: parse<Mandate>(r.mandate, null as unknown as Mandate), created_at: String(r.created_at) } : undefined;
+  }
+
+  putDelegation(d: DelegationRow): void {
+    this.db.prepare(`INSERT INTO delegations (ticket_id, company_id, agent_id, mandate, created_at) VALUES (?,?,?,?,?)
+      ON CONFLICT(ticket_id) DO UPDATE SET agent_id = excluded.agent_id, mandate = excluded.mandate, created_at = excluded.created_at`)
+      .run(d.ticket_id, d.company_id, d.agent_id, JSON.stringify(d.mandate), d.created_at);
+  }
+
+  delegationsOf(companyId: string): DelegationRow[] {
+    return (this.db.prepare('SELECT ticket_id FROM delegations WHERE company_id = ? ORDER BY created_at DESC').all(companyId) as Array<{ ticket_id: string }>).map((r) => this.delegation(String(r.ticket_id))!);
+  }
+
+  private rowToOrder(r: Record<string, unknown>): OrderRow {
+    const sOrNull = (k: string) => (r[k] == null ? null : String(r[k]));
+    return {
+      id: String(r.id), company_id: String(r.company_id), run_id: sOrNull('run_id'), agent_id: sOrNull('agent_id'), origin: String(r.origin),
+      url: String(r.url), status_url: String(r.status_url), token: String(r.token), amount: Number(r.amount), currency: String(r.currency),
+      state: r.state as OrderRow['state'], deadline: String(r.deadline), receipt: parse<Receipt | null>(r.receipt, null),
+      refund_ref: sOrNull('refund_ref'), reason: sOrNull('reason'), created_at: String(r.created_at), updated_at: String(r.updated_at),
+    };
+  }
+
+  addOrder(o: OrderRow): void {
+    this.db.prepare(`INSERT OR IGNORE INTO orders (id, company_id, run_id, agent_id, origin, url, status_url, token, amount, currency, state, deadline, receipt, refund_ref, reason, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(o.id, o.company_id, o.run_id, o.agent_id, o.origin, o.url, o.status_url, o.token, o.amount, o.currency, o.state, o.deadline,
+        o.receipt ? JSON.stringify(o.receipt) : null, o.refund_ref, o.reason, o.created_at, o.updated_at);
+  }
+
+  updateOrder(companyId: string, id: string, patch: { state: OrderRow['state']; receipt?: Receipt | null; refund_ref?: string | null; reason?: string | null }): void {
+    this.db.prepare('UPDATE orders SET state = ?, receipt = COALESCE(?, receipt), refund_ref = COALESCE(?, refund_ref), reason = COALESCE(?, reason), updated_at = ? WHERE company_id = ? AND id = ?')
+      .run(patch.state, patch.receipt ? JSON.stringify(patch.receipt) : null, patch.refund_ref ?? null, patch.reason ?? null, new Date().toISOString(), companyId, id);
+  }
+
+  setOrderAmount(companyId: string, id: string, amount: number): void {
+    this.db.prepare('UPDATE orders SET amount = ? WHERE company_id = ? AND id = ?').run(amount, companyId, id);
+  }
+
+  order(companyId: string, id: string): OrderRow | undefined {
+    const r = this.db.prepare('SELECT * FROM orders WHERE company_id = ? AND id = ?').get(companyId, id) as Record<string, unknown> | undefined;
+    return r ? this.rowToOrder(r) : undefined;
+  }
+
+  ordersOf(companyId: string, limit = 100): OrderRow[] {
+    return (this.db.prepare('SELECT * FROM orders WHERE company_id = ? ORDER BY created_at DESC LIMIT ?').all(companyId, limit) as Record<string, unknown>[]).map((r) => this.rowToOrder(r));
+  }
+
+  private rowToChannel(r: Record<string, unknown>): ChannelRow {
+    const sOrNull = (k: string) => (r[k] == null ? null : String(r[k]));
+    return {
+      id: String(r.id), company_id: String(r.company_id), agent_id: String(r.agent_id), origin: String(r.origin), mandate: parse<Mandate>(r.mandate, null as unknown as Mandate),
+      currency: String(r.currency), deposit: Number(r.deposit), spent: Number(r.spent), calls: Number(r.calls), state: r.state as ChannelRow['state'],
+      opened_at: String(r.opened_at), expires_at: String(r.expires_at), settle_ref: sOrNull('settle_ref'), refund_ref: sOrNull('refund_ref'), updated_at: String(r.updated_at),
+    };
+  }
+
+  addChannel(c: ChannelRow): void {
+    this.db.prepare(`INSERT INTO channels (id, company_id, agent_id, origin, mandate, currency, deposit, spent, calls, state, opened_at, expires_at, settle_ref, refund_ref, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(c.id, c.company_id, c.agent_id, c.origin, JSON.stringify(c.mandate), c.currency, c.deposit, c.spent, c.calls, c.state, c.opened_at, c.expires_at, c.settle_ref, c.refund_ref, c.updated_at);
+  }
+
+  updateChannel(companyId: string, id: string, patch: Partial<Pick<ChannelRow, 'spent' | 'calls' | 'state' | 'settle_ref' | 'refund_ref'>>): void {
+    const sets: string[] = ['updated_at = ?'];
+    const args: Array<string | number | null> = [new Date().toISOString()];
+    for (const [k, v] of Object.entries(patch)) { if (v === undefined) continue; sets.push(`${k} = ?`); args.push(v as string | number | null); }
+    args.push(companyId, id);
+    this.db.prepare(`UPDATE channels SET ${sets.join(', ')} WHERE company_id = ? AND id = ?`).run(...args);
+  }
+
+  channel(companyId: string, id: string): ChannelRow | undefined {
+    const r = this.db.prepare('SELECT * FROM channels WHERE company_id = ? AND id = ?').get(companyId, id) as Record<string, unknown> | undefined;
+    return r ? this.rowToChannel(r) : undefined;
+  }
+
+  channelsOf(companyId: string, filter: { agentId?: string; open?: boolean } = {}): ChannelRow[] {
+    const where = ['company_id = ?'];
+    const args: string[] = [companyId];
+    if (filter.agentId) { where.push('agent_id = ?'); args.push(filter.agentId); }
+    if (filter.open) where.push("state = 'open'");
+    return (this.db.prepare(`SELECT * FROM channels WHERE ${where.join(' AND ')} ORDER BY opened_at DESC`).all(...args) as Record<string, unknown>[]).map((r) => this.rowToChannel(r));
   }
 
   close(): void {

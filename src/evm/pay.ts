@@ -7,7 +7,8 @@ import type { KeyPair } from '../keys.js';
 import { scalarFromSeed } from './secp256k1.js';
 import { erc20, signTx, hexToBig, bytesToHex, type Eip1559Tx } from './tx.js';
 
-export function buildPaymentTx(chal: Challenge, evmOwner: string, nonce: bigint): Eip1559Tx {
+/** `payTo` overrides the challenge's payout address: a pay-on-delivery order pays the escrow address the challenge names. */
+export function buildPaymentTx(chal: Challenge, evmOwner: string, nonce: bigint, payTo?: string): Eip1559Tx {
   const info = chal.evm;
   if (!info) throw new Error('challenge has no evm info');
   return {
@@ -21,7 +22,7 @@ export function buildPaymentTx(chal: Challenge, evmOwner: string, nonce: bigint)
     // wire amounts are micro units; the token may have any decimals
     data: erc20.transferFrom(
       evmOwner.toLowerCase(),
-      info.recipient.toLowerCase(),
+      (payTo ?? info.recipient).toLowerCase(),
       microToBaseUnits(BigInt(chal.amount), info.decimals),
     ),
   };
@@ -33,8 +34,9 @@ export function buildSignedPaymentTxEvm(
   evmOwner: string,
   agent: KeyPair,
   nonce: bigint,
+  payTo?: string,
 ): string {
-  const tx = buildPaymentTx(chal, evmOwner, nonce);
+  const tx = buildPaymentTx(chal, evmOwner, nonce, payTo);
   const scalar = scalarFromSeed(new Uint8Array(Buffer.from(agent.privateKey, 'base64url')));
   return bytesToHex(signTx(tx, scalar).raw);
 }

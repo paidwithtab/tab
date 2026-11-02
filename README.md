@@ -43,6 +43,7 @@
 [What is tab](#what-is-tab) ·
 [Why tab](#why-tab) ·
 [Mandates](#mandates) ·
+[New in 3.0](#new-in-30) ·
 [How a payment works](#how-a-payment-works) ·
 [Quickstart](#quickstart) ·
 [For API providers](#for-api-providers) ·
@@ -138,6 +139,20 @@ A mandate is a signed spending authorization from an owner to an agent.
 | Expires | `2026-10-01` |
 
 The owner key never has to be online while the agent is working. Every payment is checked independently by the seller's gateway against the signed mandate, so changing the agent's prompt cannot increase its authority.
+
+## New in 3.0
+
+Five things an owner can do after the mandate is signed, all optional, all backward compatible with 2.x mandates, clients and receipts.
+
+| Feature | What it does | From the CLI |
+| --- | --- | --- |
+| Instant revoke | The owner signs a revocation; gateways refuse the mandate, and every sub-mandate under it, within seconds. Gateways pass revocations to each other. | `tab mandate revoke --key owner.json --mandate m.json --gateway https://pay.example.com` |
+| Sub-mandates | An agent hands a narrower slice of its mandate to another agent key. Every limit stays inside the parent's, spend counts against every level, chains stop at three delegations. | `tab mandate delegate --agent-key agent.json --mandate m.json --to helper.json --budget 0.25` |
+| Approval above a threshold | `approve_above` on the mandate: a bigger payment waits for a fresh approval the owner signs for exactly that call. The agent retries and it pays once. | `tab mandate issue ... --approve-above 0.50`, then `tab mandate approve --owner owner.json --request req.json --gateway ...` |
+| Pay on delivery | On routes that offer it, the buyer's payment is held until the seller delivers a result, then released with a receipt that binds the request to the result. Undelivered by the deadline, it comes back. | `tab fetch --escrow --wait 300 -X POST -d '{...}' https://pay.example.com/jobs/essay` |
+| Payment channels | One deposit, then a signed voucher per call with no transaction per call, settled once at close. Metered routes charge per token, second or unit, a fraction of a cent at a time. | `tab channel open --gateway https://pay.example.com --deposit 1.00`, then `tab fetch --channel ...` |
+
+In tab OS each one has a home: a Revoke button on runs and agents, delegated budgets on a manager's card, payment approvals in the Inbox (with a thumb sized Approve on a phone), orders paid on delivery in Receipts, and channels in the Wallet. SPEC.md sections 2.1, 2.2, 5.4, 5.5 and 5.6 are the wire format.
 
 ## How a payment works
 
@@ -374,15 +389,17 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 289 automated checks across protocol behavior, adversarial conditions, EVM settlement and the company orchestrator, plus 28 browser checks of the dashboard.
+tab currently runs 475 automated checks across protocol behavior, the 3.0 features, adversarial conditions, EVM settlement and the company orchestrator, plus 40 browser checks of the dashboard and 20 checks of the channel contract on a real EVM.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
-| `npm test` | 83 | Gateway and its home page, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate, catalog health and stale serving |
-| `npm run test:adversarial` | 48 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts |
-| `npm run test:evm` | 59 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways |
-| `npm run test:company` | 113 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, hire requests, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary |
-| `npm run test:dashboard` | 26 | tab OS in a real browser (Playwright, `npx playwright install chromium` once): sign up, the quickstart's starter agent paying and answering, found from a template, add a model key, claim credits, a ticket runs to done, evidence and run log, log out; `--live` also loads the public site and app |
+| `npm test` | 90 | Gateway and its home page, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate, catalog health and stale serving, amounts in a token gateway's own currency |
+| `npm run test:v3` | 103 | Revoke and gateways sharing revocations, sub-mandates and their limits, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools and CLI |
+| `npm run test:adversarial` | 58 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts, voucher floods against one deposit, sibling sub-mandates racing one budget |
+| `npm run test:evm` | 91 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways, the testnet faucet, escrow and channels through an escrow address |
+| `npm run test:company` | 133 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, hire requests with model and per call cap, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary, payment approvals, revoke, delegated budgets, orders and channels |
+| `npm run test:dashboard` | 40 | tab OS in a real browser (Playwright, `npx playwright install chromium` once): sign up, the quickstart's starter agent paying and answering, found from a template, add a model key, claim credits, a ticket runs to done, evidence and run log, a payment approved at phone width, a revoked run, a channel opened and settled, an order released, log out; `--live` also loads the public site and app |
+| `npm run test:contract` | 20 | `contracts/TabChannel.sol` on a real EVM (needs `GANACHE`): open, cumulative vouchers, payee close, replay, forged and oversized vouchers, unilateral close and the dispute window, deployment from the CLI |
 
 > The concurrency suite fires 150 simultaneous $0.01 requests at a $1.00 mandate. Exactly 100 settle.
 
@@ -439,13 +456,13 @@ DEPLOY.md     deployment and operations
 
 The specification lives in [SPEC.md](SPEC.md).
 
-**Current version:** Draft 0.6 · **Wire protocol:** `tab/0`, and x402 version 2
+**Current version:** Draft 0.7 · **Wire protocol:** `tab/0`, and x402 version 2
 
 ## Roadmap
 
 Areas currently under exploration:
 
-- Metered pricing and payment channels
+- Gateways settling channels through the TabChannel contract
 - Windowed onchain budgets
 - Header binding and subscriptions
 - Fee splits and gas sponsorship

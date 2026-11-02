@@ -21,7 +21,7 @@ import { saveKey, type KeyPair } from '../keys.js';
 import { saveMandate, type Mandate } from '../mandate.js';
 import { parseResult, validateResult, type AgentResult, type Packet } from './packet.js';
 import { runModelAgent } from './model.js';
-import { createTabTools } from '../tools.js';
+import { createTabTools, type TabHooks } from '../tools.js';
 import type { AgentRow } from './store.js';
 
 export const ADAPTERS = ['claude', 'claude-code', 'http', 'starter'] as const;
@@ -41,6 +41,7 @@ export interface AdapterContext {
   maxModelCostMicro?: number; // what the company has left; the claude adapter stops there
   fetch?: typeof fetch;
   log?: (msg: string) => void;
+  tabHooks?: TabHooks; // 3.0: approvals, escrow orders, delegations and channels, reported to the engine
 }
 
 export interface AdapterOutput {
@@ -125,7 +126,7 @@ async function runModel(ctx: AdapterContext): Promise<AdapterOutput> {
     system: cfg.system ? String(cfg.system) : undefined,
     packet: ctx.packet, agentKey: ctx.agentKey, mandate: ctx.mandate, catalog: ctx.catalog, currency: ctx.currency,
     maxPerCallUsd: typeof cfg.max_per_call === 'string' && cfg.max_per_call ? normalizeUsd(cfg.max_per_call) : undefined,
-    timeoutMs: ctx.timeoutMs, maxCostMicro: ctx.maxModelCostMicro, fetch: ctx.fetch, log: ctx.log,
+    timeoutMs: ctx.timeoutMs, maxCostMicro: ctx.maxModelCostMicro, fetch: ctx.fetch, log: ctx.log, tabHooks: ctx.tabHooks,
   });
   const head = `[${out.model}: ${out.usage.turns} turns, ${out.usage.input} tokens in, ${out.usage.output} out${out.usage.cache_read ? `, ${out.usage.cache_read} cached` : ''}]`;
   ctx.log?.(`${ctx.agent.name} ${head}`);
@@ -162,7 +163,7 @@ async function runStarter(ctx: AdapterContext): Promise<AdapterOutput> {
   const gateways = (ctx.packet.json.budget as { gateways?: string[] })?.gateways ?? [];
   const gw = String(ctx.agent.config.gateway ?? gateways[0] ?? '').replace(/\/$/, '');
   if (!gw) throw new Error('the starter agent has no gateway to pay at');
-  const tab = createTabTools({ agent: ctx.agentKey, mandate: ctx.mandate, currency: ctx.currency, maxPerCallUsd: typeof ctx.agent.config.max_per_call === 'string' && ctx.agent.config.max_per_call ? normalizeUsd(ctx.agent.config.max_per_call) : undefined, fetch: ctx.fetch });
+  const tab = createTabTools({ agent: ctx.agentKey, mandate: ctx.mandate, currency: ctx.currency, maxPerCallUsd: typeof ctx.agent.config.max_per_call === 'string' && ctx.agent.config.max_per_call ? normalizeUsd(ctx.agent.config.max_per_call) : undefined, fetch: ctx.fetch, ...(ctx.tabHooks ?? {}) });
   const lines: string[] = [];
   const evidence: Array<{ kind: 'receipt' | 'url' | 'text'; value: string }> = [];
   const paid = async (url: string): Promise<Record<string, any>> => {

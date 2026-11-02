@@ -133,9 +133,20 @@ Two limits keep a team from running on the owner's model key all day: 12 runs on
 
 Every change is an event in an append-only log: comments, state changes, runs, evidence, requests, budget warnings, pauses. The dashboard's activity feed and each ticket's thread are views of it.
 
+## Control after the mandate (3.0)
+
+- **Approvals.** An agent's settings take an "Approve above" amount. A payment over it lands in the Inbox as a payment request naming the exact call; Approve signs an approval with the owner key and hands it to the gateway, Deny declines it. The run that hit it stops; on approval its ticket goes back to work and the agent's next run makes the same call, which now pays. Approve and Deny are full width, thumb sized buttons on a phone.
+- **Revoke.** A running run's row has a Revoke button, an agent's card has Revoke mandates (every live mandate it holds, delegated budgets included), and a delegated budget has its own. Revocations are signed board actions and are sent to every gateway the company spends at, which refuse the mandate within seconds. Pausing the company or retiring an agent revokes the mandates of its runs in flight.
+- **Delegated budgets.** When a manager opens sub-tickets, the owner gives it one mandate per parent ticket (the ticket's budget, or the manager's budget per run) and each sub-ticket run gets a slice of it signed by the manager's key. Runs show "via" the manager, and the manager's card lists its delegated budgets with what the sub-tickets spent. Spend under every slice counts against the manager's mandate at the gateway.
+- **Orders paid on delivery.** Agents can pay on delivery (`tab_fetch` with `escrow: true`) where a gateway offers it. Receipts lists those orders as held, released or refunded, with the delivery receipt once released; a refund comes off the run's books.
+- **Payment channels.** The Wallet opens a channel at one of the company's gateways for an agent with its own key: one deposit, counted against the budget while open. That agent's runs pay there by voucher, and the Wallet shows the deposit, what is spent and how many vouchers were used. Close settles it: the company is charged what was used and the rest comes back.
+- **Hire requests** may name the new agent's model and per call cap; the cap is held to the requester's own, and the owner can raise it while approving (`POST /api/companies/<id>/approvals/<id> {"decision": "approve", "max_per_call": "0.08"}`).
+
+The API: `POST /api/companies/<id>/runs/<run>/revoke`, `/agents/<id>/revoke`, `/delegations/<ticket>/revoke`, `POST /channels {origin, agent_id, deposit}`, `POST /channels/<id>/close`, `GET /orders`, `GET /orders/<id>`. `configure` takes `approve_above`.
+
 ## The board log
 
-Hire, retire, budget, approve, reject, pause, resume, publish, cancel, charter (the company's name and mission) and configure (an agent's model, budget per run, per call cap, instructions and heartbeat after hiring) are board actions:
+Hire, retire, budget, approve, reject, pause, resume, publish, cancel, charter (the company's name and mission), configure (an agent's model, budget per run, per call cap, approval threshold, instructions and heartbeat after hiring), revoke and channel are board actions:
 
 ```json
 { "ver": "tab-board/0", "company": "<id>", "seq": 4, "action": "budget", "payload": { "budget": "25.00" }, "at": "...", "id": "<sha256>", "sig": "<owner signature>" }
@@ -186,6 +197,6 @@ The client commands keep the server URL, the session token and the last company 
 
 `examples/companies/research.json` founds Field Notes: a scout that searches and reads through tab and an editor that checks and writes up, with one brief already open. `examples/companies/seller.json` founds Quote Desk: a listing writer and a support agent for a company that sells through its own gateway. A template is just the body of `POST /api/companies`: name, mission, budget, `agents` (hire payloads) and `tickets`.
 
-## What 2.2 does not do
+## What 3.0 does not do
 
-No process adapter: agents are Claude through the API, Claude Code where the host allows it, or HTTP, never a script the server runs. One model vendor: the claude adapter speaks the Anthropic Messages API; other vendors come in through http agents. No multi-user companies: one account owns a company. No per-agent chat; the ticket thread is the conversation. Approvals of kind `hire` and `other` are recorded and decided but the server does not act on them beyond waking the agent; `budget` approvals raise the budget. Heartbeats need an open ticket; an idle agent stays idle.
+No process adapter: agents are Claude through the API, Claude Code where the host allows it, or HTTP, never a script the server runs. One model vendor: the claude adapter speaks the Anthropic Messages API; other vendors come in through http agents. No multi-user companies: one account owns a company. No per-agent chat; the ticket thread is the conversation. Approvals of kind `other` are recorded and decided but the server does not act on them beyond waking the agent; `budget` approvals raise the budget, `hire` approvals hire, `payment` approvals sign and post the approval. The claude-code adapter runs the MCP server in its own process, so its payment approvals and orders are not seen by the engine, and http agents pay with their own client; claude and starter agents are seen. Heartbeats need an open ticket; an idle agent stays idle.

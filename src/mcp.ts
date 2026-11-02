@@ -1,6 +1,7 @@
 // A Model Context Protocol server on stdio, implemented without an SDK.
-// Newline-delimited JSON-RPC 2.0. Five tools: tab_limits, tab_search,
-// tab_discover, tab_fetch, tab_balance (src/tools.ts). Runs where Claude Code runs.
+// Newline-delimited JSON-RPC 2.0. The tools of src/tools.ts: tab_limits, tab_search,
+// tab_discover, tab_fetch, tab_balance, and since 3.0 tab_escrow, tab_delegate,
+// tab_channel. Runs where Claude Code runs.
 
 import { createInterface } from 'node:readline';
 import { readFileSync } from 'node:fs';
@@ -22,12 +23,13 @@ export interface McpOptions {
   currency?: string; // what this agent pays in; default USD
   catalog?: string; // catalog origin
   x402Ledger?: string; // where x402 spend against the mandate is kept between runs
+  channelsFile?: string; // where the agent's payment channels are kept between runs
 }
 
 const PROTOCOL_VERSION = '2024-11-05';
 
 export function runMcpServer(opts: McpOptions): void {
-  const tools = createTabTools(opts);
+  const tools = createTabTools({ ...opts, channels: { file: opts.channelsFile }, allowDelegate: process.env.TAB_ALLOW_DELEGATE === '1' });
 
   const write = (msg: unknown) => process.stdout.write(JSON.stringify(msg) + '\n');
   const reply = (id: unknown, result: unknown) => write({ jsonrpc: '2.0', id, result });

@@ -8,12 +8,12 @@
     "url": "https://github.com/paidwithtab/tab",
     "source": "github"
   },
-  "version": "2.4.0",
+  "version": "3.0.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "paidwithtab",
-      "version": "2.4.0",
+      "version": "3.0.0",
       "transport": {
         "type": "stdio"
       },

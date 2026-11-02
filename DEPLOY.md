@@ -99,9 +99,12 @@ examples/
   spec-evm.json             # same routes on the evm rail (Robinhood Chain testnet)
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh                   # one-command sandbox
-test/e2e.ts                 # 81 in-process checks, temp DB, ~1-2 min
-test/adversarial.ts         # 48 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts
-test/evm.ts                 # 59 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway, live Robinhood testnet reads
+test/e2e.ts                 # 90 in-process checks, temp DB, ~1-2 min
+test/v3.ts                  # 103 checks of the 3.0 features on the ledger rail: revoke and peer sharing, sub-mandates, approvals, escrow, channels, the MCP tools
+test/adversarial.ts         # 58 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts, voucher floods, sibling races
+test/evm.ts                 # 91 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway and its faucet, escrow and channels on chain, live Robinhood testnet reads
+test/contract.ts            # 20 checks of contracts/TabChannel.sol on a real EVM (ganache); opt in, needs GANACHE
+contracts/TabChannel.sol    # the trustless payment channel contract, compiled in contracts/TabChannel.json
 ```
 
 ---
@@ -112,11 +115,13 @@ test/evm.ts                 # 59 checks: crypto vectors, a mock EVM node, rpc fa
 cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
-npm test                    # 83 passed, 0 failed on the dev box
-npm run test:adversarial    # 48 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts
-npm run test:evm            # 59 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, live testnet reads
-npm run test:company        # 113 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests, signed board log, sealed model keys, the claude adapter against a fake Messages API
-npm run test:dashboard      # 26 passed, 0 failed: tab OS in headless Chromium end to end (npx playwright install chromium first); --live also loads the public site and app
+npm test                    # 90 passed, 0 failed on the dev box
+npm run test:v3             # 103 passed, 0 failed: revoke (and gateways sharing it), sub-mandates, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools
+npm run test:adversarial    # 58 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts, voucher floods, sibling sub-mandates racing one budget
+npm run test:evm            # 91 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, escrow and channels through an escrow address, live testnet reads
+npm run test:company        # 133 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests (with model and per call cap), signed board log, sealed model keys, the claude adapter against a fake Messages API, payment approvals, revoke, delegated budgets, orders, channels
+npm run test:dashboard      # 40 passed, 0 failed: tab OS in headless Chromium end to end, including a payment approved at phone width, a revoked run, a channel opened and settled, an order released (npx playwright install chromium first); --live also loads the public site and app
+GANACHE=/path/to/ganache/dist/node/cli.js npm run test:contract   # 20 passed, 0 failed: TabChannel.sol on a real EVM (npm i ganache@7.9.2 outside the repo)
 ```
 
 These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes two read-only calls to the public Robinhood testnet RPC and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
@@ -192,12 +197,23 @@ tab init  [--dir ~/.tab] [--budget 1.00] [--max-per-call 0.05] [--days 90]
           [--gateway https://pay.paidwithtab.com] [--catalog https://paidwithtab.com]
 tab key new [--out file]
 tab mandate issue --owner key.json --agent <pub|file> --budget 1.00
-                  [--window total|day] [--max-per-call 0.05] [--allow realm]... [--days 7] [--out file]
+                  [--window total|day] [--max-per-call 0.05] [--allow realm]... [--days 7] [--approve-above 0.50] [--out file]
+tab mandate delegate --agent-key agent.json --mandate parent.json --to <pub|file> [--budget] [--max-per-call] [--allow]... [--days] [--window] [--approve-above] [--out file]
+tab mandate revoke  --key key.json (--mandate file | --id <id>) [--reason text] [--gateway url]...
+tab mandate status  (--mandate file | --id <id>) [--gateway url]...       revoked anywhere in the chain? spent?
+tab mandate approve --owner key.json --request <file|json> [--ttl 900] [--gateway url]...
+tab escrow status <status url> --token <token> [--wait 300] [--out file]
+tab channel open  --gateway url --deposit 1.00 [--ttl seconds]
+tab channel list
+tab channel close --gateway url
+tab version
 tab mint    --wallet <pub|file> --amount 5.00 [--db tab.db]        sandbox: create ledger money
 tab balance --wallet <pub|file> [--db tab.db]
 tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin http://host:1402]
             [--faucet 1.00]                                         ledger rail: starter credits, once per wallet
             [--faucet-per-ip 20]                                    faucet claims per client address per day
+            [--peer https://other-gateway]...                       share revocations: push new ones, poll theirs every 5 s
+            [--escrow-key key.json]                                 evm rail: the escrow address for pay on delivery and channel deposits
 tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
                   [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
 tab evm address <key.json>                                          key file -> 0x address (EIP-55)
@@ -205,7 +221,9 @@ tab evm approve --owner key.json --agent <key.json|0x> --amount 1.00 --token <0x
 tab evm revoke  --owner key.json --agent <key.json|0x> --token <0x> [--rpc url]
 tab evm balance --wallet <key.json|0x> --token <0x> [--agent <key.json|0x>] [--rpc url]
 tab evm fund    --from key.json --to <key.json|0x> --eth 0.005 [--rpc url]
+tab evm deploy-channel --from key.json [--rpc url]                  TabChannel.sol, testnets only
 tab fetch [--agent key.json --mandate mandate.json] [--max-per-call 0.05] [-X POST] [-d body] <url>
+          [--escrow [--wait 300]] [--wait-approval 300] [--approval file] [--channel [--deposit 1.00]]
 tab mcp                                                             stdio; TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CATALOG]
 tab company serve  [--db company.db] [--port 1407] [--host app.example.com]... [--gateway origin] [--catalog origin]
                    [--work dir] [--allow-private-origins] [--tick 3] [--run-timeout 600]
@@ -221,7 +239,11 @@ Notes:
 - Key files are written with mode `0600` and look like `{"publicKey":"…","privateKey":"…"}`, both base64url raw 32 bytes. A wallet id **is** the public key; its seed also derives the key's EVM address (`tab evm address`).
 - `--allow` may be repeated. Values are globs over realms: `*`, `*.example.com`, `quotes.local`. Omitted means `*`.
 - `--window day` resets the budget per UTC calendar day; `total` (default) is a lifetime budget.
-- `tab fetch` exit codes: 0 paid and 2xx, 1 non-2xx, 2 refused by the client's own cap before paying.
+- `tab fetch` exit codes: 0 paid and 2xx, 1 non-2xx, 2 refused by the client's own cap before paying, 3 waiting for the owner's approval (the request is written next to the mandate as `approval-request-<id>.json` and the approve command is printed).
+- 3.0, revoke: `tab mandate revoke` signs with whichever key you pass: the owner's (any mandate in its chains), a delegating agent's (the sub-mandates it signed) or the agent's own (giving it up). It posts to every `--gateway` (default the public one); gateways started with `--peer` pass it on. `tab mandate status` asks each gateway about every mandate in the chain.
+- 3.0, delegate: `tab mandate delegate` refuses a sub-mandate wider than its parent in any limit, and more than 3 levels below the owner. Hand the output file to the other agent with its own key.
+- 3.0, approve: `tab mandate approve` checks the request id, signs for at most an hour (`--ttl`, seconds) and posts to the gateways named; the agent's plain retry then pays once.
+- 3.0, channels: `tab channel open` pays one deposit under the mandate and keeps the channel in `channels.json` next to the mandate; `tab fetch --channel` pays from it (or opens one with `--deposit`), `tab channel close` settles it. `tab mcp` uses the same file.
 - `tab serve --announce` retries the catalog for 10 seconds, then gives up with a log line; the gateway keeps running either way. `--origin` is what the catalog will store and what buyers will call, so it must be the **public** URL, not 127.0.0.1, in production.
 - `tab catalog serve --seed` pre-loads gateways at startup; `--announce` from the gateway side does the same at runtime.
 - The catalog refuses to announce (or fetch) origins on private, loopback, link-local, CGNAT or cloud-metadata addresses, refuses redirects, and caps discovery documents at 1 MB: SSRF protection for a public catalog. `--allow-private-origins` disables the address check for local development (the demo passes it); never use it on a catalog reachable from the internet. `/v1/wallet` only proxies to origins already in the catalog.
@@ -487,7 +509,7 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 - The wallet endpoint (`/.well-known/tab/wallet/<id>`) takes a 0x address on this rail.
 - Only type-2 transactions and empty access lists. Tokens may have 0 to 18 decimals since draft 0.4; the wire amount stays in micro units and is scaled to the token on chain.
 
-`npm run test:evm` runs 59 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, the same flow against an 18-decimal token priced in its own currency (scaling, the client's currency refusal, decimals checked against the contract), x402 both ways (the EIP-712 signing checked against the x402 spec's own example payment, an x402 buyer paying the gateway with every refusal code, a tab client paying a version 1 and a version 2 x402 site within its mandate), and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
+`npm run test:evm` runs 63 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, the same flow against an 18-decimal token priced in its own currency (scaling, the client's currency refusal, decimals checked against the contract), the testnet faucet (mints the token and sends gas once per wallet, refuses a mainnet), x402 both ways (the EIP-712 signing checked against the x402 spec's own example payment, an x402 buyer paying the gateway with every refusal code, a tab client paying a version 1 and a version 2 x402 site within its mandate), and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
 
 **Taking x402 payments.** A gateway on the evm rail can also be paid by any [x402](https://github.com/coinbase/x402) client (SPEC section 5.3), if its token implements EIP-3009; USDG on Robinhood Chain does, the testnet's mock USDC does not. Three steps:
 
@@ -512,6 +534,8 @@ Discovery then has an `x402` member, every 402 carries a `PAYMENT-REQUIRED` head
 ```
 
 `examples/spec-token-testnet.json` and `examples/tab-gateway-token-testnet.service` are that gateway (port 1406, TTT, an open-mint test token with 18 decimals on Robinhood Chain testnet; `scripts/evm-mint.ts` mints it). `examples/spec-token.json` and `examples/tab-gateway-token.service` are the mainnet pair with the token fields left to fill in. What buyers see: `tab fetch` and the MCP server pay in USD unless `--currency TTT` or `TAB_CURRENCY=TTT` says otherwise, and refuse a token-priced challenge before signing anything; a mandate's budget and cap are in the gateway's currency, so issue one mandate per currency, each with its own `--allow` realm. `tab evm approve`, `balance` and the mint script read the contract's decimals, so amounts are always whole tokens on the command line.
+
+**A faucet for testers.** On a testnet, `tab serve --faucet 100 --faucet-key keys/faucet.json [--faucet-gas 0.001]` gives any wallet that asks (`POST /.well-known/tab/faucet {"wallet": "0x..."}`) 100 of the gateway's token once, and enough of the chain's coin for its own payment transactions. With an open-mint test token the faucet mints; with any other token it transfers from its own balance, so pre-fund it. The faucet key pays the gas for both, so keep testnet ETH on it. Claims are once per wallet and 20 per IP address a day. It refuses to start on a mainnet chain id. The gateway's home page shows a claim form for people, and tab OS's Claim starter credits button uses it with the owner's 0x address.
 
 ---
 
@@ -554,11 +578,27 @@ The front end is static files under `web/` with no build step and no external sc
 | `POST /.well-known/tab/faucet {wallet}` | starter credits, only with `--faucet`: credits the wallet once, 429 past the per-address limit |
 | `GET /.well-known/tab/receipts?payer=&since=` | the same, filtered to one payer wallet and/or receipts at or after an ISO time |
 | `GET /.well-known/tab/mandate/<id>/spent` | what one mandate has spent here, total and per window; a mandate id is the hash of a document only its owner and agent hold |
+| `POST /.well-known/tab/revocations` | 3.0: one signed revocation or a list of up to 100; kept if the signature verifies, pushed to `--peer` gateways when new |
+| `GET /.well-known/tab/revocations?since=` | 3.0: revocations in the order received, for peers that poll |
+| `GET /.well-known/tab/revocations/<mandate id>` | 3.0: what is held against one mandate |
+| `POST /.well-known/tab/approvals {request, approval}` | 3.0: the owner's approval for one payment above a threshold, for the agent's retry to find |
+| `GET /.well-known/tab/approvals/<request id>` | 3.0: whether an approval is waiting |
+| `GET /.well-known/tab/escrow/<id>?token=` and `…/result?token=` | 3.0: a pay-on-delivery order's state, and its result with the delivery receipt |
+| `POST /.well-known/tab/escrow/<id>/deliver` and `…/fail` | 3.0: the upstream delivers (or gives up), with the `Tab-Delivery-Token` it was sent |
+| `GET /.well-known/tab/escrow?payer=` | 3.0: a payer's orders, only if `public_receipts` |
+| `POST /.well-known/tab/channels {deposit, ttl_s}` | 3.0: open a channel; a priced call for the deposit |
+| `GET /.well-known/tab/channels/<id>`, `POST …/<id>/close {sig}` | 3.0: a channel's state; close and settle it |
 | `OPTIONS /.well-known/tab*` | CORS preflight |
 | any priced route | 402 with `WWW-Authenticate: Tab …` (and `PAYMENT-REQUIRED` with x402 on) until paid; then proxied |
 | any unpriced path | 404 `not-found`, never proxied |
 
-Every 402 body is an RFC 9457 problem with `type: urn:tab:problem:<code>` and a fresh challenge in `WWW-Authenticate`. Codes: `payment-required`, `malformed-credential`, `invalid-challenge`, `payment-expired`, `verification-failed`, `mandate-invalid`, `mandate-denied`, `mandate-exceeded`, `insufficient-funds`. A body that breaks a route's `body_allow` or `body_fixed` rule (section 8.3) is 400 `bad-request` before any challenge. Upstream unreachable is 502 `upstream-failed`, nothing charged. Upstream non-2xx is passed through with a `Tab-Void` header and the hold released.
+Every 402 body is an RFC 9457 problem with `type: urn:tab:problem:<code>` and a fresh challenge in `WWW-Authenticate`. Codes: `payment-required`, `malformed-credential`, `invalid-challenge`, `payment-expired`, `verification-failed`, `mandate-invalid`, `mandate-denied`, `mandate-exceeded`, `insufficient-funds`, and since 3.0 `mandate-revoked`, `approval-required` (with the `approval_request` to sign), `channel-invalid` and `channel-exhausted`. Every amount in a problem names the gateway's currency (`0.001 TTT` on a token gateway, `$0.01` on a USD one).
+
+**3.0 in a spec.** A route takes pay on delivery with `"escrow": true` (or `{"timeout_s": 600}`), and is metered for channel buyers with `"meter": {"unit": "token", "per_unit": "0.000002"}` (its `price` stays the per-call price and the most one channel call can cost). The gateway takes channels with a top-level `"channels": {}` (optional `"min_deposit": "0.05"`, `"max_ttl_s": 604800`). Both need `--origin` (the gateway refuses to start without it, because the seller's delivery URL and the escrow tokens derive from it, never from a request's Host header). On the evm rail both also need `--escrow-key`: a key whose address holds escrowed payments and channel deposits and pays the gas to pay them out; give it a little ETH and nothing else. Every payout out of held money is written to the `payouts` table before it is sent and retried under the same key (on chain: the same signed transaction) with backoff; after 12 tries it is marked `stuck` and logged as STUCK. To retry one after fixing the cause (an escrow address out of gas, say): `sqlite3 tab.db "UPDATE payouts SET state = CASE WHEN raw IS NULL THEN 'pending' ELSE 'sent' END, attempts = 0, next_try_at = '' WHERE state = 'stuck'"`. Never clear a row's `raw`, `hash`, `nonce` or `cancels` by hand: the gateway signs a payout again only when the chain shows one of those transactions reverted or was replaced by a cancel of its own, and a cleared row could be paid twice. A stuck row also keeps its nonce: no new payout is given it. Give every gateway database its own escrow key; two databases sharing one escrow address cannot tell their holds' transactions apart. A buyer's transfer into escrow that does not confirm within a minute fails the call; the hold is watched (`state = 'lockwatch'`) and refunded if it lands later. A hold is marked `locking`, with its transaction hash, before that transfer is broadcast, and the order or channel is created in the same database transaction that marks it escrowed; a gateway that starts after being killed mid-flight watches every `locking` hold (refunding money that landed), releases ledger holds left `reserved`, and watches evm ones to see whether they were paid.
+
+Payouts are never signed again on a spent nonce alone (a lagging node looks the same): such a payout is marked stuck at once, and the sweeper checks stuck payouts every minute and books any that landed. A payout the node keeps refusing frees its nonce with a zero-value cancel to the escrow address itself, so later payouts are not stalled behind it.
+
+**Revocations** are taken only when a mandate authorizes them (sent with the revocation, or one the gateway was paid under), 60 posts per minute per client address, and listed for peers by sequence number. `tab mandate revoke --mandate file` sends the mandate along, so any gateway can check it. On the evm rail a revocation binds gateways, not the chain: add `--token <0x> --evm-agent <key.json|0x>` to zero the agent's allowance in the same step. `tab mcp` offers `tab_delegate` only with `TAB_ALLOW_DELEGATE=1`. An upstream that takes long jobs answers 202 and later POSTs the result to the `Tab-Deliver` URL it was sent, with the `Tab-Delivery-Token` header; a metered upstream reports its usage in a `Tab-Units` response header. A body that breaks a route's `body_allow` or `body_fixed` rule (section 8.3) is 400 `bad-request` before any challenge. Upstream unreachable is 502 `upstream-failed`, nothing charged. Upstream non-2xx is passed through with a `Tab-Void` header and the hold released.
 
 The verification order and the reasons for it are in `SPEC.md` section 4. The short version: the challenge id is an HMAC over amount, recipient, resource and expiry with a per-database secret, so the gateway keeps no state per challenge and any edited challenge fails first; a challenge id can be redeemed once (insert-before-reserve, so two racing copies cannot both pay); the mandate budget check and the funds check are one SQLite transaction.
 
@@ -685,13 +725,15 @@ Remember these bind on all interfaces and the web try-it button spends the owner
 - [ ] Backups of `keys/` and `*.db` tested.
 - [ ] `npm run test:adversarial` passes on the box (money invariants under concurrency, replay, mutation, SSRF).
 - [ ] Catalog running **without** `--allow-private-origins` if it is reachable from the internet.
-- [ ] Read `SPEC.md` section 9 and "Not in draft 0.3": credentials bind method, path, query and body digest, but **not headers**; no gas sponsorship, no dispute window.
+- [ ] Read `SPEC.md` section 9 and "Not in draft 0.7": credentials bind method, path, query and body digest, but **not headers**; no gas sponsorship; escrow and channel deposits on the evm rail sit with the gateway's escrow key until paid out.
 
 ---
 
 ## 18. What is not built yet
 
-From the README roadmap, so you do not go looking for it: per-token or metered pricing and payment channels, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4; companies of agents, with a company earning through its own gateway, in 2.1; bring-your-own model keys and the API-based claude adapter in 2.2; signed receipts in 2.3; x402 in both directions in 2.4.)
+From the README roadmap, so you do not go looking for it: gateways settling channels through the TabChannel contract, windowed budgets on-chain, header binding, subscriptions, fee splits, EIP-4337 gas sponsorship. (Body digest and query binding shipped in draft 0.1; the evm rail in 0.2; `tab init` and the starter-credits faucet in 0.4; companies of agents, with a company earning through its own gateway, in 2.1; bring-your-own model keys and the API-based claude adapter in 2.2; signed receipts in 2.3; x402 in both directions in 2.4; instant revoke, sub-mandates, approval above a threshold, pay on delivery and payment channels with metered routes in 3.0.)
+
+**Deploying TabChannel to a testnet.** The contract is written, compiled and tested on a local EVM, and not deployed anywhere. To put it on the Robinhood Chain testnet: fund a fresh key's address with a little testnet ETH (`tab evm address deployer.json` prints it), then `tab evm deploy-channel --from deployer.json --rpc https://rpc.testnet.chain.robinhood.com`. It prints the contract address and transaction. The command refuses mainnet chain ids. To rebuild the artifact after changing the source: compile `contracts/TabChannel.sol` with solc 0.8.26, optimizer on (200 runs), EVM version paris, and write `{abi, bytecode}` to `contracts/TabChannel.json`; `npm run test:contract` must pass against it.
 
 Starter credits are not a wallet product: they live in one gateway's ledger and cannot be moved, topped up with a card, or spent on another gateway. The path from starter credits to real money is still the evm rail with a funded owner account.
 

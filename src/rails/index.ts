@@ -2,7 +2,7 @@
 // evm (ERC-20 stablecoin on Robinhood Chain via a delegated transferFrom).
 
 import type { Challenge, Credential, RailName } from '../protocol.js';
-import type { HoldRow, Store } from '../store.js';
+import type { HoldRow, Store, PayoutRow } from '../store.js';
 import { LedgerRail } from './ledger.js';
 import { EvmRail, type EvmRailConfig } from './evm.js';
 
@@ -12,14 +12,16 @@ export interface ReserveContext {
   priceMicro: number;
   holdId: string;
   now: Date;
+  /** 3.0, evm: the address the payment must go to when not the challenge's evm.recipient (the escrow address). */
+  payTo?: string;
 }
 
 export interface Rail {
   readonly name: RailName;
   /** rail_info for the discovery document. */
   info(): Record<string, unknown>;
-  /** Extra challenge fields (evm: token, payout address, gas params). */
-  challengeExtras(): Promise<Partial<Challenge>>;
+  /** Extra challenge fields (evm: token, payout address, gas params). `recipient` overrides the evm payout address (a channel deposit pays escrow). */
+  challengeExtras(o?: { recipient?: string }): Promise<Partial<Challenge>>;
   /**
    * Synchronous reservation, called inside the gateway's SQLite transaction
    * after budget + redemption checks. Ledger debits the owner; evm verifies
@@ -38,6 +40,52 @@ export interface Rail {
   balance(wallet: string): Promise<number>;
   /** evm only: pending nonce of an agent account, proxied by the gateway. */
   accountNonce?(address: string): Promise<number>;
+
+  // -- 3.0: money the gateway holds for a while (escrow, channel deposits) --
+
+  /** Where held money sits, for challenges (evm: the escrow address); null when this rail cannot hold money. */
+  escrowRecipient(): string | null;
+  /**
+   * Move a reserved hold into the gateway's keeping. Ledger: the owner was debited at reserve, so
+   * nothing moves. Evm: broadcast the payment into the escrow address and wait for it to confirm;
+   * throws LockTimeout when it did not confirm in time (it may still land; see lockStatus).
+   */
+  lock(hold: HoldRow): Promise<string>;
+  /**
+   * Pay out part of a locked hold, to the seller or back to the buyer's owner, once per `key`: a
+   * second call with the same key settles the same payout, never a new one. Returns the ref, or null
+   * for a zero amount. Throws PayoutPending (with the ref) when the payout went out but has not
+   * confirmed yet; any other throw means nothing went out on this try.
+   */
+  payoutLocked(hold: HoldRow, to: 'seller' | 'buyer', micro: number, key: string): Promise<string | null>;
+  /** evm: what became of a lock that timed out. */
+  lockStatus?(hold: HoldRow): Promise<'landed' | 'failed' | 'pending'>;
+  /** evm: a payout marked stuck whose transaction landed after all; true when it is now confirmed. */
+  reconcilePayout?(p: PayoutRow): Promise<boolean>;
+}
+
+/** The payout was sent and may still land: its outcome is fixed, only its confirmation is outstanding. */
+export class PayoutPending extends Error {
+  constructor(public ref: string, message: string) {
+    super(message);
+    this.name = 'PayoutPending';
+  }
+}
+
+/** A payout whose transaction no node shows, though its nonce is spent: never signed again, left for the operator. */
+export class PayoutUnknown extends PayoutPending {
+  constructor(ref: string, message: string) {
+    super(ref, message);
+    this.name = 'PayoutUnknown';
+  }
+}
+
+/** The buyer's transfer into escrow did not confirm in time. */
+export class LockTimeout extends Error {
+  constructor(public ref: string, message: string) {
+    super(message);
+    this.name = 'LockTimeout';
+  }
 }
 
 export function createRail(

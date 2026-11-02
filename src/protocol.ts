@@ -4,6 +4,7 @@
 
 import { createHmac, createHash, randomBytes } from 'node:crypto';
 import type { Mandate } from './mandate.js';
+import type { Approval } from './approval.js';
 import { signBytes, verifyBytes, type KeyPair } from './keys.js';
 
 export const VERSION = 'tab/0';
@@ -50,7 +51,8 @@ export function normalizeUsd(usd: string): string {
 
 /** Currency codes a gateway may charge in: USD (the default) or a token symbol, 2 to 10 upper-case letters or digits. */
 export function isCurrency(code: unknown): code is string {
-  return typeof code === 'string' && /^[A-Z0-9]{2,10}$/.test(code);
+  // USD, USDG, TTT; a token's own lowercase prefix too, as in wETH, stETH or tTAB, but never a lowercase "usd"
+  return typeof code === 'string' && /^[a-z]{0,2}[A-Z0-9]{2,10}$/.test(code);
 }
 
 /** "$0.01" for USD, "0.01 TTT" for anything else. */
@@ -120,6 +122,17 @@ export interface Challenge {
   resource: string; // "METHOD /path"
   expires_at: string; // ISO 8601
   evm?: EvmChallengeInfo;
+  /**
+   * 3.0: this route takes pay on delivery. A buyer that opts in (credential.escrow) has its
+   * payment held until the seller delivers or timeout_s passes. On the evm rail the payment goes
+   * to the gateway's escrow address, `recipient`, instead of evm.recipient.
+   */
+  escrow?: { timeout_s: number; recipient?: string };
+  /**
+   * 3.0: random per challenge, so two buyers asking for the same route in the same millisecond
+   * get two challenges, not one id only the first of them can redeem. Covered by the HMAC.
+   */
+  nonce?: string;
 }
 
 export function challengeId(secret: Uint8Array, chal: Omit<Challenge, 'id'>): string {
@@ -187,6 +200,8 @@ export interface Credential {
   request: RequestCommitment;
   sig: string; // agent signature, see credentialMessage
   evm?: { tx: string }; // 0x hex fully-signed type-2 transaction
+  escrow?: boolean; // 3.0: pay on delivery; signed, see credentialMessage
+  approval?: Approval; // 3.0: the owner's approval for a payment above the mandate's threshold
 }
 
 /** What the agent signs: a canonical binding of challenge, mandate, payer and request. */
@@ -195,6 +210,7 @@ export function credentialMessage(
   chal: Challenge,
   mandateId: string,
   request: RequestCommitment,
+  escrow?: boolean,
 ): Uint8Array {
   return Buffer.from(
     canonicalJson({
@@ -202,6 +218,8 @@ export function credentialMessage(
       amount: chal.amount,
       body: request.body_sha256,
       challenge: chal.id,
+      // present only when the agent opted in, so a 2.x credential signs the same bytes as before
+      escrow: escrow === true ? true : undefined,
       mandate: mandateId,
       query: request.query,
       realm: chal.realm,
@@ -215,6 +233,8 @@ export interface SignCredentialOptions {
   query?: string;
   body?: string | Uint8Array | null;
   evm?: { tx: string };
+  escrow?: boolean;
+  approval?: Approval;
 }
 
 export function signCredential(
@@ -224,10 +244,11 @@ export function signCredential(
   opts: SignCredentialOptions = {},
 ): Credential {
   const request: RequestCommitment = { query: opts.query ?? '', body_sha256: bodyDigest(opts.body) };
-  const sig = signBytes(agent, credentialMessage(agent.publicKey, chal, mandate.id, request));
+  const escrow = opts.escrow === true ? true : undefined;
+  const sig = signBytes(agent, credentialMessage(agent.publicKey, chal, mandate.id, request, escrow));
   return {
     ver: VERSION, agent: agent.publicKey, challenge: chal, mandate, request, sig,
-    evm: opts.evm,
+    evm: opts.evm, escrow, approval: opts.approval,
   };
 }
 
@@ -237,7 +258,7 @@ export function verifyCredentialSig(cred: Credential): boolean {
   }
   return verifyBytes(
     cred.agent,
-    credentialMessage(cred.agent, cred.challenge, cred.mandate.id, cred.request),
+    credentialMessage(cred.agent, cred.challenge, cred.mandate.id, cred.request, cred.escrow === true),
     cred.sig,
   );
 }
@@ -284,7 +305,24 @@ export interface Receipt {
   credential?: string; // the agent's signature over that commitment
   response?: ResponseCommitment; // what the gateway delivered
   gateway?: string; // the gateway's receipt key, as published in discovery
+  // 3.0, present only on such payments
+  escrow?: EscrowInfo; // paid on delivery: held, then released to the seller
+  channel?: ChannelInfo; // paid by voucher from a channel, or the channel's deposit or settlement
   sig?: string; // gateway signature over the canonical receipt minus sig
+}
+
+export interface EscrowInfo {
+  deadline: string; // ISO 8601; undelivered by then, the payment goes back
+  held_ref?: string; // how the payment reached escrow (evm: the buyer's transfer into the escrow address)
+  delivered_at?: string;
+}
+
+export interface ChannelInfo {
+  id: string;
+  kind: 'deposit' | 'call' | 'settle';
+  spent?: string; // cumulative micro charged on the channel, after this call
+  deposit?: string;
+  units?: number; // metered routes: what the upstream reported using
 }
 
 /** What a paid call delivered: the upstream status and the SHA-256 of the body bytes relayed, base64url. */
@@ -363,19 +401,26 @@ export type ProblemCode =
   | 'not-found'
   | 'bad-request'
   | 'upstream-failed'
-  | 'rate-limited';
+  | 'rate-limited'
+  // 3.0
+  | 'mandate-revoked'
+  | 'approval-required'
+  | 'channel-invalid'
+  | 'channel-exhausted';
 
 export class PayError extends Error {
   constructor(
     public code: ProblemCode,
     public detail: string,
     public status = 402,
+    /** Extra problem members, as the approval request of an approval-required problem. */
+    public extra?: Record<string, unknown>,
   ) {
     super(`${code}: ${detail}`);
     this.name = 'PayError';
   }
 }
 
-export function problemBody(code: ProblemCode, detail: string, status: number): string {
-  return JSON.stringify({ type: `urn:tab:problem:${code}`, title: code, status, detail });
+export function problemBody(code: ProblemCode, detail: string, status: number, extra?: Record<string, unknown>): string {
+  return JSON.stringify({ ...(extra ?? {}), type: `urn:tab:problem:${code}`, title: code, status, detail });
 }

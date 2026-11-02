@@ -12,13 +12,14 @@ import { createInterface } from 'node:readline';
 import { newKeyPair, saveKey } from '../src/keys.js';
 import {
   canonicalJson, usdToMicro, microToUsd, makeChallenge, signCredential,
-  encodeCredentialHeader, parseChallengeHeader,
+  encodeCredentialHeader, parseChallengeHeader, isCurrency,
 } from '../src/protocol.js';
 import { issueMandate, verifyMandate, realmAllowed, saveMandate } from '../src/mandate.js';
 import { Store, CatalogStore } from '../src/store.js';
 import { createGateway, loadSpec, matchRoute, type Spec } from '../src/gateway.js';
 import { createCatalog } from '../src/catalog.js';
 import { TabClient, tabFetch, receiptOf, PaymentRefused } from '../src/client.js';
+import { homePage } from '../src/home.js';
 
 // -- tiny harness -----------------------------------------------------------
 
@@ -40,6 +41,7 @@ const listen = (server: Server): Promise<number> =>
 async function main(): Promise<void> {
   // -- 1. primitives --------------------------------------------------------
 
+  check('currency codes: upper case, or a token symbol with a short lowercase prefix', isCurrency('USD') && isCurrency('USDG') && isCurrency('tTAB') && isCurrency('stETH') && !isCurrency('usd') && !isCurrency('abcTAB') && !isCurrency('T'));
   check('canonical json sorts keys', canonicalJson({ b: 1, a: { d: 2, c: [3, null] } }) === '{"a":{"c":[3,null],"d":2},"b":1}');
   check('usd <-> micro', usdToMicro('0.05') === 50_000 && usdToMicro('1') === 1_000_000 && usdToMicro('0.000001') === 1
     && microToUsd(10_000) === '0.01' && microToUsd(5_000) === '0.005' && microToUsd(1_000_000) === '1.00');
@@ -134,6 +136,10 @@ async function main(): Promise<void> {
   const homeHtml = await fetch(`${GW}/`, { headers: { accept: 'text/html' } });
   const homeText = await homeHtml.text();
   check('a browser at the root gets the gateway home page', homeHtml.status === 200 && /text\/html/.test(homeHtml.headers.get('content-type') ?? '') && homeText.includes('quotes.local') && homeText.includes('tab credits') && homeText.includes('/.well-known/tab'));
+  const tokenHome = homePage({ realm: 't.local', rail: 'evm', currency: 'TTT', rail_info: { chain_id: 46630, token: '0x8f6fe411e76b79d6eb6521872340c37c3210ee47', decimals: 18, explorer: 'https://explorer.testnet.chain.robinhood.com' }, about: 'What we test.\n\nSecond <b>paragraph</b>.', services: [] }, 'https://t.local');
+  check('a token gateway page says testnet, links its token, and shows its about note escaped', tokenHome.includes('Testnet. Nothing paid here is real money.') && tokenHome.includes('/token/0x8f6fe411e76b79d6eb6521872340c37c3210ee47') && tokenHome.includes('TTT on Robinhood Chain testnet') && tokenHome.includes('<p>Second &lt;b&gt;paragraph&lt;/b&gt;.</p>'));
+  const faucetHome = homePage({ realm: 't.local', rail: 'evm', currency: 'TTT', faucet: '100.00', rail_info: { chain_id: 46630, token: '0x8f6fe411e76b79d6eb6521872340c37c3210ee47', decimals: 18 }, services: [] }, 'https://t.local');
+  check('a testnet gateway with a faucet shows a claim form; one without does not', faucetHome.includes('<form id="claim">') && faucetHome.includes('100.00 TTT') && !tokenHome.includes('<form id="claim">'));
   const homeJson = await (await fetch(`${GW}/`)).json() as any;
   check('a program at the root gets pointers, not a 404', homeJson.realm === 'quotes.local' && /\/\.well-known\/tab$/.test(homeJson.terms));
 
@@ -428,6 +434,33 @@ async function main(): Promise<void> {
     check('every service skipped is a clear refusal to start', /every service was skipped/.test(allSkipped));
   }
 
+  // -- 10b. a gateway that charges in its own token names it in every amount -------------
+
+  {
+    const tokStore = new Store(join(scratch, 'token.db'));
+    const tokOwner = newKeyPair(), tokAgent = newKeyPair();
+    tokStore.credit(tokOwner.publicKey, usdToMicro('1.00'));
+    const tokSpec: Spec = { realm: 'ttt.local', recipient: seller.publicKey, currency: 'TTT', services: [{ name: 't', prefix: '', upstream: `http://127.0.0.1:${upPort}`, routes: [{ method: 'GET', path: '/quote', price: '0.001' }, { method: 'GET', path: '/boom', price: '0.5' }] }] };
+    const tokGw = createGateway(tokSpec, { store: tokStore });
+    const TOK = `http://127.0.0.1:${await listen(tokGw)}`;
+    const unpaid = await fetch(`${TOK}/quote`);
+    const problem = await unpaid.json() as any;
+    check('a token gateway asks for its own currency, not USD', unpaid.status === 402 && problem.detail === 'payment of 0.001 TTT required' && !/USD/.test(problem.detail));
+    const tokMandate = issueMandate(tokOwner, { agent: tokAgent.publicKey, budgetUsd: '1', maxPerCallUsd: '0.1', allow: ['ttt.local'] });
+    const tokClient = new TabClient({ agent: tokAgent, mandate: tokMandate, currency: 'TTT' });
+    let refusal = '';
+    try { await tokClient.fetch(`${TOK}/boom`); } catch (e) { refusal = (e as PaymentRefused).reason; }
+    check('a client refusal on a token gateway names the token', refusal === "price 0.50 TTT exceeds the mandate's per-call cap 0.10 TTT");
+    const chal = parseChallengeHeader(unpaid.headers.get('www-authenticate'))!;
+    const bigMandate = issueMandate(tokOwner, { agent: tokAgent.publicKey, budgetUsd: '0.0005', allow: ['ttt.local'] });
+    const over = await fetch(`${TOK}/quote`, { headers: { authorization: encodeCredentialHeader(signCredential(tokAgent, chal, bigMandate)) } });
+    check('a gateway budget refusal on a token gateway names the token', /budget 0\.0005 TTT lifetime would be exceeded/.test(((await over.json()) as any).detail));
+    const wallet = await (await fetch(`${TOK}/.well-known/tab/wallet/${tokOwner.publicKey}`)).json() as any;
+    check('a wallet lookup says what currency the balance is in', wallet.currency === 'TTT' && wallet.available === '1.00');
+    tokGw.close();
+    tokStore.close();
+  }
+
   // -- 11. catalog ----------------------------------------------------------
 
   const webMandate = issueMandate(owner, { agent: webAgent.publicKey, budgetUsd: '0.50', window: 'day', maxPerCallUsd: '0.05', allow: ['quotes.local'] });
@@ -531,8 +564,8 @@ async function main(): Promise<void> {
   const init = await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'e2e', version: '0' } });
   check('mcp initialize', init.result?.serverInfo?.name === 'tab');
   const tools = await rpc('tools/list');
-  check('mcp lists five tools', tools.result?.tools?.length === 5
-    && tools.result.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance');
+  check('mcp lists the five 2.x tools first, then the 3.0 ones; tab_delegate only when turned on', tools.result?.tools?.length === 7
+    && tools.result.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,tab_escrow,tab_channel');
   const limits = await rpc('tools/call', { name: 'tab_limits', arguments: {} });
   check('mcp tab_limits', JSON.parse(limits.result.content[0].text).budget_usd === '1.00');
   const search = await rpc('tools/call', { name: 'tab_search', arguments: { query: 'quote' } });

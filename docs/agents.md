@@ -236,3 +236,13 @@ refused: price 0.001 exceeds the client cap 0.0001
 ```
 
 Exit code 2, nothing paid. From Claude Code, ask for the agent's limits and it calls `tab_limits`, which reads the mandate back as budget, window, per-call cap, allowed sellers and expiry.
+
+## The 3.0 tools
+
+Besides `tab_limits`, `tab_search`, `tab_discover`, `tab_fetch` and `tab_balance`, the MCP server (and tab OS) gives an agent three more:
+
+- `tab_escrow`: follows an order placed with `tab_fetch` and `escrow: true` until it is delivered (returning the result and its verified delivery receipt) or refunded.
+- `tab_delegate`: signs a sub-mandate for another agent key, inside every limit of the agent's own; spend under it counts against the agent's mandate too. Off unless the host turns it on (`TAB_ALLOW_DELEGATE=1` for `tab mcp`, `allowDelegate: true` in code): an agent talked into using it would hand a slice of its mandate to whatever key it was given. tab OS agents do not get it; delegation there is the engine's.
+- `tab_channel`: opens, lists and closes payment channels; while one is open at a gateway, `tab_fetch` there pays by voucher.
+
+When a payment is above the mandate's approval threshold, `tab_fetch` returns `approval_required` with the amount and the request. Tell the owner; once they approve (`tab mandate approve`, or the Inbox in tab OS), make exactly the same call again and it pays. `tab_limits` reports the threshold as `approve_above` and, for a sub-mandate, the chain above it as `delegated_from`.

@@ -7,6 +7,7 @@
 // adapter through a fake binary.
 //   npm run test:company
 
+import { createServer as createNetServer } from 'node:net';
 import { createServer, request, type Server } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -42,6 +43,18 @@ const scratch = mkdtempSync(join(process.env.SCRATCH ?? tmpdir(), 'tab-co-'));
 const listen = (server: Server): Promise<number> =>
   new Promise((resolve) => server.listen(0, () => resolve((server.address() as { port: number }).port)));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const freePort = (): Promise<number> => new Promise((resolve) => {
+  const s = createNetServer();
+  s.listen(0, () => { const p = (s.address() as { port: number }).port; s.close(() => resolve(p)); });
+});
+/** A gateway on a port chosen first, so its --origin is known: pay on delivery and channels require one. */
+const gatewayAt = async (spec: Spec, o: Omit<Parameters<typeof createGateway>[1], 'origin'>): Promise<{ server: Server; url: string }> => {
+  const port = await freePort();
+  const url = `http://127.0.0.1:${port}`;
+  const server = createGateway(spec, { ...o, origin: url });
+  await new Promise<void>((r) => server.listen(port, () => r()));
+  return { server, url };
+};
 
 async function main(): Promise<void> {
   // -- a gateway with starter credits, selling one route ---------------------
@@ -109,6 +122,10 @@ async function main(): Promise<void> {
     if (mode === 'progress') return json(200, { status: 'in_progress', summary: 'still at it' });
     if (mode === 'spawn') return json(200, { status: 'in_progress', summary: 'delegating', new_tickets: [{ title: 'sub task', body: 'buy a quote', assignee: 'bee', budget: '0.05' }] });
     if (mode === 'hire') return json(200, { status: 'in_progress', summary: 'need a hand', requests: [{ kind: 'hire', name: '@cy', role: 'researcher', instructions: 'Find sources.', amount: '.20', reason: 'research is not my role' }] });
+    if (mode === 'hire-terms') return json(200, { status: 'in_progress', summary: 'staffing', requests: [
+      { kind: 'hire', name: 'eve', role: 'writer', instructions: 'Write.', amount: '0.10', model: 'claude-haiku-5-5', max_per_call: '0.02' },
+      { kind: 'hire', name: 'fay', role: 'buyer', instructions: 'Buy.', amount: '0.10', max_per_call: '0.50' },
+    ] });
     if (mode === 'request') return json(200, { status: 'in_progress', summary: 'need more', requests: [{ kind: 'budget', amount: '1.00', reason: 'bigger job' }] });
     if (mode === 'costly') return json(200, { result: { status: 'done', summary: 'expensive', evidence: [{ kind: 'text', value: 'out' }] }, cost_usd: 1.0 });
     if (mode === 'mention') return json(200, { status: 'in_progress', summary: 'bee, look', mentions: ['@bee'] });
@@ -121,6 +138,7 @@ async function main(): Promise<void> {
   // -- a fake Anthropic Messages API: a key check, scripted tool use, one flaky reply --
   const GOOD_KEY = 'sk-ant-api03-test-' + 'x'.repeat(24);
   let antMode = 'tools';
+  let escrowUrl = '';
   let antFlake = false;
   const antCalls: Array<{ headers: Record<string, unknown>; body: any; status: number }> = [];
   const anthropic = createServer(async (req, res) => {
@@ -139,6 +157,10 @@ async function main(): Promise<void> {
     const usage = { input_tokens: 1000, output_tokens: 100 };
     const reply = (content: unknown[], stop = 'tool_use') => json(200, { id: 'msg_x', type: 'message', role: 'assistant', model: 'claude-sonnet-5-5', content, stop_reason: stop, usage });
     if (antMode === 'prose') return reply([{ type: 'text', text: 'All done.\n```json\n' + JSON.stringify({ status: 'done', summary: 'prose report', evidence: [{ kind: 'text', value: 'prose' }] }) + '\n```' }], 'end_turn');
+    if (antMode === 'escrow') {
+      if (turn === 0) return reply([{ type: 'tool_use', id: 'tu_e', name: 'tab_fetch', input: { url: escrowUrl, method: 'POST', body: '{"topic":"Lisbon"}', escrow: true } }]);
+      return reply([{ type: 'tool_use', id: 'tu_f', name: 'finish', input: { status: 'in_progress', summary: 'ordered an essay, paid on delivery' } }]);
+    }
     if (turn === 0) return reply([{ type: 'text', text: 'Checking my limits.' }, { type: 'tool_use', id: 'tu_1', name: 'tab_limits', input: {} }]);
     if (turn === 1) return reply([{ type: 'tool_use', id: 'tu_2', name: 'tab_fetch', input: { url: `${GW}/quote` } }]);
     const last = body.messages[body.messages.length - 1].content;
@@ -459,7 +481,7 @@ async function main(): Promise<void> {
   check('tab_fetch checked the receipt before the model saw it', toolReceiptVerified === true);
   check('model usage is priced into the run', usdToMicro(run.model_cost) === priceUsage('claude-sonnet-5-5', { input_tokens: 3000, output_tokens: 300 }) && usdToMicro(run.model_cost) === 9_000);
   check('the request carried the company key, the tab tools and finish, and the packet as the user turn', first.headers['x-api-key'] === GOOD_KEY && first.headers['anthropic-version'] === '2023-06-01'
-    && first.body.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,finish' && /You are owl/.test(first.body.messages[0].content) && /call finish/.test(first.body.system));
+    && first.body.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,tab_escrow,tab_channel,finish' && /You are owl/.test(first.body.messages[0].content) && /call finish/.test(first.body.system));
   const second = antCalls.filter((c) => c.status === 200)[1];
   check('the mandate was capped by the agent budget and tab_limits told the agent its per-call cap', run.mandate.budget === '0.05'
     && /"client_max_per_call_usd": "0\.02"/.test(String(second.body.messages[2].content[0].content)) && /"budget_usd": "0\.05"/.test(String(second.body.messages[2].content[0].content)));
@@ -557,6 +579,142 @@ process.stdin.on('end', () => {
   check('the starter takes only a hit that names every word of the topic', starterMatch('Robinhood Chain', [{ key: 'GameStop_short_squeeze', title: 'GameStop short squeeze', description: '2021 financial markets event' }, { key: 'S.V._Robinhood', title: 'S.V. Robinhood', description: 'Surinamese football club' }]) === null
     && starterMatch('taylor swift', [{ key: 'Taylor_Swift', title: 'Taylor Swift' }])?.key === 'Taylor_Swift' && starterMatch('the history of bitcoin', [{ key: 'Bitcoin', title: 'Bitcoin' }, { key: 'History_of_bitcoin', title: 'History of bitcoin' }])?.key === 'History_of_bitcoin');
   check('health lists the starter adapter', (await api('GET', '/api/health')).body.adapters.includes('starter'));
+
+  // -- 12c. tab 3.0 in the company: approvals, revoke, delegation, hire terms, orders, channels ----
+  {
+    let delivery: { url: string; token: string } | null = null;
+    const jobs = createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      delivery = { url: String(req.headers['tab-deliver']), token: String(req.headers['tab-delivery-token']) };
+      res.writeHead(202, { 'content-type': 'application/json' }); res.end('{"accepted":true}');
+    });
+    const shopSpec: Spec = {
+      realm: 'shop.local', recipient: seller.publicKey, public_receipts: true, channels: {},
+      services: [
+        { name: 'wikipedia', prefix: '/wikipedia', upstream: `http://127.0.0.1:${wikiPort}`, routes: [
+          { method: 'GET', path: '/w/rest.php/v1/search/page', price: '0.001' },
+          { method: 'GET', path: '/api/rest_v1/page/summary/:title', price: '0.002' },
+        ] },
+        { name: 'jobs', prefix: '/jobs', upstream: `http://127.0.0.1:${await listen(jobs)}`, routes: [{ method: 'POST', path: '/essay', price: '0.05', escrow: { timeout_s: 600 } }] },
+      ],
+    };
+    const shopStore = new Store(join(scratch, 'shop.db'));
+    const { server: shop, url: SHOP } = await gatewayAt(shopSpec, { store: shopStore, faucetUsd: '5.00', faucetPerIpPerDay: 100, sweepMs: 200 });
+    const co = (await api('POST', '/api/companies', { name: 'Three', mission: 'try 3.0', budget: '3.00', gateways: [SHOP] })).body.company;
+    const C3 = `/api/companies/${co.id}`;
+    await api('POST', `${C3}/fund`, {});
+    const v3 = async () => (await api('GET', C3)).body;
+
+    // approval above a threshold: the run asks, the owner approves in the Inbox, the agent resumes
+    const mgr = (await api('POST', `${C3}/agents`, { name: 'mgr', role: 'manager', adapter: 'starter', budget_per_run: '0.10' })).body.agent;
+    const conf = await api('POST', `${C3}/agents/${mgr.id}/configure`, { approve_above: '.0015' });
+    check('an agent can be given an approval threshold', conf.status === 200 && conf.body.config.approve_above === '0.0015');
+    const lt = (await api('POST', `${C3}/tickets`, { title: 'Look up: Lisbon', assignee: 'mgr', budget: '0.05' })).body.ticket;
+    await runAll();
+    let w = await v3();
+    const ask = w.approvals.find((a: any) => a.kind === 'payment' && a.state === 'pending');
+    check('a payment above the threshold lands in the Inbox as a payment request', !!ask && ask.payload.amount === '0.002' && /summary\/Lisbon/.test(ask.payload.url)
+      && ask.payload.request.owner === co.owner_pub && w.runs[0].mandate.approve_above === '0.0015' && w.receipts.some((r: any) => r.agent === 'mgr' && /search\/page/.test(r.resource)), w.approvals);
+    const ok1 = await api('POST', `${C3}/approvals/${ask.id}`, { decision: 'approve' });
+    check('approving signs it with the owner key and hands it to the gateway', ok1.status === 200 && ok1.body.posted === 'ok' && (await (await fetch(`${SHOP}/.well-known/tab/approvals/${ask.payload.request.id}`)).json() as any).approved === true);
+    check('the ticket the run stopped on goes back to work', (await v3()).tickets.find((t: any) => t.id === lt.id).state === 'in_progress');
+    await runAll();
+    w = await v3();
+    check('the agent resumed: the approved call went through and the ticket closed on its receipts', w.tickets.find((t: any) => t.id === lt.id).state === 'done'
+      && w.receipts.some((r: any) => r.agent === 'mgr' && /summary\/Lisbon/.test(r.resource) && r.amount === '0.002') && !w.approvals.some((a: any) => a.state === 'pending'));
+    const deny = (await api('POST', `${C3}/tickets`, { title: 'Look up: Lisbon', assignee: 'mgr' })).body.ticket;
+    await runAll();
+    const ask3 = (await v3()).approvals.find((a: any) => a.kind === 'payment' && a.state === 'pending');
+    check('the owner can deny a payment', (await api('POST', `${C3}/approvals/${ask3.id}`, { decision: 'deny' })).status === 200 && store.approval(ask3.id)!.state === 'rejected');
+    await api('POST', `${C3}/tickets/${deny.id}`, { state: 'cancelled' });
+    await api('POST', `${C3}/agents/${mgr.id}/configure`, { approve_above: '' });
+
+    // delegation: a manager's sub-tickets run on a slice of its mandate
+    const wrk = (await api('POST', `${C3}/agents`, { name: 'wrk', role: 'worker', adapter: 'starter', budget_per_run: '0.02' })).body.agent;
+    const parent = (await api('POST', `${C3}/tickets`, { title: 'Research Lisbon', assignee: 'mgr', budget: '0.04' })).body.ticket;
+    store.updateTicket(parent.id, { state: 'in_progress' });
+    store.clearWake(mgr.id, parent.id);
+    const sub = store.createTicket({ company_id: co.id, title: 'Look up: Lisbon', body: '', state: 'open', assignee_id: wrk.id, created_by: mgr.id, parent_id: parent.id, budget: null });
+    store.wake(wrk.id, sub.id, 'assigned by mgr');
+    await runAll();
+    w = await v3();
+    const subRun = w.runs.find((r: any) => r.ticket_id === sub.id);
+    const dl = w.delegations.find((d: any) => d.ticket_id === parent.id);
+    check('a sub-ticket runs under a mandate its manager delegated', subRun?.mandate.delegated_by === 'mgr' && subRun.mandate.chain[0].agent === 'mgr' && subRun.mandate.chain[0].budget === '0.04'
+      && w.tickets.find((t: any) => t.id === sub.id).state === 'done' && subRun.spent === '0.003', subRun);
+    check('the delegation shows on the manager with what its sub-tickets spent', dl?.manager === 'mgr' && dl.runs === 1 && dl.spent === '0.003' && dl.to.includes('wrk')
+      && (await (await fetch(`${SHOP}/.well-known/tab/mandate/${dl.mandate.id}/spent`)).json() as any).micro === 3_000);
+    const rd = await api('POST', `${C3}/delegations/${parent.id}/revoke`, {});
+    check('revoking a delegated budget reaches the gateway', rd.status === 200 && rd.body.results[0].ok === true
+      && (await (await fetch(`${SHOP}/.well-known/tab/revocations/${dl.mandate.id}`)).json() as any).revoked === true);
+    const sub2 = store.createTicket({ company_id: co.id, title: 'Look up: Lisbon', body: '', state: 'open', assignee_id: wrk.id, created_by: mgr.id, parent_id: parent.id, budget: null });
+    store.wake(wrk.id, sub2.id, 'assigned by mgr');
+    await runAll();
+    w = await v3();
+    check('after that, sub-ticket runs get no money and the run says why', w.runs.find((r: any) => r.ticket_id === sub2.id)?.mandate === null && w.delegations[0].mandate.revoked === true
+      && w.events.some((e: any) => e.kind === 'run-failed' && /revoked the budget delegated/.test(e.body.error)));
+
+    // revoke a run, and every mandate an agent holds; pausing revokes runs in flight
+    const lastRun = w.runs.find((r: any) => r.agent === 'mgr' && r.mandate);
+    const rr = await api('POST', `${C3}/runs/${lastRun.id}/revoke`, {});
+    w = await v3();
+    check('a run\'s mandate is revoked at the gateway and shows revoked', rr.status === 200 && rr.body.revoked[0] === lastRun.mandate.id && w.runs.find((r: any) => r.id === lastRun.id).mandate.revoked === true
+      && (await (await fetch(`${SHOP}/.well-known/tab/revocations/${lastRun.mandate.id}`)).json() as any).revoked === true && w.board.some((b: any) => b.action === 'revoke' && b.verified));
+    check('an agent with no live mandate has nothing to revoke', (await api('POST', `${C3}/agents/${wrk.id}/revoke`, {})).status === 409);
+    const fake = store.createRun({ id: 'inflight1', company_id: co.id, agent_id: wrk.id, ticket_id: null, reason: 'test', mandate: { ...lastRun.mandate, id: 'x'.repeat(43) } as unknown as Mandate, started_at: new Date().toISOString() });
+    await api('POST', `${C3}/pause`, {});
+    check('pausing the company revokes the mandates of runs in flight', store.revocationsOf(co.id).some((r) => r.mandate_id === fake.mandate!.id && /paused/.test(r.reason)));
+    store.finishRun(fake.id, { state: 'failed', spent: 0, model_cost: 0, result: null, output: null, error: 'test' });
+    await api('POST', `${C3}/resume`, {});
+
+    // hire requests carry a model and a per call cap
+    modes.dot = 'hire-terms';
+    const D2 = newKeyPair(); keys[D2.publicKey] = D2;
+    await api('POST', `${C3}/agents`, { name: 'dot', role: 'lead', adapter: 'http', agent_pub: D2.publicKey, config: { url: STUB, max_per_call: '0.05' }, budget_per_run: '0.02' });
+    await api('POST', `${C3}/tickets`, { title: 'staff up', assignee: 'dot' });
+    await runAll();
+    w = await v3();
+    const hireAsk = w.approvals.find((a: any) => a.kind === 'hire' && a.state === 'pending' && a.payload.name === 'eve');
+    const capAsk = w.approvals.find((a: any) => a.kind === 'hire' && a.state === 'pending' && a.payload.name === 'fay');
+    check('a hire request names the model and a per call cap, the cap held to the requester\'s', hireAsk?.payload.model === 'claude-haiku-5-5' && hireAsk.payload.max_per_call === '0.02'
+      && capAsk?.payload.max_per_call === '0.05' && /lowered/.test(capAsk.payload.note), w.approvals);
+    await api('POST', `${C3}/approvals/${hireAsk.id}`, { decision: 'approve' });
+    await api('POST', `${C3}/approvals/${capAsk.id}`, { decision: 'approve', max_per_call: '0.08' });
+    w = await v3();
+    const eve = w.agents.find((a: any) => a.name === 'eve'), fay = w.agents.find((a: any) => a.name === 'fay');
+    check('approving applies them; the owner may raise the cap while approving', eve?.config.model === 'claude-haiku-5-5' && eve.config.max_per_call === '0.02' && fay?.config.max_per_call === '0.08');
+
+    // a pay-on-delivery order: placed by an agent, held, delivered, with the delivery receipt
+    await api('POST', `${C3}/model-key`, { key: GOOD_KEY });
+    antMode = 'escrow';
+    escrowUrl = `${SHOP}/jobs/essay`;
+    await api('POST', `${C3}/agents`, { name: 'owl3', role: 'buyer', adapter: 'claude', budget_per_run: '0.10' });
+    await api('POST', `${C3}/tickets`, { title: 'order an essay', assignee: 'owl3' });
+    await runAll();
+    let orders = (await api('GET', `${C3}/orders`)).body.orders;
+    check('the order shows held with its amount', orders.length === 1 && orders[0].state === 'held' && orders[0].amount === '0.05' && orders[0].token === undefined, orders);
+    await fetch(delivery!.url, { method: 'POST', headers: { 'tab-delivery-token': delivery!.token }, body: 'an essay' });
+    orders = (await api('GET', `${C3}/orders`)).body.orders;
+    const oneOrder = (await api('GET', `${C3}/orders/${orders[0].id}`)).body;
+    check('after delivery it shows released, with the delivery receipt', orders[0].state === 'delivered' && verifyReceipt(oneOrder.receipt).ok && oneOrder.receipt.escrow.delivered_at);
+    antMode = 'tools';
+
+    // a payment channel in the Wallet: opened for an agent, paid from by its runs, closed and settled
+    const before = (await v3()).company.spent.tab;
+    const opened = await api('POST', `${C3}/channels`, { origin: SHOP, agent_id: wrk.id, deposit: '0.10' });
+    w = await v3();
+    check('the owner opens a channel for an agent; the deposit counts against the budget', opened.status === 200 && w.channels[0].state === 'open' && w.channels[0].deposit === '0.10'
+      && usdToMicro(w.company.spent.tab) === usdToMicro(before) + 100_000, opened.body);
+    await api('POST', `${C3}/tickets`, { title: 'Look up: Lisbon', assignee: 'wrk' });
+    await runAll();
+    w = await v3();
+    check('the agent\'s run pays from the channel, voucher by voucher', w.channels[0].spent === '0.003' && w.channels[0].calls === 2 && w.receipts.some((r: any) => r.agent === 'wrk' && r.verified && r.ref === undefined ? true : r.agent === 'wrk'), w.channels[0]);
+    const closedCh = await api('POST', `${C3}/channels/${w.channels[0].id}/close`, {});
+    w = await v3();
+    check('closing settles it: the company is charged what was used', closedCh.status === 200 && w.channels[0].state === 'closed' && w.channels[0].settle_ref
+      && usdToMicro(w.company.spent.tab) === usdToMicro(before) + 3_000, { spent: w.company.spent, ch: w.channels[0] });
+    shop.close(); jobs.close(); shopStore.close();
+  }
 
   // -- 13. packet parsing and the rest of the surface ----------------------------------------
   check('parseResult takes the last fence or a bare object', parseResult('x ```json\n{"status":"blocked","summary":"a"}\n``` y ```json\n{"status":"done","summary":"b"}\n```')?.summary === 'b'

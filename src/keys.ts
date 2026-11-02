@@ -42,8 +42,20 @@ export function signBytes(pair: KeyPair, data: Uint8Array): string {
   return cryptoSign(null, data, privateKeyObject(pair)).toString('base64url');
 }
 
-/** Verify a base64url signature over raw bytes. Never throws. */
+/**
+ * True when `s` is the one canonical base64url encoding of exactly `bytes` bytes. Node's decoder
+ * forgives padding, stray characters and line breaks, so without this one key or signature has many
+ * spellings, and any set keyed on the string (spent approvals, revocation signers) could be fooled.
+ */
+export function isCanonicalB64u(s: unknown, bytes: number): s is string {
+  if (typeof s !== 'string' || !/^[A-Za-z0-9_-]+$/.test(s)) return false;
+  const b = Buffer.from(s, 'base64url');
+  return b.length === bytes && b.toString('base64url') === s;
+}
+
+/** Verify a base64url signature over raw bytes. Never throws. Refuses any key or signature not in canonical form. */
 export function verifyBytes(publicKey: string, data: Uint8Array, signature: string): boolean {
+  if (!isCanonicalB64u(publicKey, 32) || !isCanonicalB64u(signature, 64)) return false;
   try {
     return cryptoVerify(null, data, publicKeyObject(publicKey), Buffer.from(signature, 'base64url'));
   } catch {

@@ -4,10 +4,13 @@
 // ticket and the company. Warns at 80 percent of the company budget, pauses at
 // 100. A ticket is done only when the agent attached evidence.
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { microToUsd, normalizeUsd, randomId, usdToMicro, verifyReceipt, type Receipt } from '../protocol.js';
-import { issueMandate, type Mandate } from '../mandate.js';
+import { issueMandate, delegateMandate, mandateExpired, type Mandate } from '../mandate.js';
+import type { ApprovalRequest } from '../approval.js';
+import type { HeldChannel, EscrowTicket } from '../client.js';
+import type { TabHooks } from '../tools.js';
 import { addressFromSeed } from '../evm/secp256k1.js';
 import type { KeyPair } from '../keys.js';
 import { buildPacket, type AgentResult } from './packet.js';
@@ -213,18 +216,29 @@ export class Engine {
       }
     }
     let mandate: Mandate | null = null;
+    let delegatedBy: AgentRow | null = null;
     if (company.realms.length && ceiling > 0) {
       const owner = this.ownerKey(company);
-      mandate = issueMandate(owner, {
-        agent: agent.agent_pub,
-        budgetUsd: microToUsd(ceiling),
-        window: 'total',
-        maxPerCallUsd: typeof agent.config.max_per_call === 'string' && agent.config.max_per_call ? normalizeUsd(agent.config.max_per_call) : undefined,
-        allow: company.realms,
-        expiresInMs: this.runTimeoutMs + 60_000,
-        evmOwner: addressFromSeed(new Uint8Array(Buffer.from(owner.privateKey, 'base64url'))),
-        now,
-      });
+      // a sub-ticket runs on a slice of its manager's delegated budget, signed by the manager
+      const d = ticket?.parent_id ? this.delegatedMandate(company, agent, ticket, ceiling, now) : null;
+      if (d === 'revoked') {
+        this.store.addEvent({ company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: 'run-failed', body: { agent: agent.name, error: 'the owner revoked the budget delegated for this ticket; this run gets no mandate' } }, now);
+      } else if (d) {
+        mandate = d.mandate;
+        delegatedBy = d.manager;
+      } else {
+        mandate = issueMandate(owner, {
+          agent: agent.agent_pub,
+          budgetUsd: microToUsd(ceiling),
+          window: 'total',
+          maxPerCallUsd: cfgUsd(agent.config.max_per_call),
+          approveAboveUsd: cfgUsd(agent.config.approve_above),
+          allow: company.realms,
+          expiresInMs: this.runTimeoutMs + 60_000,
+          evmOwner: addressFromSeed(new Uint8Array(Buffer.from(owner.privateKey, 'base64url'))),
+          now,
+        });
+      }
     }
     const run = this.store.createRun({
       id: randomId(), company_id: company.id, agent_id: agent.id, ticket_id: ticket?.id ?? null, reason, mandate, started_at: now.toISOString(),
@@ -234,7 +248,7 @@ export class Engine {
       this.store.updateTicket(ticket.id, { state: 'in_progress' });
       this.store.addEvent({ company_id: company.id, ticket_id: ticket.id, agent_id: agent.id, kind: 'state', body: { from: 'open', to: 'in_progress' } });
     }
-    this.store.addEvent({ company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: 'run-started', body: { run_id: run.id, reason, ceiling: microToUsd(ceiling), mandate_id: mandate?.id ?? null } });
+    this.store.addEvent({ company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: 'run-started', body: { run_id: run.id, reason, ceiling: microToUsd(ceiling), mandate_id: mandate?.id ?? null, ...(delegatedBy ? { delegated_by: delegatedBy.name, parent_mandate: mandate?.parent?.id } : {}) } });
     this.log(`run ${run.id}: ${agent.name} on ${ticket ? `#${ticket.id}` : 'no ticket'} (${reason}), ceiling ${microToUsd(ceiling)} ${company.currency}`);
 
     const colleagues = this.store.agentsOf(company.id).filter((a) => a.id !== agent.id && a.state === 'active');
@@ -259,12 +273,19 @@ export class Engine {
     let result: AgentResult | null = null;
     let modelCost = 0;
     let error: string | null = null;
+    const channelsFile = this.writeChannels(company, agent, workDir);
+    const tabHooks: TabHooks = {
+      onApprovalRequired: (req, origin, url) => this.paymentApproval(company, agent, ticket, run.id, req, origin, url),
+      onEscrow: (t, url) => this.recordOrder(company, agent, run.id, t, url),
+      onDelegate: (child) => { this.store.addEvent({ company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: 'delegate', body: { mandate_id: child.id, parent: child.parent?.id ?? null, to: child.agent, budget: microToUsd(Number(child.budget)) } }); },
+      channels: { file: channelsFile },
+    };
     try {
       const out = await runAdapter({
         agent, packet, mandate, currency: company.currency, catalog: company.catalog, workDir,
         agentKey: agent.agent_priv ? { publicKey: agent.agent_pub, privateKey: agent.agent_priv } : null,
         modelKey: agent.adapter === 'claude' ? this.modelKeyFor(company) : null, anthropicUrl: this.opts.anthropicUrl,
-        timeoutMs: this.runTimeoutMs, maxModelCostMicro: Math.max(0, remaining), fetch: this.doFetch, log: this.log,
+        timeoutMs: this.runTimeoutMs, maxModelCostMicro: Math.max(0, remaining), fetch: this.doFetch, log: this.log, tabHooks,
       });
       text = out.text;
       result = out.result;
@@ -273,6 +294,7 @@ export class Engine {
       error = (err as Error).message;
     }
 
+    this.readChannels(company, channelsFile);
     // what the mandate spent, as the gateways booked it
     let spent = 0;
     const receipts: Array<Receipt & { origin: string; verified: boolean }> = [];
@@ -292,9 +314,12 @@ export class Engine {
         }
         try {
           const r = await this.doFetch(`${origin}/.well-known/tab/receipts?payer=${encodeURIComponent(agent.agent_pub)}&since=${encodeURIComponent(run.started_at)}&limit=200`, { signal: AbortSignal.timeout(10_000) });
+          const channelMandates = new Set(this.store.channelsOf(company.id, { agentId: agent.id }).map((c) => c.mandate.id));
           if (r.ok) for (const rec of ((await r.json()) as { receipts?: Receipt[] }).receipts ?? []) {
             if (!wellFormedReceipt(rec)) continue;
-            receipts.push({ ...rec, origin, verified: verifyReceipt(rec, { key, mandate: mandate.id }).ok });
+            // a call paid from a channel is under the channel's mandate; its spend is booked on the channel
+            const under = rec.channel && rec.mandate && channelMandates.has(rec.mandate) ? rec.mandate : mandate.id;
+            receipts.push({ ...rec, origin, verified: verifyReceipt(rec, { key, mandate: under }).ok });
           }
         } catch { /* receipts are optional on a gateway */ }
       }
@@ -304,6 +329,107 @@ export class Engine {
     if (mandate) this.reconcileLater(company, run.id, ticket?.id ?? null, mandate, spent);
     this.log(`run ${run.id}: ${error ? `failed (${error})` : result ? result.status : 'no result'}, spent ${microToUsd(spent)}, model ${microToUsd(modelCost)}`);
     return this.store.run(run.id) ?? null;
+  }
+
+  // -- 3.0 ------------------------------------------------------------------
+
+  /**
+   * The mandate for a sub-ticket's run: the owner gives the parent ticket's assignee (the manager)
+   * one mandate for all of that ticket's sub-tickets, and the manager's key delegates a slice of it
+   * to each sub-ticket run. Spend under every slice counts against the manager's mandate at the
+   * gateways, and revoking it stops them all. Null when no manager can delegate (then the run gets an
+   * owner mandate as before), 'revoked' when the owner revoked the delegation.
+   */
+  private delegatedMandate(company: CompanyRow, agent: AgentRow, ticket: TicketRow, ceiling: number, now: Date): { mandate: Mandate; manager: AgentRow } | 'revoked' | null {
+    const parent = this.store.ticket(ticket.parent_id!);
+    const manager = parent?.assignee_id ? this.store.agent(parent.assignee_id) : undefined;
+    if (!parent || !manager || manager.id === agent.id || manager.state !== 'active' || !manager.agent_priv) return null;
+    const revoked = new Set(this.store.revocationsOf(company.id).map((r) => r.mandate_id));
+    let d = this.store.delegation(parent.id);
+    if (d && revoked.has(d.mandate.id)) return 'revoked';
+    const owner = this.ownerKey(company);
+    // a fresh one when there is none, it is about to lapse, or the ticket changed hands
+    if (!d || d.agent_id !== manager.id || mandateExpired(d.mandate, new Date(now.getTime() + this.runTimeoutMs + 120_000))) {
+      const budget = parent.budget !== null ? parent.budget : manager.budget_per_run;
+      if (budget <= 0) return null;
+      const m = issueMandate(owner, {
+        agent: manager.agent_pub, budgetUsd: microToUsd(budget), window: 'total',
+        maxPerCallUsd: cfgUsd(manager.config.max_per_call), approveAboveUsd: cfgUsd(manager.config.approve_above),
+        allow: company.realms, expiresInMs: 86_400_000, evmOwner: addressFromSeed(new Uint8Array(Buffer.from(owner.privateKey, 'base64url'))), now,
+      });
+      d = { ticket_id: parent.id, company_id: company.id, agent_id: manager.id, mandate: m, created_at: now.toISOString() };
+      this.store.putDelegation(d);
+      this.store.addEvent({ company_id: company.id, ticket_id: parent.id, agent_id: manager.id, kind: 'delegation', body: { ticket_id: parent.id, manager: manager.name, budget: microToUsd(budget), mandate_id: m.id } }, now);
+    }
+    const parentCap = d.mandate.max_per_call === null ? null : Number(d.mandate.max_per_call);
+    const ownCap = cfgUsd(agent.config.max_per_call) ? usdToMicro(cfgUsd(agent.config.max_per_call)!) : null;
+    const cap = parentCap === null ? ownCap : ownCap === null ? parentCap : Math.min(parentCap, ownCap);
+    const parentGate = d.mandate.approve_above === undefined ? null : Number(d.mandate.approve_above);
+    const ownGate = cfgUsd(agent.config.approve_above) ? usdToMicro(cfgUsd(agent.config.approve_above)!) : null;
+    const gate = parentGate === null ? ownGate : ownGate === null ? parentGate : Math.min(parentGate, ownGate);
+    try {
+      const child = delegateMandate({ publicKey: manager.agent_pub, privateKey: manager.agent_priv }, d.mandate, {
+        agent: agent.agent_pub, budgetUsd: microToUsd(Math.min(ceiling, Number(d.mandate.budget))),
+        maxPerCallUsd: cap === null ? undefined : microToUsd(cap), approveAboveUsd: gate === null ? undefined : microToUsd(gate),
+        expiresInMs: this.runTimeoutMs + 60_000, now,
+      });
+      return { mandate: child, manager };
+    } catch (err) {
+      this.log(`delegation for #${ticket.id} failed, using an owner mandate: ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /** A payment above the approval threshold: put it in front of the owner, once per request. */
+  private paymentApproval(company: CompanyRow, agent: AgentRow, ticket: TicketRow | null, runId: string, req: ApprovalRequest, origin: string, url: string): void {
+    const pending = this.store.approvalsOf(company.id).some((a) => a.kind === 'payment' && a.state === 'pending' && (a.payload.request as ApprovalRequest | undefined)?.id === req.id);
+    if (pending) return;
+    const amount = microToUsd(Number(req.amount));
+    const [method] = req.resource.split(' ');
+    const reason = `pay ${amount} ${req.currency} for ${req.resource} at ${req.realm}`;
+    const a = this.store.createApproval({
+      company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: 'payment',
+      payload: { request: req, origin, url, method, resource: req.resource, realm: req.realm, amount, currency: req.currency, run_id: runId, reason },
+    });
+    this.store.addEvent({ company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: 'request', body: { approval_id: a.id, kind: 'payment', amount, reason } });
+    this.log(`company ${company.name}: ${agent.name} waits for approval to ${reason}`);
+  }
+
+  /** A pay-on-delivery order an agent placed. */
+  private recordOrder(company: CompanyRow, agent: AgentRow, runId: string, t: EscrowTicket, url: string): void {
+    const at = new Date().toISOString();
+    let origin = '';
+    try { origin = new URL(t.status).origin; } catch { return; }
+    const amount = 0; // filled in from the gateway's status at the first refresh
+    this.store.addOrder({ id: t.id, company_id: company.id, run_id: runId, agent_id: agent.id, origin, url, status_url: t.status, token: t.token, amount, currency: company.currency, state: t.state, deadline: t.deadline, receipt: null, refund_ref: null, reason: null, created_at: at, updated_at: at });
+    this.store.addEvent({ company_id: company.id, ticket_id: null, agent_id: agent.id, kind: 'order', body: { order: t.id, url, state: t.state, deadline: t.deadline } });
+  }
+
+  /** The agent's open channels, as a channel book its tab client pays from. */
+  private writeChannels(company: CompanyRow, agent: AgentRow, workDir: string): string {
+    const file = join(workDir, `channels-${agent.id}.json`);
+    const book: Record<string, HeldChannel> = {};
+    for (const c of this.store.channelsOf(company.id, { agentId: agent.id, open: true })) {
+      if (Date.parse(c.expires_at) <= Date.now()) continue;
+      book[c.origin] = {
+        id: c.id, origin: c.origin, realm: '', agent: agent.agent_pub, owner: company.owner_pub, mandate: c.mandate.id, currency: c.currency,
+        deposit: String(c.deposit), authorized: String(c.spent), spent: String(c.spent), held: '0', calls: c.calls, state: 'open', opened_at: c.opened_at, expires_at: c.expires_at,
+      };
+    }
+    try { writeFileSync(file, JSON.stringify(book), { mode: 0o600 }); } catch { /* the run pays per call */ }
+    return file;
+  }
+
+  /** What the run spent from its channels, back into the books. */
+  private readChannels(company: CompanyRow, file: string): void {
+    if (!existsSync(file)) return;
+    try {
+      const book = JSON.parse(readFileSync(file, 'utf8')) as Record<string, HeldChannel>;
+      for (const h of Object.values(book)) {
+        const c = this.store.channel(company.id, h.id);
+        if (c && c.state === 'open' && Number(h.spent) >= c.spent) this.store.updateChannel(company.id, c.id, { spent: Number(h.spent), calls: Number(h.calls) });
+      }
+    } catch { /* keep the last known */ }
   }
 
   /**
@@ -430,9 +556,9 @@ export class Engine {
       for (const req of r.requests ?? []) {
         const a = this.store.createApproval({
           company_id: company.id, ticket_id: ticket?.id ?? null, agent_id: agent.id, kind: req.kind,
-          payload: { amount: req.amount ?? null, reason: req.reason ?? '', ...(req.kind === 'hire' ? { name: req.name ?? null, role: req.role ?? null, instructions: req.instructions ?? null } : {}) },
+          payload: { amount: req.amount ?? null, reason: req.reason ?? '', ...(req.kind === 'hire' ? { name: req.name ?? null, role: req.role ?? null, instructions: req.instructions ?? null, ...hireTerms(req, agent) } : {}) },
         }, now);
-        ev('request', { approval_id: a.id, kind: req.kind, amount: req.amount ?? null, reason: req.reason ?? '', ...(req.kind === 'hire' && req.name ? { name: req.name, role: req.role ?? null } : {}) });
+        ev('request', { approval_id: a.id, kind: req.kind, amount: req.amount ?? null, reason: req.reason ?? '', ...(req.kind === 'hire' && req.name ? { name: req.name, role: req.role ?? null, ...hireTerms(req, agent) } : {}) });
       }
       for (const name of r.mentions ?? []) {
         if (r.status === 'done' && ticket?.state === 'done') break; // closed: a mention is a note, not a wake
@@ -511,6 +637,31 @@ export class Engine {
       this.store.wake(ticket.assignee_id, ticket.id, by ? 'comment' : 'owner comment');
     }
   }
+}
+
+/**
+ * The model and per call cap a hire request names, checked like the configure action: a Claude model
+ * id, and a cap in canonical form no higher than the requester's own (the owner may raise it when
+ * approving). What does not check out is left out and the hire falls back to the defaults.
+ */
+export function hireTerms(req: { model?: string; max_per_call?: string }, requester: AgentRow): { model?: string; max_per_call?: string; note?: string } {
+  const out: { model?: string; max_per_call?: string; note?: string } = {};
+  if (req.model && /^claude-[a-z0-9.-]+$/.test(req.model)) out.model = req.model;
+  if (req.max_per_call) {
+    let micro: number | null = null;
+    try { micro = usdToMicro(normalizeUsd(req.max_per_call)); } catch { /* left out */ }
+    const own = cfgUsd(requester.config.max_per_call);
+    if (micro !== null) {
+      if (own && micro > usdToMicro(own)) { out.max_per_call = microToUsd(usdToMicro(own)); out.note = `per call cap lowered to ${out.max_per_call}, the requester's own`; }
+      else out.max_per_call = microToUsd(micro);
+    }
+  }
+  return out;
+}
+
+/** An amount from an agent's config ("0.05"), normalized; undefined when unset. */
+function cfgUsd(v: unknown): string | undefined {
+  return typeof v === 'string' && v ? normalizeUsd(v) : undefined;
 }
 
 /** A spend figure from a gateway, as something safe to book: a whole number between 0 and the mandate budget. */

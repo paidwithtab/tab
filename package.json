@@ -1,6 +1,6 @@
 {
   "name": "paidwithtab",
-  "version": "2.4.0",
+  "version": "3.0.0",
   "mcpName": "io.github.paidwithtab/tab",
   "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402 and x402, spending capped by signed mandates, settled in USDG on Robinhood Chain. Zero runtime dependencies.",
   "type": "module",
@@ -17,6 +17,7 @@
     "dist/src",
     "web",
     "docs",
+    "contracts",
     "examples/companies",
     "!docs/x-posting.md",
     "!web/x-callback.html",
@@ -28,12 +29,14 @@
     "build": "tsc",
     "test": "node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts",
     "test:adversarial": "node --no-warnings=ExperimentalWarning --import tsx test/adversarial.ts",
+    "test:v3": "node --no-warnings=ExperimentalWarning --import tsx test/v3.ts",
     "test:evm": "node --no-warnings=ExperimentalWarning --import tsx test/evm.ts",
+    "test:contract": "node --no-warnings=ExperimentalWarning --import tsx test/contract.ts",
     "test:company": "node --no-warnings=ExperimentalWarning --import tsx test/company.ts",
     "test:dashboard": "node --no-warnings=ExperimentalWarning --import tsx test/dashboard.ts",
     "upstream": "node --no-warnings=ExperimentalWarning --import tsx examples/upstream.ts",
     "demo": "bash examples/demo.sh",
-    "prepublishOnly": "tsc && node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts"
+    "prepublishOnly": "tsc && node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts && node --no-warnings=ExperimentalWarning --import tsx test/v3.ts"
   },
   "repository": {
     "type": "git",

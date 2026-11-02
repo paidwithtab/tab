@@ -1,4 +1,5 @@
-// The demo API being sold: quotes, echo, secret, translate, boom, free.
+// The demo API being sold: quotes, echo, secret, translate, boom, free, and since 3.0 an essay
+// delivered later (pay on delivery) and a metered completion (per token, for channels).
 // It knows nothing about payments; it just sees ordinary HTTP (plus the
 // Tab-Payer / Tab-Owner / Tab-Hold attribution headers the gateway adds).
 
@@ -40,6 +41,26 @@ export function createUpstream(premiumKey = process.env.PREMIUM_KEY || 'demo-key
     }
     if (req.method === 'GET' && u.pathname === '/boom') {
       return json(500, { error: 'this route always fails, on purpose' });
+    }
+    // 3.0, pay on delivery: accept now, deliver a few seconds later to the URL the gateway sent
+    if (req.method === 'POST' && u.pathname === '/essay') {
+      const deliver = req.headers['tab-deliver'];
+      const token = req.headers['tab-delivery-token'];
+      let topic = 'payments for agents';
+      try { topic = String(JSON.parse(body || '{}').topic ?? topic); } catch { /* ignore */ }
+      if (typeof deliver === 'string' && typeof token === 'string') {
+        setTimeout(() => {
+          void fetch(deliver, { method: 'POST', headers: { 'tab-delivery-token': token, 'content-type': 'application/json' }, body: JSON.stringify({ essay: `A short essay on ${topic}: it was paid for on delivery.` }) }).catch(() => {});
+        }, Number(process.env.ESSAY_DELAY_MS ?? 4000));
+        return json(202, { accepted: true, deliver_in_s: Number(process.env.ESSAY_DELAY_MS ?? 4000) / 1000 });
+      }
+      return json(200, { essay: `A short essay on ${topic}.` });
+    }
+    // 3.0, metered: report the units used, and a channel buyer pays per unit
+    if (req.method === 'GET' && u.pathname === '/complete') {
+      const tokens = Math.max(1, Math.min(100_000, Number(u.searchParams.get('tokens')) || 500));
+      res.writeHead(200, { 'content-type': 'application/json', 'tab-units': String(tokens) });
+      return res.end(JSON.stringify({ completion: 'lorem '.repeat(Math.min(tokens, 50)).trim(), tokens }));
     }
     if (req.method === 'GET' && u.pathname === '/free') {
       return json(200, { hello: 'this route is free', query: u.search });

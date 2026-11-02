@@ -4,6 +4,7 @@
 // want broken. Runs in-process on random ports with a temp SQLite file.
 //   npm run test:adversarial
 
+import { createServer as createNetServer } from 'node:net';
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,6 +35,18 @@ const scratch = mkdtempSync(join(process.env.SCRATCH ?? tmpdir(), 'tab-adv-'));
 const listen = (server: Server): Promise<number> =>
   new Promise((resolve) => server.listen(0, () => resolve((server.address() as { port: number }).port)));
 const b64u = (s: string) => Buffer.from(s).toString('base64url');
+const freePort = (): Promise<number> => new Promise((resolve) => {
+  const s = createNetServer();
+  s.listen(0, () => { const p = (s.address() as { port: number }).port; s.close(() => resolve(p)); });
+});
+/** A gateway on a port chosen first, so its --origin is known: pay on delivery and channels require one. */
+const gatewayAt = async (spec: Spec, o: Omit<Parameters<typeof createGateway>[1], 'origin'>): Promise<{ server: Server; url: string }> => {
+  const port = await freePort();
+  const url = `http://127.0.0.1:${port}`;
+  const server = createGateway(spec, { ...o, origin: url });
+  await new Promise<void>((r) => server.listen(port, () => r()));
+  return { server, url };
+};
 
 async function main(): Promise<void> {
   const seller = newKeyPair();
@@ -504,6 +517,84 @@ async function main(): Promise<void> {
 
     const res402 = await client.fetch(`${GW}/destroy`);
     check('a failed upstream issues no receipt', res402.status === 502 && receiptOf(res402) === null);
+  }
+
+  // -- 3.0 under fire: one deposit against a flood of vouchers, siblings racing one parent, replays ---
+  {
+    const up = createServer((q, r) => { r.writeHead(200, { 'content-type': 'application/json' }); r.end('{"ok":true}'); });
+    const st = new Store(join(scratch, 'v3.db'));
+    const own = newKeyPair(), ag = newKeyPair(), sib = newKeyPair();
+    st.credit(own.publicKey, usdToMicro('10.00'));
+    const { server: gw3, url: G3 } = await gatewayAt({ realm: 'v3.local', recipient: seller.publicKey, channels: {}, services: [{ name: 'x', prefix: '', upstream: `http://127.0.0.1:${await listen(up)}`, routes: [{ method: 'GET', path: '/x', price: '0.01' }] }] }, { store: st });
+    const { signVoucher, encodeVoucherHeader } = await import('../src/channel.js');
+    const { delegateMandate } = await import('../src/mandate.js');
+    const { signRevocation } = await import('../src/revoke.js');
+    const m3 = issueMandate(own, { agent: ag.publicKey, budgetUsd: '5.00', allow: ['v3.local'] });
+    const c3 = new TabClient({ agent: ag, mandate: m3 });
+    const ch = await c3.openChannel(G3, '0.10');
+    // every voucher claims the whole deposit: the held counter is what stops the eleventh call
+    const flood = await Promise.all(Array.from({ length: 60 }, () => fetch(`${G3}/x`, { headers: { authorization: encodeVoucherHeader(signVoucher(ag, { channel: ch.id, amount: '100000', resource: 'GET /x', query: '', body_sha256: bodyDigest('') })) } })));
+    const served = flood.filter((r) => r.status === 200).length;
+    const after = ((await (await fetch(`${G3}/.well-known/tab/channels/${ch.id}`)).json()) as any).channel;
+    check('60 concurrent vouchers against a 0.10 deposit serve exactly 10 calls', served === 10 && after.spent === '100000' && after.held === '0', { served, after });
+    const sellerBefore = st.balance(seller.publicKey);
+    await c3.closeChannel(G3);
+    await new Promise((r) => setTimeout(r, 300));
+    check('a closed channel pays the seller exactly once, even with the sweeper running', st.balance(seller.publicKey) === sellerBefore + 100_000);
+    // two sub-mandates race one parent budget
+    const parent = issueMandate(own, { agent: ag.publicKey, budgetUsd: '0.25', allow: ['v3.local'] });
+    const kids = [delegateMandate(ag, parent, { agent: sib.publicKey, budgetUsd: '0.25' }), delegateMandate(ag, parent, { agent: sib.publicKey, budgetUsd: '0.25' })];
+    const race = await Promise.all(Array.from({ length: 60 }, (_, i) => new TabClient({ agent: sib, mandate: kids[i % 2] }).fetch(`${G3}/x`)));
+    const paidKids = race.filter((r) => r.status === 200).length;
+    const spentParent = ((await (await fetch(`${G3}/.well-known/tab/mandate/${parent.id}/spent`)).json()) as any).micro;
+    const why = [...new Set(await Promise.all(race.filter((r) => r.status !== 200).map(async (r) => `${r.status} ${((await r.json().catch(() => ({}))) as any).detail ?? ''}`)))];
+    check('60 concurrent calls by two siblings stop at the parent budget', paidKids === 25 && spentParent === 250_000, { paidKids, spentParent, why });
+    // a revocation cannot be forged for someone else's mandate, and a revoked child cannot be revived by re-signing it
+    const m4 = issueMandate(own, { agent: ag.publicKey, budgetUsd: '1.00', allow: ['v3.local'] });
+    await fetch(`${G3}/.well-known/tab/revocations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signRevocation(newKeyPair(), m4.id)) });
+    check('a revocation signed by a stranger does not stop the mandate', (await new TabClient({ agent: ag, mandate: m4 }).fetch(`${G3}/x`)).status === 200);
+    const sub = delegateMandate(ag, m4, { agent: sib.publicKey, budgetUsd: '0.50' });
+    await fetch(`${G3}/.well-known/tab/revocations`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(signRevocation(own, m4.id)) });
+    const again = delegateMandate(ag, m4, { agent: sib.publicKey, budgetUsd: '0.40' });
+    check('a fresh sub-mandate under a revoked parent is refused too', (await new TabClient({ agent: sib, mandate: sub }).fetch(`${G3}/x`)).status === 402 && (await new TabClient({ agent: sib, mandate: again }).fetch(`${G3}/x`)).status === 402);
+    gw3.close(); up.close(); st.close();
+  }
+
+  // -- re-review H3: one signature, many spellings ---------------------------------------------------
+  {
+    const { verifyBytes, signBytes } = await import('../src/keys.js');
+    const { approvalRequest, signApproval, approvalProblem, approvalKey } = await import('../src/approval.js');
+    const { signRevocation, verifyRevocation } = await import('../src/revoke.js');
+    const { signVoucher, verifyVoucher } = await import('../src/channel.js');
+    const { verifyMandate } = await import('../src/mandate.js');
+    const spell = (x: string) => [x + '=', x + '==', x.slice(0, 40) + '\n' + x.slice(40), x.slice(0, -1) + String.fromCharCode(x.charCodeAt(x.length - 1) ^ 1)];
+    const k = newKeyPair();
+    const msg = Buffer.from('hello');
+    const sig = signBytes(k, msg);
+    check('H3: a signature verifies only in its one canonical spelling', verifyBytes(k.publicKey, msg, sig) && spell(sig).every((v) => !verifyBytes(k.publicKey, msg, v)));
+    check('H3: a public key verifies only in its one canonical spelling', spell(k.publicKey).every((v) => !verifyBytes(v, msg, sig)));
+    // the reviewer's proof: re-encodings of one approval used to verify, each with its own spent key
+    const req = approvalRequest({ owner: k.publicKey, payer: 'agent', realm: 'r', resource: 'GET /x', amount: '5000000', currency: 'USD', query: '', body_sha256: 'h' });
+    const appr = signApproval(k, req);
+    check('H3: re-encoded approvals are refused, and the spent key does not depend on the signature spelling', approvalProblem(appr, req) === null
+      && spell(appr.sig).every((v) => approvalProblem({ ...appr, sig: v }, req) !== null) && spell(appr.sig).every((v) => approvalKey({ ...appr, sig: v }) === approvalKey(appr)));
+    const mm = issueMandate(k, { agent: newKeyPair().publicKey, budgetUsd: '1' });
+    const rv = signRevocation(k, mm.id);
+    const vv = signVoucher(k, { channel: 'c', amount: '1', resource: 'GET /x', query: '', body_sha256: 'h' });
+    check('H3: mandates, revocations and vouchers refuse respelled signatures and keys', spell(mm.sig).every((v) => !verifyMandate({ ...mm, sig: v }).ok)
+      && spell(rv.sig).every((v) => !verifyRevocation({ ...rv, sig: v })) && spell(rv.by).every((v) => !verifyRevocation({ ...rv, by: v }))
+      && spell(vv.sig).every((v) => !verifyVoucher({ ...vv, sig: v }, k.publicKey)));
+    const hup = createServer((q, r) => { r.writeHead(200); r.end('{}'); });
+    const hs = new Store(join(scratch, 'h3.db'));
+    hs.credit(owner.publicKey, usdToMicro('1.00'));
+    const hg = createGateway({ realm: 'h3.local', recipient: seller.publicKey, services: [{ name: 'x', prefix: '', upstream: `http://127.0.0.1:${await listen(hup)}`, routes: [{ method: 'GET', path: '/quote', price: '0.01' }] }] }, { store: hs });
+    const HG = `http://127.0.0.1:${await listen(hg)}`;
+    const c402 = parseChallengeHeader((await fetch(`${HG}/quote`)).headers.get('www-authenticate'))!;
+    const cm = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['h3.local'] });
+    const good = signCredential(agent, c402, cm);
+    const bent = await fetch(`${HG}/quote`, { headers: { authorization: encodeCredentialHeader({ ...good, sig: good.sig + '=' }) } });
+    hg.close(); hup.close();
+    check('H3: a credential with a respelled signature is refused', bent.status === 402 && /signature invalid/.test(((await bent.json()) as any).detail));
   }
 
   gateway.close();
