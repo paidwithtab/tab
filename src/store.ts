@@ -189,6 +189,9 @@ export class Store {
     try { this.db.exec('ALTER TABLE payouts ADD COLUMN cancels TEXT'); } catch { /* column already exists */ }
     // 3.0: revocations keep the mandate that authorizes them, so peers can check it too
     try { this.db.exec('ALTER TABLE revocations ADD COLUMN mandate_doc TEXT'); } catch { /* column already exists */ }
+    // 3.0.1: approvals are counted per owner, so one owner cannot fill the table for everyone
+    try { this.db.exec('ALTER TABLE approvals ADD COLUMN owner TEXT'); } catch { /* column already exists */ }
+    this.db.exec('CREATE INDEX IF NOT EXISTS approvals_owner ON approvals (owner)');
     // 3.0: whether an escrow's payout went out (done), is still owed (pending), or has stopped retrying (stuck)
     try { this.db.exec("ALTER TABLE escrows ADD COLUMN payout_state TEXT NOT NULL DEFAULT 'none'"); } catch { /* column already exists */ }
     // 3.0: sub-mandate spend chains and escrow refund addresses on holds
@@ -446,20 +449,24 @@ export class Store {
   }
 
   /**
-   * A revocation for a mandate this gateway has never been paid under: kept in a capped table (the
-   * oldest go first past `cap`), until the mandate expires, never forwarded to peers. Consulted at
-   * payment, so it still stops the mandate if it is ever presented here.
+   * A revocation for a mandate this gateway has never been paid under: kept (without the mandate, which
+   * is checked when it is presented) until `expiresAt`, never forwarded to peers. Consulted at payment, so
+   * it still stops the mandate if it is ever presented here. Nothing is ever evicted to make room: past
+   * `cap` rows a new one is refused (null), so a flood cannot push out a revocation an owner relies on.
    */
-  addPendingRevocation(r: Revocation, mandate: unknown, expiresAt: string, receivedAt: string, cap = 10_000): boolean {
-    const fresh = Number(this.db.prepare('INSERT OR IGNORE INTO revocations_pending (mandate_id, by, doc, mandate_doc, expires_at, received_at) VALUES (?,?,?,?,?,?)')
-      .run(r.mandate, r.by, JSON.stringify(r), JSON.stringify(mandate), expiresAt, receivedAt).changes) > 0;
-    this.db.prepare('DELETE FROM revocations_pending WHERE rowid IN (SELECT rowid FROM revocations_pending ORDER BY rowid DESC LIMIT -1 OFFSET ?)').run(cap);
-    return fresh;
+  addPendingRevocation(r: Revocation, expiresAt: string, receivedAt: string, cap = 200_000): boolean | null {
+    if (this.db.prepare('SELECT 1 FROM revocations_pending WHERE mandate_id = ? AND by = ?').get(r.mandate, r.by)) {
+      this.db.prepare('UPDATE revocations_pending SET expires_at = ? WHERE mandate_id = ? AND by = ? AND expires_at < ?').run(expiresAt, r.mandate, r.by, expiresAt);
+      return false;
+    }
+    if (this.pendingRevocationCount() >= cap) return null;
+    return Number(this.db.prepare('INSERT OR IGNORE INTO revocations_pending (mandate_id, by, doc, mandate_doc, expires_at, received_at) VALUES (?,?,?,?,?,?)')
+      .run(r.mandate, r.by, JSON.stringify(r), '', expiresAt, receivedAt).changes) > 0;
   }
 
-  pendingRevocations(mandateId: string): Array<{ revocation: Revocation; mandate: unknown }> {
-    return (this.db.prepare('SELECT doc, mandate_doc FROM revocations_pending WHERE mandate_id = ?').all(mandateId) as Array<{ doc: string; mandate_doc: string }>)
-      .map((r) => ({ revocation: JSON.parse(String(r.doc)), mandate: JSON.parse(String(r.mandate_doc)) }));
+  pendingRevocations(mandateId: string): Array<{ revocation: Revocation }> {
+    return (this.db.prepare('SELECT doc FROM revocations_pending WHERE mandate_id = ?').all(mandateId) as Array<{ doc: string }>)
+      .map((r) => ({ revocation: JSON.parse(String(r.doc)) }));
   }
 
   dropPendingRevocation(mandateId: string, by: string): void {
@@ -472,6 +479,10 @@ export class Store {
 
   pendingRevocationCount(): number {
     return Number((this.db.prepare('SELECT COUNT(*) AS n FROM revocations_pending').get() as { n: number }).n);
+  }
+
+  approvalCountOf(owner: string): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM approvals WHERE owner = ?').get(owner) as { n: number }).n);
   }
 
   approvalCount(): number {
@@ -505,8 +516,8 @@ export class Store {
   // -- approvals posted to the gateway (3.0) ------------------------------
 
   putApproval(requestId: string, a: Approval): void {
-    this.db.prepare('INSERT INTO approvals (request_id, doc, expires_at) VALUES (?,?,?) ON CONFLICT(request_id) DO UPDATE SET doc = excluded.doc, expires_at = excluded.expires_at')
-      .run(requestId, JSON.stringify(a), a.expires_at);
+    this.db.prepare('INSERT INTO approvals (request_id, doc, expires_at, owner) VALUES (?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET doc = excluded.doc, expires_at = excluded.expires_at, owner = excluded.owner')
+      .run(requestId, JSON.stringify(a), a.expires_at, a.by);
   }
 
   approvalFor(requestId: string): Approval | undefined {
@@ -793,6 +804,16 @@ export class CatalogStore {
       last_ok_at: r.last_ok_at == null ? null : String(r.last_ok_at),
     }));
     return this.cached;
+  }
+
+  /** Drop an origin the catalog should not keep (one that never answered with a discovery document). */
+  remove(origin: string): void {
+    this.cached = null;
+    this.db.prepare('DELETE FROM gateways WHERE origin = ?').run(origin);
+  }
+
+  count(): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM gateways').get() as { n: number }).n);
   }
 
   close(): void {

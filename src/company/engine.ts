@@ -208,12 +208,12 @@ export class Engine {
         return null;
       }
       ceiling = Math.min(ceiling, left);
-      // two agents that keep handing a ticket back and forth would run forever on the owner's model key
-      if (this.store.runsOnTicketSince(ticket.id, new Date(now.getTime() - 3_600_000).toISOString()) >= MAX_RUNS_PER_TICKET_HOUR) {
-        this.store.updateTicket(ticket.id, { state: 'blocked' });
-        this.store.addEvent({ company_id: company.id, ticket_id: ticket.id, agent_id: null, kind: 'state', body: { from: ticket.state, to: 'blocked', reason: `${MAX_RUNS_PER_TICKET_HOUR} runs on this ticket in the last hour; the owner should look at it` } });
-        return null;
-      }
+    }
+    // two agents that keep handing a ticket back and forth would run forever on the owner's model key, budget or not
+    if (ticket && this.store.runsOnTicketSince(ticket.id, new Date(now.getTime() - 3_600_000).toISOString()) >= MAX_RUNS_PER_TICKET_HOUR) {
+      this.store.updateTicket(ticket.id, { state: 'blocked' });
+      this.store.addEvent({ company_id: company.id, ticket_id: ticket.id, agent_id: null, kind: 'state', body: { from: ticket.state, to: 'blocked', reason: `${MAX_RUNS_PER_TICKET_HOUR} runs on this ticket in the last hour; the owner should look at it` } });
+      return null;
     }
     let mandate: Mandate | null = null;
     let delegatedBy: AgentRow | null = null;
@@ -400,6 +400,9 @@ export class Engine {
     const at = new Date().toISOString();
     let origin = '';
     try { origin = new URL(t.status).origin; } catch { return; }
+    // an order is real only at one of the company's gateways and for a call made there; anything else is a page's say-so
+    if (!company.gateways.includes(origin)) return;
+    try { if (new URL(url).origin !== origin) return; } catch { return; }
     const amount = 0; // filled in from the gateway's status at the first refresh
     this.store.addOrder({ id: t.id, company_id: company.id, run_id: runId, agent_id: agent.id, origin, url, status_url: t.status, token: t.token, amount, currency: company.currency, state: t.state, deadline: t.deadline, receipt: null, refund_ref: null, reason: null, created_at: at, updated_at: at });
     this.store.addEvent({ company_id: company.id, ticket_id: null, agent_id: agent.id, kind: 'order', body: { order: t.id, url, state: t.state, deadline: t.deadline } });
@@ -470,7 +473,8 @@ export class Engine {
     const ev = (kind: string, body: unknown, ticketId: string | null = ticket?.id ?? null, agentId: string | null = agent.id) =>
       this.store.addEvent({ company_id: company.id, ticket_id: ticketId, agent_id: agentId, kind, body }, now);
     const setState = (t: TicketRow, to: TicketRow['state'], reason?: string) => {
-      if (t.state === to) return;
+      // a ticket closed or cancelled while the run was going stays that way: a late result does not reopen it
+      if (t.state === to || t.state === 'done' || t.state === 'cancelled') return;
       this.store.updateTicket(t.id, { state: to }, now);
       ev('state', { from: t.state, to, reason }, t.id);
       t.state = to;
@@ -508,7 +512,19 @@ export class Engine {
       if (r.comment) ev('comment', { text: r.comment });
       // a ticket is handed over once: the colleague who finishes a handed-over ticket closes it
       const handedOver = ticket?.state === 'review';
-      if (ticket) {
+      // only the assignee moves its ticket (or a colleague closing a handover); a colleague woken by a mention adds evidence and comments only
+      const owns = !!ticket && (ticket.assignee_id === null || ticket.assignee_id === agent.id || (handedOver && r.status === 'done'));
+      // a payment the owner approved while this run was still going: the ticket stays open so the approval's wake runs
+      const approvedMeanwhile = !!ticket && this.store.approvalsOf(company.id).some((a) => a.kind === 'payment' && a.state === 'approved' && a.agent_id === agent.id
+        && a.ticket_id === ticket.id && a.decided_at !== null && a.decided_at >= run.started_at);
+      if (ticket && !owns && ticket.state !== 'done' && ticket.state !== 'cancelled') {
+        const evidence: Evidence[] = (r.evidence ?? []).map((e) => ({ ...e, run_id: run.id, at: now.toISOString() }));
+        if (evidence.length) {
+          this.store.updateTicket(ticket.id, { evidence: [...ticket.evidence, ...evidence] }, now);
+          for (const e of evidence) ev('evidence', { kind: e.kind, value: e.value, run_id: run.id });
+        }
+      }
+      if (ticket && owns) {
         const evidence: Evidence[] = (r.evidence ?? []).map((e) => ({ ...e, run_id: run.id, at: now.toISOString() }));
         if (evidence.length) {
           this.store.updateTicket(ticket.id, { evidence: [...ticket.evidence, ...evidence] }, now);
@@ -526,6 +542,9 @@ export class Engine {
           } else {
             setState(ticket, 'review', 'done was claimed without evidence');
           }
+        } else if (r.status === 'blocked' && approvedMeanwhile) {
+          setState(ticket, 'in_progress', 'payment approved during the run');
+          this.store.wake(agent.id, ticket.id, 'payment approved: make the same call again', now);
         } else if (r.status === 'blocked') {
           setState(ticket, 'blocked', r.summary.slice(0, 200));
           wakeParent('blocked');

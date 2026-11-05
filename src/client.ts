@@ -219,6 +219,12 @@ export class TabClient {
     // the mandate binds the client too: an honest gateway enforces it, a hostile one would not
     const m = this.opts.mandate;
     if (mandateExpired(m)) throw new PaymentRefused('mandate has expired', chal);
+    // the challenge must come from the realm it claims: a hostile site answering with an allowed gateway's realm would
+    // otherwise be paid under that allow list (on the evm rail, with transfers to a recipient it names)
+    const where = new URL(url);
+    if (!isLocalHost(where.hostname) && String(chal.realm) !== where.host && String(chal.realm) !== where.hostname) {
+      throw new PaymentRefused(`challenge claims realm ${chal.realm} but came from ${where.host}`, chal);
+    }
     if (!realmAllowed(m, String(chal.realm))) throw new PaymentRefused(`realm ${chal.realm} is not in the mandate's allow list`, chal);
     if (!Number.isSafeInteger(amount) || amount <= 0) throw new PaymentRefused(`challenge amount ${chal.amount} is not a positive amount`, chal);
     const fmt = (n: number) => formatAmount(n, currency);
@@ -274,7 +280,17 @@ export class TabClient {
     }
 
     let evm: { tx: string } | undefined;
+    let evmLevels: string[] = [];
     if (chal.rail === 'evm') {
+      // a signed transfer is a bearer instrument: counted against every level of the mandate chain before it leaves
+      const at = new Date();
+      const levels = mandateChain(this.opts.mandate).map((x) => ({ x, key: `${x.id}:${windowKey(x, at)}` }));
+      for (const { x, key } of levels) {
+        if ((this.x402Spent[key] ?? 0) + amount > Number(x.budget)) {
+          throw new PaymentRefused(`price ${fmt(amount)} would pass the ${x === this.opts.mandate ? 'mandate' : 'parent mandate'} budget (signed so far ${fmt(this.x402Spent[key] ?? 0)})`, chal);
+        }
+      }
+      evmLevels = levels.map((l) => l.key);
       const evmOwner = this.opts.mandate.evm_owner;
       if (!evmOwner) throw new PaymentRefused('mandate has no evm_owner; re-issue it for the evm rail', chal);
       const info = chal.evm;
@@ -293,6 +309,8 @@ export class TabClient {
       const payTo = pay.escrow ? chal.escrow?.recipient : undefined;
       if (pay.escrow && !payTo) throw new PaymentRefused('the challenge names no escrow address', chal);
       evm = { tx: buildSignedPaymentTxEvm(chal, evmOwner, this.opts.agent, nonce, payTo) };
+      for (const key of evmLevels) this.x402Spent[key] = (this.x402Spent[key] ?? 0) + amount;
+      this.saveSpent();
     }
     const cred = signCredential(this.opts.agent, chal, this.opts.mandate, {
       evm,
@@ -307,8 +325,14 @@ export class TabClient {
     // what this mandate paid a tab gateway counts toward its budget at x402 sites too (a channel's calls
     // were paid by its deposit, which is itself counted here when the channel opens)
     const receipt = receiptOf(paid);
-    if (receipt && receipt.mandate === this.opts.mandate.id && (!receipt.channel || receipt.channel.kind === 'deposit')) this.countSpend(Number(receipt.amount));
+    if (receipt && chal.rail !== 'evm' && receipt.mandate === this.opts.mandate.id && (!receipt.channel || receipt.channel.kind === 'deposit')) this.countSpend(Number(receipt.amount));
     return paid;
+  }
+
+  private saveSpent(): void {
+    if (!this.opts.x402Ledger) return;
+    writeFileSync(this.opts.x402Ledger + '.tmp', JSON.stringify(this.x402Spent));
+    renameSync(this.opts.x402Ledger + '.tmp', this.opts.x402Ledger);
   }
 
   /** Add to the client's own count of what the mandate chain has spent, which x402 payments are checked against. */
@@ -592,4 +616,10 @@ async function x402Offer(res: Response): Promise<X402Offer | null> {
 /** The settlement an x402 site reported for a paid response (PAYMENT-RESPONSE, or X-PAYMENT-RESPONSE in version 1). */
 export function x402ResponseOf(res: Response): X402SettlementResponse | null {
   return decodeX402<X402SettlementResponse>(res.headers.get('payment-response') ?? res.headers.get('x-payment-response'));
+}
+
+/** A development host (loopback or a .local name), where a gateway's realm need not match the address it is reached at. */
+function isLocalHost(hostname: string): boolean {
+  const h = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h === '::1' || /^127\./.test(h);
 }

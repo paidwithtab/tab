@@ -72,9 +72,9 @@ export class EvmRpc {
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (e) {
-      throw new EvmTransportError(`${(e as Error).name === 'TimeoutError' ? 'timeout' : (e as Error).message} at ${url}`);
+      throw new EvmTransportError(`${(e as Error).name === 'TimeoutError' ? 'timeout' : (e as Error).message} at ${hostOf(url)}`);
     }
-    if (!res.ok) throw new EvmTransportError(`HTTP ${res.status} at ${url}`);
+    if (!res.ok) throw new EvmTransportError(`HTTP ${res.status} at ${hostOf(url)}`);
     let parsed: { result?: unknown; error?: { message: string; data?: unknown } };
     try {
       parsed = (await res.json()) as typeof parsed;
@@ -158,3 +158,8 @@ export class EvmRpc {
 }
 
 export { bigToHex };
+
+/** An RPC endpoint named by its host only: a keyed URL (a key in the path or query) must not reach an error a client sees. */
+function hostOf(url: string): string {
+  try { return new URL(url).host; } catch { return 'the rpc endpoint'; }
+}

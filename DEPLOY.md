@@ -100,8 +100,8 @@ examples/
   upstream.ts               # demo API to sell (quotes, echo, secret, translate, boom, free)
   demo.sh                   # one-command sandbox
 test/e2e.ts                 # 90 in-process checks, temp DB, ~1-2 min
-test/v3.ts                  # 103 checks of the 3.0 features on the ledger rail: revoke and peer sharing, sub-mandates, approvals, escrow, channels, the MCP tools
-test/adversarial.ts         # 58 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts, voucher floods, sibling races
+test/v3.ts                  # 109 checks of the 3.0 features on the ledger rail: revoke and peer sharing, sub-mandates, approvals, escrow, channels, the MCP tools
+test/adversarial.ts         # 68 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts, voucher floods, sibling races
 test/evm.ts                 # 91 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway and its faucet, escrow and channels on chain, live Robinhood testnet reads
 test/contract.ts            # 20 checks of contracts/TabChannel.sol on a real EVM (ganache); opt in, needs GANACHE
 contracts/TabChannel.sol    # the trustless payment channel contract, compiled in contracts/TabChannel.json
@@ -116,10 +116,10 @@ cd /opt/tab
 npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 90 passed, 0 failed on the dev box
-npm run test:v3             # 103 passed, 0 failed: revoke (and gateways sharing it), sub-mandates, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools
-npm run test:adversarial    # 58 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts, voucher floods, sibling sub-mandates racing one budget
+npm run test:v3             # 109 passed, 0 failed: revoke (and gateways sharing it), sub-mandates, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools
+npm run test:adversarial    # 68 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts, voucher floods, sibling sub-mandates racing one budget
 npm run test:evm            # 91 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, escrow and channels through an escrow address, live testnet reads
-npm run test:company        # 133 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests (with model and per call cap), signed board log, sealed model keys, the claude adapter against a fake Messages API, payment approvals, revoke, delegated budgets, orders, channels
+npm run test:company        # 139 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests (with model and per call cap), signed board log, sealed model keys, the claude adapter against a fake Messages API, payment approvals, revoke, delegated budgets, orders, channels
 npm run test:dashboard      # 40 passed, 0 failed: tab OS in headless Chromium end to end, including a payment approved at phone width, a revoked run, a channel opened and settled, an order released (npx playwright install chromium first); --live also loads the public site and app
 GANACHE=/path/to/ganache/dist/node/cli.js npm run test:contract   # 20 passed, 0 failed: TabChannel.sol on a real EVM (npm i ganache@7.9.2 outside the repo)
 ```
@@ -160,7 +160,7 @@ To make `tab` a global command: `npm link` after building, or symlink `bin/tab.j
 | Catalog + front end | 1403 | `tab catalog serve` | `catalog.db` |
 | Company server + dashboard | 1407 | `tab company serve --host app.example.com` | `company.db`, `company.db.work/` |
 
-**All servers listen on every interface** (`server.listen(port)` with no host). On a VPS that means they are public the moment they start. Either firewall the ports and put nginx or Caddy in front (section 8), or bind them to loopback by editing the two `listen(` calls in `src/cli.ts` to `listen(port, '127.0.0.1', …)`.
+**Gateways and the catalog listen on every interface unless told otherwise.** On a VPS that means they are public the moment they start. Behind a tunnel or a reverse proxy, pass `--listen 127.0.0.1` to `tab serve` and `tab catalog serve` so nothing reaches them except through the proxy; otherwise firewall the ports and put nginx or Caddy in front (section 8). `tab company serve` binds to 127.0.0.1 by default.
 
 One gateway can front many upstreams; one catalog can list many gateways; you can run several gateways on one box with different `--db` files and ports.
 
@@ -209,12 +209,12 @@ tab channel close --gateway url
 tab version
 tab mint    --wallet <pub|file> --amount 5.00 [--db tab.db]        sandbox: create ledger money
 tab balance --wallet <pub|file> [--db tab.db]
-tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin http://host:1402]
+tab serve   --spec spec.json [--db tab.db] [--port 1402] [--listen 127.0.0.1] [--announce http://catalog:1403] [--origin http://host:1402]
             [--faucet 1.00]                                         ledger rail: starter credits, once per wallet
             [--faucet-per-ip 20]                                    faucet claims per client address per day
             [--peer https://other-gateway]...                       share revocations: push new ones, poll theirs every 5 s
             [--escrow-key key.json]                                 evm rail: the escrow address for pay on delivery and channel deposits
-tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
+tab catalog serve [--db catalog.db] [--port 1403] [--listen 127.0.0.1] [--try-agent key.json --try-mandate mandate.json]
                   [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
 tab evm address <key.json>                                          key file -> 0x address (EIP-55)
 tab evm approve --owner key.json --agent <key.json|0x> --amount 1.00 --token <0x> [--rpc url]
@@ -509,7 +509,7 @@ node bin/tab.js evm balance --wallet keys/owner.json --token $TOKEN --agent keys
 - The wallet endpoint (`/.well-known/tab/wallet/<id>`) takes a 0x address on this rail.
 - Only type-2 transactions and empty access lists. Tokens may have 0 to 18 decimals since draft 0.4; the wire amount stays in micro units and is scaled to the token on chain.
 
-`npm run test:evm` runs 63 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, the same flow against an 18-decimal token priced in its own currency (scaling, the client's currency refusal, decimals checked against the contract), the testnet faucet (mints the token and sends gas once per wallet, refuses a mainnet), x402 both ways (the EIP-712 signing checked against the x402 spec's own example payment, an x402 buyer paying the gateway with every refusal code, a tab client paying a version 1 and a version 2 x402 site within its mandate), and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
+`npm run test:evm` runs 91 checks: keccak-256 and RFC 6979 vectors, rpc failover across a dead endpoint, our point math cross-checked against OpenSSL, RLP/EIP-1559 roundtrips, a full 402 flow against a mock EVM node with real ERC-20 semantics, the same flow against an 18-decimal token priced in its own currency (scaling, the client's currency refusal, decimals checked against the contract), the testnet faucet (mints the token and sends gas once per wallet, refuses a mainnet), x402 both ways (the EIP-712 signing checked against the x402 spec's own example payment, an x402 buyer paying the gateway with every refusal code, a tab client paying a version 1 and a version 2 x402 site within its mandate), and two read-only calls against the live Robinhood testnet (chain id + USDC decimals).
 
 **Taking x402 payments.** A gateway on the evm rail can also be paid by any [x402](https://github.com/coinbase/x402) client (SPEC section 5.3), if its token implements EIP-3009; USDG on Robinhood Chain does, the testnet's mock USDC does not. Three steps:
 

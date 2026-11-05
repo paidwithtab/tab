@@ -23,11 +23,11 @@ easiest to land.
 git clone https://github.com/paidwithtab/tab && cd tab
 npm install            # typescript, tsx, @types/node, playwright: dev tooling only
 npx tsc --noEmit       # must stay clean
-npm test               # 81 end-to-end checks, in-process, temp DB
-npm run test:adversarial   # 48 hostile checks: the money invariants and receipt forgery
-npm run test:evm       # 59 checks: crypto vectors, mock EVM node, x402, live testnet reads
-npm run test:company   # 101 checks: the company orchestrator against a real gateway
-npm run test:dashboard # 28 checks in headless Chromium (npx playwright install chromium once)
+npm test               # 90 end-to-end checks, in-process, temp DB
+npm run test:adversarial   # 68 hostile checks: the money invariants and receipt forgery
+npm run test:evm       # 91 checks: crypto vectors, mock EVM node, x402, live testnet reads
+npm run test:company   # 139 checks: the company orchestrator against a real gateway
+npm run test:dashboard # 40 checks in headless Chromium (npx playwright install chromium once)
 npm run demo           # full local sandbox: gateway :1402, catalog + site :1403
 ```
 

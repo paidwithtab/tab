@@ -473,10 +473,10 @@ async function main(): Promise<void> {
   check('announce verifies and stores', ann.ok === true && ann.origin === GW);
 
   const badAnn = await (await fetch(`${CAT}/v1/announce`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ origin: 'http://127.0.0.1:1' }) })).json() as any;
-  check('unreachable gateway stored with ok:false', badAnn.ok === false && typeof badAnn.error === 'string');
+  check('unreachable gateway answered ok:false', badAnn.ok === false && typeof badAnn.error === 'string');
 
   const catDoc = await (await fetch(`${CAT}/v1/catalog.json`)).json() as any;
-  check('catalog.json lists gateways', catDoc.gateways.length === 2
+  check('catalog.json lists gateways, not a new origin that never answered', catDoc.gateways.length === 1
     && catDoc.gateways.some((g: any) => g.origin === GW && g.ok && g.realm === 'quotes.local'));
 
   const s1 = await (await fetch(`${CAT}/v1/search?q=quote`)).json() as any;

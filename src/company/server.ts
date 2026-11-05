@@ -51,6 +51,8 @@ export interface CompanyServerOptions {
   hostModelKey?: boolean;
   /** Where model keys are verified; tests point it at a stub. */
   anthropicUrl?: string;
+  /** Starter credit claims granted a day across all users (default 200). */
+  starterCreditsPerDay?: number;
   /** RPC endpoints by chain id, for companies that spend at an evm-rail gateway. Default: Robinhood Chain mainnet and testnet. */
   evmRpc?: Record<number, string>;
   log?: (msg: string) => void;
@@ -302,7 +304,13 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
 
   /** Starter credits for the owner wallet at every gateway of the company that offers them. */
   async function claimCredits(c: CompanyRow): Promise<Array<Record<string, unknown>>> {
+    // every hosted claim reaches the faucet from this server's one address, so its per-IP limit cannot tell users apart:
+    // starter credits go to at most two companies per account and gateway, and to a capped number a day in all
+    const granted = store.creditsGranted(c.user_id, new Date(Date.now() - 86_400_000).toISOString());
+    const daily = opts.starterCreditsPerDay ?? 200;
     const results = await Promise.all(c.gateways.map(async (origin) => {
+      if ((granted.mine.get(origin) ?? 0) >= 2) return { origin, status: 409, error: 'this account already has starter credits at this gateway' };
+      if (granted.all >= daily) return { origin, status: 429, error: 'starter credits are used up for today; try again tomorrow' };
       try {
         // a faucet on a gateway that settles on chain wants the owner's 0x address
         const evm = (await discoveryOf(origin))?.rail === 'evm';
@@ -663,6 +671,10 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
     const held = store.ordersOf(c.id, 100).filter((o) => o.state === 'held' || o.amount === 0);
     await Promise.all(held.map(async (o: OrderRow) => {
       try {
+        // only a gateway the company spends at speaks for an order: a status URL anywhere else could claim a refund and erase spend
+        let at = '';
+        try { at = new URL(o.status_url).origin; } catch { return; }
+        if (at !== o.origin || !c.gateways.includes(at)) return;
         const r = await egress(o.status_url, { headers: { 'tab-escrow-token': o.token }, signal: AbortSignal.timeout(8_000) });
         if (!r.ok) return;
         const st = (await r.json()) as { state?: string; micro?: number; receipt?: Receipt | null; refund_ref?: string | null; reason?: string | null; deadline?: string };
@@ -708,7 +720,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
           // the page's one inline script runs under a per-response nonce; nothing else may execute
           const nonce = randomBytes(16).toString('base64url');
           const html = readFileSync(join(web, page), 'utf8').replace(/<script>/g, `<script nonce="${nonce}">`).replaceAll('__ASSET_V__', assetVersion(web));
-          res.writeHead(200, { 'content-type': TYPES.html, 'cache-control': 'no-cache', 'x-frame-options': 'DENY', 'content-security-policy': `default-src 'self'; script-src 'nonce-${nonce}'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'` });
+          res.writeHead(200, { 'content-type': TYPES.html, 'cache-control': 'no-cache', 'x-frame-options': 'DENY', 'x-content-type-options': 'nosniff', 'referrer-policy': 'strict-origin-when-cross-origin', 'content-security-policy': `default-src 'self'; script-src 'nonce-${nonce}'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'` });
           res.end(html);
           return;
         }

@@ -18,7 +18,7 @@ import { normalizeUsd, usdToMicro, verifyReceipt } from '../src/protocol.js';
 import { Store } from '../src/store.js';
 import { createGateway, type Spec } from '../src/gateway.js';
 import { TabClient, receiptOf } from '../src/client.js';
-import type { Mandate } from '../src/mandate.js';
+import { issueMandate, type Mandate } from '../src/mandate.js';
 import { CompanyStore } from '../src/company/store.js';
 import { Engine } from '../src/company/engine.js';
 import { guardedFetch } from '../src/net.js';
@@ -88,6 +88,19 @@ async function main(): Promise<void> {
   const gwStore = new Store(join(scratch, 'gw.db'));
   const gateway = createGateway(spec, { store: gwStore, faucetUsd: '1.00', faucetPerIpPerDay: 100 });
   const GW = `http://127.0.0.1:${await listen(gateway)}`;
+
+  // -- the client pays only the realm a challenge comes from: a site answering with an allowed gateway's realm is refused --
+  {
+    const o = newKeyPair(), ag = newKeyPair();
+    await fetch(`${GW}/.well-known/tab/faucet`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ wallet: o.publicKey }) });
+    const m = issueMandate(o, { agent: ag.publicKey, budgetUsd: '0.10', allow: ['quotes.local'] });
+    const via = (u: string | URL | Request, init?: RequestInit) => fetch(String(u).replace(/^https:\/\/[^/]+/, GW), init);
+    const cl = new TabClient({ agent: ag, mandate: m, fetch: via as typeof fetch });
+    let refused = '';
+    try { await cl.fetch('https://evil.example/quote'); } catch (err) { refused = (err as Error).message; }
+    check('a challenge claiming another realm than the host it came from is refused before signing', /claims realm quotes\.local but came from evil\.example/.test(refused), refused);
+    check('the same gateway at its own realm is paid', (await cl.fetch('https://quotes.local/quote')).status === 200);
+  }
 
   // -- an http agent endpoint: pays at the gateway under the packet's mandate --
   const keys: Record<string, KeyPair> = {};
@@ -231,6 +244,11 @@ async function main(): Promise<void> {
   const fund = await api('POST', `/api/companies/${cid}/fund`, {});
   const bal = await api('GET', `/api/companies/${cid}/balances`);
   check('starter credits claimed for the owner wallet', fund.body.results[0].credited === '1.00' && bal.body.balances[0].micro === 1_000_000);
+  // the server counts grants per account: a third claim at the same gateway is refused before the faucet is asked
+  const funded = (n: number) => store.addEvent({ company_id: cid, ticket_id: null, agent_id: null, kind: 'fund', body: { results: Array.from({ length: n }, () => ({ origin: GW, status: 200 })) } });
+  funded(1);
+  const again = await api('POST', `/api/companies/${cid}/fund`, {});
+  check('starter credits go to at most two companies per account and gateway', again.body.results[0].status === 409 && (await api('GET', `/api/companies/${cid}/balances`)).body.balances[0].micro === 1_000_000, again.body);
 
   // -- 3. hiring: a signed board action per hire --------------------------------
   const ant = await api('POST', `/api/companies/${cid}/agents`, { name: 'ant', role: 'buyer', adapter: 'http', agent_pub: A.publicKey, config: { url: STUB }, budget_per_run: '0.02' });
@@ -329,6 +347,8 @@ async function main(): Promise<void> {
   check('a mention in the result wakes that agent on the ticket', store.wakes().some((w) => w.ticket_id === t7.id && w.agent_id === bee.body.agent.id));
   await runAll();
   check('the mentioned agent ran with the reason', (await view()).runs[0].agent === 'bee' && /mentioned/.test((await view()).runs[0].reason));
+  v = await view();
+  check('a mentioned colleague adds evidence but does not move a ticket it is not assigned', v.tickets.find((t: any) => t.id === t7.id).state === 'in_progress' && v.tickets.find((t: any) => t.id === t7.id).evidence.some((e: any) => e.run_id === v.runs[0].id));
   modes.ant = 'handoff';
   const t7b = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'handoff', assignee: 'ant' })).body.ticket;
   await runAll();
@@ -442,9 +462,9 @@ async function main(): Promise<void> {
   // -- 10. retire and heartbeat --------------------------------------------------------
   await api('POST', `/api/companies/${cid}/agents/${bee.body.agent.id}/retire`, {});
   await api('POST', `/api/companies/${cid}/tickets/${t7.id}/comment`, { text: '@bee are you there' });
-  const runsBeforeRetired = (await view()).runs.length;
+  const beeRunsBefore = (await view()).runs.filter((r: any) => r.agent === 'bee').length;
   await runAll();
-  check('a retired agent is never woken', (await view()).runs.length === runsBeforeRetired && (await view()).agents.find((a: any) => a.name === 'bee').state === 'retired');
+  check('a retired agent is never woken', (await view()).runs.filter((r: any) => r.agent === 'bee').length === beeRunsBefore && (await view()).agents.find((a: any) => a.name === 'bee').state === 'retired');
   const dog = await api('POST', `/api/companies/${cid}/agents`, { name: 'dog', role: 'patroller', adapter: 'http', agent_pub: D.publicKey, config: { url: STUB }, budget_per_run: '0.01', heartbeat_s: 1 });
   modes.dog = 'progress';
   const t12 = (await api('POST', `/api/companies/${cid}/tickets`, { title: 'patrol', assignee: 'dog' })).body.ticket;
@@ -627,6 +647,15 @@ process.stdin.on('end', () => {
     const ask3 = (await v3()).approvals.find((a: any) => a.kind === 'payment' && a.state === 'pending');
     check('the owner can deny a payment', (await api('POST', `${C3}/approvals/${ask3.id}`, { decision: 'deny' })).status === 200 && store.approval(ask3.id)!.state === 'rejected');
     await api('POST', `${C3}/tickets/${deny.id}`, { state: 'cancelled' });
+    // the owner approves while the run that asked is still going, and that run then reports blocked: the ticket stays open for the approval's wake
+    const race = (await api('POST', `${C3}/tickets`, { title: 'Look up: Qzxqzxqzx', assignee: 'mgr' })).body.ticket;
+    const late = store.createApproval({ company_id: co.id, ticket_id: race.id, agent_id: mgr.id, kind: 'payment', payload: { amount: '0.002' } });
+    store.decideApproval(late.id, 'approved', new Date(Date.now() + 3_600_000));
+    await runAll();
+    check('a payment approved during a run that ends blocked leaves the ticket in progress and the agent woken', (await v3()).tickets.find((t: any) => t.id === race.id).state === 'in_progress'
+      && store.wakes().some((x) => x.agent_id === mgr.id && x.ticket_id === race.id));
+    await api('POST', `${C3}/tickets/${race.id}`, { state: 'cancelled' });
+    store.clearWake(mgr.id, race.id);
     await api('POST', `${C3}/agents/${mgr.id}/configure`, { approve_above: '' });
 
     // delegation: a manager's sub-tickets run on a slice of its mandate
@@ -697,6 +726,15 @@ process.stdin.on('end', () => {
     orders = (await api('GET', `${C3}/orders`)).body.orders;
     const oneOrder = (await api('GET', `${C3}/orders/${orders[0].id}`)).body;
     check('after delivery it shows released, with the delivery receipt', orders[0].state === 'delivered' && verifyReceipt(oneOrder.receipt).ok && oneOrder.receipt.escrow.delivered_at);
+    // an order whose status lives anywhere but one of the company's gateways is never asked: a page claiming a refund cannot erase spend
+    const liar = createServer((_q, s) => { s.writeHead(200, { 'content-type': 'application/json' }); s.end(JSON.stringify({ state: 'refunded', micro: 1_000_000_000 })); });
+    const LIAR = `http://127.0.0.1:${await listen(liar)}`;
+    const paidRun = (await v3()).runs.find((r: any) => usdToMicro(r.spent) > 0);
+    const spentBefore = (await v3()).company.spent.tab;
+    store.addOrder({ id: 'fake-order', company_id: co.id, run_id: paidRun.id, agent_id: null, origin: LIAR, url: `${LIAR}/x`, status_url: `${LIAR}/status`, token: 't', amount: 0, currency: 'USD', state: 'held', deadline: new Date(Date.now() + 600_000).toISOString(), receipt: null, refund_ref: null, reason: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() } as any);
+    await api('GET', `${C3}/orders`);
+    check('an order outside the company\'s gateways never refunds spend off the books', (await v3()).company.spent.tab === spentBefore && store.ordersOf(co.id, 100).find((o) => o.id === 'fake-order')!.state === 'held');
+    liar.close();
     antMode = 'tools';
 
     // a payment channel in the Wallet: opened for an agent, paid from by its runs, closed and settled

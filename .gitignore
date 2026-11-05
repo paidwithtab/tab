@@ -13,6 +13,8 @@ keys/
 *.key
 *token*.json
 *secret*
+# source, not a secret: the sealing code for company model keys
+!src/company/secrets.ts
 .claude/settings.local.json
 
 # X (twitter) integration stays local: the client, its tests, docs, tokens and post queue
@@ -21,8 +23,10 @@ test/x.ts
 docs/x-posting.md
 social/
 
-# local scratch images
-/image*.png
+# local scratch images and runtime work dirs
+/*.png
+company.db.work/
+*.db.work/
 /22e9dddd-6cbb-41f8-bfde-e544025eac88.png
 
 # the marketing site (landing, product, developers, providers, maps, fonts) is a private repo, symlinked into web/ on the box

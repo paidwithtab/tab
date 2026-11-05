@@ -12,10 +12,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/spec-draft%200.6-1f6feb?style=flat-square" alt="Spec draft 0.6">
+  <img src="https://img.shields.io/badge/spec-draft%200.7-1f6feb?style=flat-square" alt="Spec draft 0.7">
   <img src="https://img.shields.io/badge/wire-tab%2F0-1f6feb?style=flat-square" alt="Wire protocol tab/0">
   <img src="https://img.shields.io/badge/node-22.13%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 22.13+">
-  <img src="https://img.shields.io/badge/checks-289-2da44e?style=flat-square" alt="289 automated checks">
+  <img src="https://img.shields.io/badge/checks-497-2da44e?style=flat-square" alt="497 automated checks">
   <img src="https://img.shields.io/badge/settlement-USDG-2775ca?style=flat-square" alt="USDG settlement">
   <img src="https://img.shields.io/badge/license-MIT-24292f?style=flat-square" alt="MIT license">
 </p>
@@ -389,15 +389,15 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 475 automated checks across protocol behavior, the 3.0 features, adversarial conditions, EVM settlement and the company orchestrator, plus 40 browser checks of the dashboard and 20 checks of the channel contract on a real EVM.
+tab currently runs 497 automated checks across protocol behavior, the 3.0 features, adversarial conditions, EVM settlement and the company orchestrator, plus 40 browser checks of the dashboard and 20 checks of the channel contract on a real EVM.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
 | `npm test` | 90 | Gateway and its home page, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate, catalog health and stale serving, amounts in a token gateway's own currency |
-| `npm run test:v3` | 103 | Revoke and gateways sharing revocations, sub-mandates and their limits, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools and CLI |
-| `npm run test:adversarial` | 58 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts, voucher floods against one deposit, sibling sub-mandates racing one budget |
+| `npm run test:v3` | 109 | Revoke and gateways sharing revocations, sub-mandates and their limits, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools and CLI |
+| `npm run test:adversarial` | 68 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts, voucher floods against one deposit, sibling sub-mandates racing one budget, revocation floods, oversized upstream answers, catalog announce floods |
 | `npm run test:evm` | 91 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways, the testnet faucet, escrow and channels through an escrow address |
-| `npm run test:company` | 133 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, hire requests with model and per call cap, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary, payment approvals, revoke, delegated budgets, orders and channels |
+| `npm run test:company` | 139 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, hire requests with model and per call cap, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary, payment approvals, revoke, delegated budgets, orders and channels |
 | `npm run test:dashboard` | 40 | tab OS in a real browser (Playwright, `npx playwright install chromium` once): sign up, the quickstart's starter agent paying and answering, found from a template, add a model key, claim credits, a ticket runs to done, evidence and run log, a payment approved at phone width, a revoked run, a channel opened and settled, an order released, log out; `--live` also loads the public site and app |
 | `npm run test:contract` | 20 | `contracts/TabChannel.sol` on a real EVM (needs `GANACHE`): open, cumulative vouchers, payee close, replay, forged and oversized vouchers, unilateral close and the dispute window, deployment from the CLI |
 

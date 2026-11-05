@@ -151,8 +151,9 @@ async function main(): Promise<void> {
   check('a peer it pushes to has the revocation within seconds', bRefused && (await c1.fetch(`${B}/quote`)).status === 402);
   check('a peer that polls has it within seconds', cRefused && (await c1.fetch(`${C}/quote`)).status === 402, Date.now() - t0);
   const list = await json(await fetch(`${A}/.well-known/tab/revocations?after=0`));
-  check('the revocation list serves peers in order, with a sequence and the mandate that authorizes it', list.revocations.length === 1 && list.revocations[0].mandate === m1.id
-    && typeof list.revocations[0].seq === 'number' && list.revocations[0].mandate_doc?.id === m1.id);
+  check('the revocation list serves peers in order, with a sequence and the expiry, never the revoked mandate\'s terms', list.revocations.length === 1 && list.revocations[0].mandate === m1.id
+    && typeof list.revocations[0].seq === 'number' && list.revocations[0].expires_at === m1.expires_at && list.revocations[0].mandate_doc === undefined
+    && !JSON.stringify(list).includes(m1.agent) && !JSON.stringify(list).includes('"budget"'));
 
   const m2 = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '5.00', allow: ['*.local'] });
   const c2 = new TabClient({ agent, mandate: m2 });
@@ -574,6 +575,21 @@ async function main(): Promise<void> {
       && again.status === 402 && (await json(await fetch(`${RG}/.well-known/tab/mandate/${rm.id}/spent`))).micro === 410_000);
     rg.close();
 
+    // LOW 9: one owner cannot fill the approval table for everyone
+    const os9 = new Store(join(scratch, 'appr-cap.db'));
+    os9.credit(owner.publicKey, usdToMicro('10.00'));
+    const { server: og, url: OG } = await gatewayAt({ realm: 'a.local', recipient: seller.publicKey, services: [{ name: 'd', prefix: '', upstream: UP, routes: [{ method: 'GET', path: '/big', price: '0.40' }, { method: 'GET', path: '/quote', price: '0.01' }] }] }, { store: os9, approvalsPerOwner: 2 });
+    const om = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '5', allow: ['*.local'], approveAboveUsd: '0.10' });
+    const oc = new TabClient({ agent, mandate: om });
+    await oc.fetch(`${OG}/quote`);
+    const asks = [];
+    for (let i = 0; i < 3; i++) asks.push((await approvalRequestOf(await oc.fetch(`${OG}/big?n=${i}`)))!);
+    const posts9 = [];
+    for (const q of asks) posts9.push((await post(`${OG}/.well-known/tab/approvals`, { request: q, approval: signApproval(owner, q) })).status);
+    const repost = (await post(`${OG}/.well-known/tab/approvals`, { request: asks[0], approval: signApproval(owner, asks[0]) })).status;
+    check('LOW 9: an owner may have only so many approvals waiting at a gateway; a re-post of one already there is fine', posts9.join(',') === '200,200,503' && repost === 200, posts9);
+    og.close();
+
     // B4: intake checks authority, takes a batch in one go, and is rate limited per address
     const fs4 = new Store(join(scratch, 'flood.db'));
     const { server: fg, url: FG } = await gatewayAt({ realm: 'a.local', recipient: seller.publicKey, services: [{ name: 'd', prefix: '', upstream: UP, routes: [{ method: 'GET', path: '/q', price: '0.01' }] }] }, { store: fs4, revocationPostsPerMinute: 5 });
@@ -591,6 +607,42 @@ async function main(): Promise<void> {
     const presented = await new TabClient({ agent, mandate: unseen }).fetch(`${FG}/q`);
     check('M4: when that mandate is presented it is refused, and its revocation joins the shared list', presented.status === 402 && (await json(presented)).type === 'urn:tab:problem:mandate-revoked'
       && fs4.revocationsAfter(0).length === 1 && fs4.pendingRevocationCount() === 0);
+    // HIGH 2: a flood of pending revocations cannot push out one the owner relies on: past the cap new ones are refused
+    const fs6 = new Store(join(scratch, 'pending-cap.db'));
+    const { server: pg, url: PG } = await gatewayAt({ realm: 'a.local', recipient: seller.publicKey, services: [{ name: 'd', prefix: '', upstream: UP, routes: [{ method: 'GET', path: '/q', price: '0.01' }] }] }, { store: fs6, pendingRevocationCap: 20 });
+    const leaked = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1', allow: ['*.local'] });
+    await post(`${PG}/.well-known/tab/revocations`, { revocation: signRevocation(owner, leaked.id), mandate: leaked });
+    const junkKeys = Array.from({ length: 40 }, () => newKeyPair());
+    const junkMandates = junkKeys.map((k) => issueMandate(k, { agent: agent.publicKey, budgetUsd: '1', allow: ['*.local'] }));
+    const flood6 = await post(`${PG}/.well-known/tab/revocations`, junkMandates.map((m, i) => ({ revocation: signRevocation(junkKeys[i], m.id), mandate: m })));
+    const heldDuringFlood = fs6.pendingRevocationCount();
+    fs6.credit(owner.publicKey, usdToMicro('1.00'));
+    const afterFlood = await new TabClient({ agent, mandate: leaked }).fetch(`${PG}/q`);
+    check('HIGH 2: a pending revocation survives a flood: the flood is refused with 503, the leaked mandate still refused', flood6.status === 503 && heldDuringFlood === 20
+      && afterFlood.status === 402 && (await json(afterFlood)).type === 'urn:tab:problem:mandate-revoked', { flood: flood6.status, pending: heldDuringFlood, after: afterFlood.status });
+    const longLived = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1', allow: ['*.local'], days: 365 });
+    const fs7 = new Store(join(scratch, 'pending-ttl.db'));
+    const { server: tg, url: TG } = await gatewayAt({ realm: 'a.local', recipient: seller.publicKey, services: [{ name: 'd', prefix: '', upstream: UP, routes: [{ method: 'GET', path: '/q', price: '0.01' }] }] }, { store: fs7 });
+    await post(`${TG}/.well-known/tab/revocations`, { revocation: signRevocation(owner, longLived.id), mandate: longLived });
+    fs7.prunePendingRevocations(new Date(Date.now() + 29 * 86_400_000).toISOString());
+    const at29 = fs7.pendingRevocationCount();
+    fs7.prunePendingRevocations(new Date(Date.now() + 31 * 86_400_000).toISOString());
+    check('HIGH 2: a pending revocation is held at most 30 days, so junk ages out', at29 === 1 && fs7.pendingRevocationCount() === 0);
+    pg.close(); tg.close();
+
+    // MEDIUM 3: an agent paid under one mandate cannot mint and revoke sub-mandates to fill the shared list
+    const fs8 = new Store(join(scratch, 'sub-flood.db'));
+    fs8.credit(owner.publicKey, usdToMicro('1.00'));
+    const { server: sg, url: SG } = await gatewayAt({ realm: 'a.local', recipient: seller.publicKey, services: [{ name: 'd', prefix: '', upstream: UP, routes: [{ method: 'GET', path: '/q', price: '0.01' }] }] }, { store: fs8 });
+    const paidM = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1', allow: ['*.local'] });
+    await new TabClient({ agent, mandate: paidM }).fetch(`${SG}/q`);
+    const subs = Array.from({ length: 30 }, () => delegateMandate(agent, paidM, { agent: newKeyPair().publicKey, budgetUsd: '0.01' }));
+    const subPost = await post(`${SG}/.well-known/tab/revocations`, subs.map((m) => ({ revocation: signRevocation(agent, m.id), mandate: m })));
+    check('MEDIUM 3: revocations of sub-mandates never presented here are pending, not shared with peers', subPost.status === 200 && subPost.doc.results.every((r: any) => r.pending === true)
+      && fs8.revocationsAfter(0).length === 0 && fs8.pendingRevocationCount() === 30);
+    check('MEDIUM 3: revoking the paid mandate itself is shared', (await post(`${SG}/.well-known/tab/revocations`, signRevocation(owner, paidM.id))).doc.results[0].new === true && fs8.revocationsAfter(0).length === 1);
+    sg.close();
+
     let limited = 0;
     for (let i = 0; i < 6; i++) if ((await post(`${FG}/.well-known/tab/revocations`, signRevocation(owner, unseen.id))).status === 429) limited++;
     check('B4: revocation posts are rate limited per address', limited >= 3, { limited });
@@ -603,8 +655,12 @@ async function main(): Promise<void> {
     ps.rememberMandates(many); // as if each had paid here: their revocations are shared
     for (let i = 0; i < many.length; i += 100) await post(`${PA}/.well-known/tab/revocations`, many.slice(i, i + 100).map((m) => ({ revocation: signRevocation(owner, m.id), mandate: m })));
     const { server: pcg, url: PC } = await gatewayAt({ realm: 'c.local', recipient: seller.publicKey, services: [{ name: 'd', prefix: '', upstream: UP, routes: [{ method: 'GET', path: '/q', price: '0.01' }] }] }, { store: pc, revocationPeers: [PA], revocationPollMs: 200 });
-    for (let i = 0; i < 50 && pc.revocationsAfter(0, 1000).length < 650; i++) await sleep(100);
-    check('B5: a polling peer gets every revocation across pages', pc.revocationsAfter(0, 1000).length === 650 && (await json(await fetch(`${PC}/.well-known/tab/revocations/${many[649].id}`))).revoked === true, { a: ps.revocationsAfter(0, 1000).length, c: pc.revocationsAfter(0, 1000).length });
+    for (let i = 0; i < 50 && pc.pendingRevocationCount() < 650; i++) await sleep(100);
+    check('B5: a polling peer gets every revocation across pages (pending there, where none of them was paid under)', pc.pendingRevocationCount() === 650 && pc.revocationsAfter(0, 1000).length === 0
+      && (await json(await fetch(`${PC}/.well-known/tab/revocations/${many[649].id}`))).revoked === true, { a: ps.revocationsAfter(0, 1000).length, c: pc.pendingRevocationCount() });
+    pc.credit(owner.publicKey, usdToMicro('1.00'));
+    const polledAway = await new TabClient({ agent, mandate: many[3] }).fetch(`${PC}/q`);
+    check('LOW 6: a revocation polled without its mandate still stops that mandate when it is presented', polledAway.status === 402 && (await json(polledAway)).type === 'urn:tab:problem:mandate-revoked');
     pa.close(); pcg.close();
 
     // M4: the post limiter forgets the least recently seen address past its cap, never everyone at once

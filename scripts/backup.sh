@@ -4,6 +4,7 @@
 #   bash scripts/backup.sh --verify-only <file.tar.gz>
 # Databases are copied with SQLite's online backup API (node:sqlite), so a copy taken
 # while the gateways are serving is consistent. Keeps the last 30 archives.
+# TAB_BACKUP_EXTRA="path ..." adds more files: SQLite databases go through the backup API, anything else is copied.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 NODE="node --no-warnings=ExperimentalWarning"
@@ -15,7 +16,7 @@ verify() {
   tmp=$(mktemp -d)
   tar xzf "$archive" -C "$tmp"
   local ok=1
-  for db in "$tmp"/db/*.db; do
+  for db in "$tmp"/db/*.db "$tmp"/extra/*.db; do
     [ -e "$db" ] || continue
     if ! $NODE scripts/backup-sqlite.mjs check "$db"; then ok=0; fi
   done
@@ -40,8 +41,20 @@ for db in *.db; do
   $NODE scripts/backup-sqlite.mjs copy "$db" "$WORK/db/$db"
 done
 cp -p keys/*.json "$WORK/keys/"
+# the company's sealing key: without it the sealed model keys in company.db cannot be opened
+[ -e company.db.key ] && cp -p company.db.key "$WORK/keys/"
+if [ -d keys/try ]; then mkdir -p "$WORK/keys/try"; cp -p keys/try/*.json "$WORK/keys/try/"; fi
+mkdir -p "$WORK/extra"
+for f in ${TAB_BACKUP_EXTRA:-}; do
+  [ -e "$f" ] || { echo "  missing extra: $f"; continue; }
+  name=$(echo "$f" | sed 's|^/||; s|/|__|g')
+  case "$f" in
+    *.db) $NODE scripts/backup-sqlite.mjs copy "$f" "$WORK/extra/$name" ;;
+    *) cp -p "$f" "$WORK/extra/$name" ;;
+  esac
+done
 ARCHIVE="$OUT/tab-$STAMP.tar.gz"
-tar czf "$ARCHIVE" -C "$WORK" db keys
+tar czf "$ARCHIVE" -C "$WORK" db keys extra
 chmod 600 "$ARCHIVE"
 rm -rf "$WORK"
 echo "wrote $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"

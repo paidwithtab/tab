@@ -1,6 +1,6 @@
 {
   "name": "paidwithtab",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "mcpName": "io.github.paidwithtab/tab",
   "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402 and x402, spending capped by signed mandates, settled in USDG on Robinhood Chain. Zero runtime dependencies.",
   "type": "module",

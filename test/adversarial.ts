@@ -19,6 +19,8 @@ import { issueMandate, realmAllowed } from '../src/mandate.js';
 import { Store, CatalogStore } from '../src/store.js';
 import { createGateway, loadSpec, type Spec } from '../src/gateway.js';
 import { createCatalog } from '../src/catalog.js';
+import { LedgerRail } from '../src/rails/ledger.js';
+import { EvmRpc } from '../src/evm/rpc.js';
 import { TabClient, receiptOf, PaymentRefused } from '../src/client.js';
 
 let passed = 0;
@@ -285,12 +287,57 @@ async function main(): Promise<void> {
     check('upstream hanging: gateway times out, hold released', hang.status === 502 && ownerBal() === ownerBefore);
   }
 
+  {
+    // an upstream answer past the size cap is cut off and never paid for; the buyer's x402 headers never reach the upstream
+    let seen: Record<string, unknown> = {};
+    const big = createServer((req, res) => {
+      seen = req.headers;
+      const p = new URL(req.url ?? '/', 'http://x').pathname;
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      if (p === '/stream') { res.write('y'.repeat(800)); res.write('y'.repeat(800)); res.end(); return; }
+      res.end(p.startsWith('/big') ? 'x'.repeat(5_000) : 'ok');
+    });
+    const bigUp = `http://127.0.0.1:${await listen(big)}`;
+    const capStore = new Store(join(scratch, 'cap.db'));
+    capStore.credit(owner.publicKey, usdToMicro('1.00'));
+    const capSpec: Spec = { realm: 'adv.local', recipient: seller.publicKey, services: [{ name: 'c', prefix: '', upstream: bigUp, routes: [
+      { method: 'GET', path: '/big', price: '0.01' }, { method: 'GET', path: '/stream', price: '0.01' }, { method: 'GET', path: '/bigfree', price: '0' }, { method: 'GET', path: '/small', price: '0' },
+    ] }] };
+    const capGw = createGateway(capSpec, { store: capStore, maxUpstreamBytes: 1_000 });
+    const CG = `http://127.0.0.1:${await listen(capGw)}`;
+    const capM = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['adv.local'] });
+    const before = capStore.balance(owner.publicKey);
+    const paidBig = await new TabClient({ agent, mandate: capM }).fetch(`${CG}/big`);
+    const streamed = await new TabClient({ agent, mandate: capM }).fetch(`${CG}/stream`);
+    check('MEDIUM 4: a paid answer over the size cap is a 502 and nothing is charged (declared or streamed)', paidBig.status === 502 && streamed.status === 502
+      && capStore.balance(owner.publicKey) === before, { big: paidBig.status, stream: streamed.status });
+    check('MEDIUM 4: a free answer over the cap is a 502 too', (await fetch(`${CG}/bigfree`)).status === 502);
+    await fetch(`${CG}/small`, { headers: { 'payment-signature': 'buyer-auth', 'x-payment': 'buyer-auth' } });
+    check('LOW 7: payment-signature and x-payment are not forwarded to the upstream', seen['payment-signature'] === undefined && seen['x-payment'] === undefined);
+    capGw.close();
+    big.close();
+
+    // LOW 8: an RPC endpoint's URL (a key may sit in its path) never reaches an error a client sees,
+    // and wallet lookups on an evm gateway are rate limited per address
+    let rpcErr = '';
+    try { await new EvmRpc('http://127.0.0.1:1/v2/SECRETKEY', 2_000).call('eth_chainId'); } catch (e) { rpcErr = (e as Error).message; }
+    check('LOW 8: an RPC error names the host only', rpcErr.includes('127.0.0.1:1') && !rpcErr.includes('SECRETKEY'), rpcErr);
+    const evmStore = new Store(join(scratch, 'lookups.db'));
+    class EvmLike extends LedgerRail { readonly name = 'evm' as any; }
+    const lg = createGateway({ realm: 'adv.local', recipient: seller.publicKey, services: [] }, { store: evmStore, rail: new EvmLike(evmStore), lookupsPerMinute: 3 });
+    const LG = `http://127.0.0.1:${await listen(lg)}`;
+    const codes = [];
+    for (let i = 0; i < 5; i++) codes.push((await fetch(`${LG}/.well-known/tab/wallet/${owner.publicKey}`)).status);
+    check('LOW 8: wallet lookups on an evm gateway are rate limited per address', codes.slice(0, 3).every((c) => c !== 429) && codes.slice(3).every((c) => c === 429), codes);
+    lg.close();
+  }
+
   // ==========================================================================
   // F. catalog SSRF and hostile gateways
   // ==========================================================================
 
   {
-    const publicCat = createCatalog({ store: new CatalogStore(join(scratch, 'cat-public.db')) });
+    const publicCat = createCatalog({ store: new CatalogStore(join(scratch, 'cat-public.db')), announcesPerMinute: 100 });
     const catPort = await listen(publicCat);
     const CAT = `http://127.0.0.1:${catPort}`;
     const targets = [
@@ -316,7 +363,7 @@ async function main(): Promise<void> {
   }
 
   {
-    const devCat = createCatalog({ store: new CatalogStore(join(scratch, 'cat-dev.db')), allowPrivateOrigins: true });
+    const devCat = createCatalog({ store: new CatalogStore(join(scratch, 'cat-dev.db')), allowPrivateOrigins: true, announcesPerMinute: 100 });
     const catPort = await listen(devCat);
     const CAT = `http://127.0.0.1:${catPort}`;
     const announce = async (origin: string) =>
@@ -375,6 +422,35 @@ async function main(): Promise<void> {
     check('a bad max_price is a 400, not a crash', (await fetch(`${CAT}/v1/search?max_price=abc`)).status === 400);
     hostile.close();
     devCat.close();
+  }
+
+  {
+    // the catalog's own limits: announces per address, how many origins it keeps, and a smaller document for a newcomer
+    const doc = (realm: string, pad = 0) => JSON.stringify({ realm, services: [], pad: 'x'.repeat(pad) });
+    const small = createServer((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(doc('small')); });
+    const fat = createServer((_req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(doc('fat', 5_000_000)); });
+    const smallPort = await listen(small);
+    const fatPort = await listen(fat);
+    const cat = createCatalog({ store: new CatalogStore(join(scratch, 'cat-limits.db')), allowPrivateOrigins: true, announcesPerMinute: 3, maxOrigins: 1 });
+    const CAT = `http://127.0.0.1:${await listen(cat)}`;
+    const post = (origin: string) => fetch(`${CAT}/v1/announce`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ origin }) });
+    const first = await post(`http://127.0.0.1:${smallPort}`);
+    check('the first origin is kept', first.status === 200 && ((await first.json()) as any).ok === true);
+    const second = await post(`http://127.0.0.1:${fatPort}`);
+    check('past maxOrigins a new origin is refused, not fetched', second.status === 503);
+    await post(`http://127.0.0.1:${smallPort}`);
+    check('announces past the per address limit get 429', (await post(`http://127.0.0.1:${smallPort}`)).status === 429);
+    cat.close();
+    const cat2 = createCatalog({ store: new CatalogStore(join(scratch, 'cat-limits2.db')), allowPrivateOrigins: true });
+    const CAT2 = `http://127.0.0.1:${await listen(cat2)}`;
+    const fatRow = (await (await fetch(`${CAT2}/v1/announce`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ origin: `http://127.0.0.1:${fatPort}` }) })).json()) as any;
+    check('a newcomer\'s 5 MB discovery document is refused, and not kept', fatRow.ok === false && /large/.test(fatRow.error)
+      && ((await (await fetch(`${CAT2}/v1/catalog.json`)).json()) as any).gateways.length === 0);
+    const seeded = await (cat2 as any).announce(`http://127.0.0.1:${fatPort}`);
+    check('an origin the operator seeds gets the full document size', seeded.ok === true);
+    cat2.close();
+    small.close();
+    fat.close();
   }
 
   // ==========================================================================

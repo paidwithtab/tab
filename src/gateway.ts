@@ -278,6 +278,8 @@ export interface GatewayOptions {
   log?: (msg: string) => void;
   challengeTtlMs?: number; // default 120 s
   upstreamTimeoutMs?: number; // default 60 s
+  /** Largest upstream response body relayed, in bytes; a bigger one is cut off, its payment voided, 502. Default 32 MB. */
+  maxUpstreamBytes?: number;
   /**
    * Starter funds: credited once to any wallet that asks via POST /.well-known/tab/faucet, in the gateway's
    * currency. Per-address rate limited. Unset means no faucet. On the ledger rail it is a credit; on the evm
@@ -304,6 +306,12 @@ export interface GatewayOptions {
   revocationPostsPerMinute?: number;
   /** How many client addresses the post limiter remembers; the least recently seen go first. Default 10000. */
   rateBucketCap?: number;
+  /** Wallet balance and evm nonce lookups per minute per client address on an evm-rail gateway (each is an RPC call); default 300. */
+  lookupsPerMinute?: number;
+  /** Pending revocations (for mandates this gateway never saw) held at once; past it new ones are refused, none evicted. Default 200,000. */
+  pendingRevocationCap?: number;
+  /** Approvals one owner may have waiting at this gateway at once; default 200. */
+  approvalsPerOwner?: number;
   /** How often overdue escrows are refunded and expired channels settled; default 5 s. */
   sweepMs?: number;
   /** A payout that did not settle is tried again after this, doubling each time up to an hour; default 10 s. */
@@ -319,6 +327,8 @@ function escrowTerms(route: RouteSpec): { timeout_s: number } | null {
   return { timeout_s: t ?? 3600 };
 }
 
+/** A pending revocation (for a mandate this gateway never saw) is held at most this long. */
+const PENDING_DEFAULT_MS = 30 * 24 * 3_600_000;
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 const HOP_BY_HOP = new Set([
@@ -356,6 +366,31 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   const log = opts.log ?? (() => {});
   const ttlMs = opts.challengeTtlMs ?? 120_000;
   const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? 60_000;
+  const maxUpstreamBytes = opts.maxUpstreamBytes ?? 32 * 1024 * 1024;
+
+  /** An upstream body, read with a running cap: one huge answer must not take the gateway's memory with it. */
+  async function readUpstream(upstream: Response): Promise<Buffer> {
+    const declared = Number(upstream.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > maxUpstreamBytes) {
+      void upstream.body?.cancel().catch(() => {});
+      throw new Error(`upstream body is over the ${maxUpstreamBytes} byte cap`);
+    }
+    if (!upstream.body) return Buffer.alloc(0);
+    const reader = upstream.body.getReader();
+    const parts: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxUpstreamBytes) {
+        void reader.cancel().catch(() => {});
+        throw new Error(`upstream body is over the ${maxUpstreamBytes} byte cap`);
+      }
+      parts.push(value);
+    }
+    return Buffer.concat(parts, total);
+  }
   const faucetMicro = opts.faucetUsd != null ? usdToMicro(opts.faucetUsd) : 0;
   if (faucetMicro > 0 && rail.name !== 'ledger') {
     if (!opts.faucetKey) throw new Error('a faucet on the evm rail needs --faucet-key: the wallet that sends the tokens and the gas');
@@ -485,6 +520,13 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     // a channel deposit is paid to escrow, which x402 cannot express
     const offer = req && !terms.recipient ? x402Required(req, priceMicro, detail) : null;
     await respondProblem(res, code, detail, 402, chal, { ...(offer ? { 'payment-required': offer } : {}), ...extra }, members);
+  }
+
+  /** How long a pending revocation posted here is held: until the mandate expires, at most 30 days. */
+  function pendingUntil(expiresAt: string): string {
+    const cap = Date.now() + PENDING_DEFAULT_MS;
+    const t = Date.parse(expiresAt);
+    return new Date(Number.isNaN(t) ? cap : Math.min(t, cap)).toISOString();
   }
 
   /** The first revoked mandate in a chain, as a PayError; null when none is. */
@@ -678,7 +720,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     for (const [k, v] of Object.entries(req.headers)) {
       if (v === undefined) continue;
       const key = k.toLowerCase();
-      if (['host', 'connection', 'content-length', 'transfer-encoding', 'authorization', 'expect', 'keep-alive'].includes(key)) continue;
+      // payment-signature and x-payment carry the buyer's x402 authorization: an upstream holding it could settle it first
+      if (['host', 'connection', 'content-length', 'transfer-encoding', 'authorization', 'expect', 'keep-alive', 'payment-signature', 'x-payment'].includes(key)) continue;
       if (key.startsWith('tab-')) continue; // only the gateway names the payer, owner and hold
       headers[key] = Array.isArray(v) ? v.join(', ') : v;
     }
@@ -715,7 +758,13 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       headers[k] = v;
     });
     Object.assign(headers, CORS, extra);
-    const body = read ?? Buffer.from(await upstream.arrayBuffer());
+    let body: Buffer;
+    try {
+      body = read ?? await readUpstream(upstream);
+    } catch (err) {
+      await respondProblem(res, 'upstream-failed', `upstream body failed: ${(err as Error).message}`, 502, undefined, extra);
+      return;
+    }
     res.writeHead(upstream.status, headers);
     res.end(body);
   }
@@ -1013,7 +1062,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     let delivered: Buffer;
     try {
       upstream = await forwardUpstream(req, forwardBody, match, search, holdLike, { 'tab-channel': c.id });
-      delivered = Buffer.from(await upstream.arrayBuffer());
+      delivered = await readUpstream(upstream);
     } catch (err) {
       store.channelSettleCall(c.id, priceMicro, 0);
       await respondProblem(res, 'upstream-failed', `upstream unreachable: ${(err as Error).message}`, 502);
@@ -1095,6 +1144,23 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     return true;
   }
 
+  // wallet and nonce lookups on the evm rail are RPC calls: a bucket per client address keeps one client from spending the quota
+  const lookupBuckets = new Map<string, { tokens: number; at: number }>();
+  function lookupAllowed(ip: string): boolean {
+    if (rail.name !== 'evm') return true;
+    const perMinute = opts.lookupsPerMinute ?? 300;
+    const now = Date.now();
+    const b = lookupBuckets.get(ip) ?? { tokens: perMinute, at: now };
+    b.tokens = Math.min(perMinute, b.tokens + ((now - b.at) * perMinute) / 60_000);
+    b.at = now;
+    lookupBuckets.delete(ip);
+    lookupBuckets.set(ip, b);
+    while (lookupBuckets.size > (opts.rateBucketCap ?? 10_000)) lookupBuckets.delete(lookupBuckets.keys().next().value!);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
   // poll the peers' revocation lists, from the last sequence number read from each
   const peerCursor = new Map<string, number>();
   async function pollPeers(): Promise<void> {
@@ -1105,13 +1171,22 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           const after = peerCursor.get(origin) ?? 0;
           const r = await fetch(`${origin}/.well-known/tab/revocations?after=${after}`, { signal: AbortSignal.timeout(5_000) });
           if (!r.ok) break;
-          const doc = (await r.json()) as { revocations?: Array<Revocation & { seq?: number; mandate_doc?: unknown }> };
+          const doc = (await r.json()) as { revocations?: Array<Revocation & { seq?: number; expires_at?: string | null }> };
           const rows = doc.revocations ?? [];
           const ok: Array<{ revocation: Revocation; mandate: Mandate }> = [];
+          const at = new Date().toISOString();
           for (const x of rows) {
-            const { seq: _s, mandate_doc, received_at: _r, ...rev } = x as Revocation & { seq?: number; mandate_doc?: unknown; received_at?: string };
-            const c = checkRevocation(rev as Revocation, mandate_doc ?? undefined);
-            if ('mandate' in c) ok.push({ revocation: rev as Revocation, mandate: c.mandate });
+            // a peer serves the revocation alone: kept in full when this gateway was paid under that mandate
+            // (checked against it here), otherwise pending, checked against the mandate when it is presented
+            const rev: Revocation = { ver: x.ver, mandate: x.mandate, by: x.by, revoked_at: x.revoked_at, ...(x.reason !== undefined ? { reason: x.reason } : {}), sig: x.sig };
+            if (!verifyRevocation(rev)) continue;
+            if (store.seenMandate(rev.mandate)) {
+              const c = checkRevocation(rev);
+              if ('mandate' in c) ok.push({ revocation: rev, mandate: c.mandate });
+              continue;
+            }
+            const until = typeof x.expires_at === 'string' && !Number.isNaN(Date.parse(x.expires_at)) ? x.expires_at : new Date(Date.now() + PENDING_DEFAULT_MS).toISOString();
+            if (store.addPendingRevocation(rev, until, at, opts.pendingRevocationCap) === null) log(`pending revocation table full: dropped ${rev.mandate} from ${origin}`);
           }
           if (ok.length) takeRevocations(ok, false);
           const last = rows.at(-1)?.seq;
@@ -1205,6 +1280,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       }
       if (pathname.startsWith('/.well-known/tab/wallet/') && method === 'GET') {
         const wallet = pathname.slice('/.well-known/tab/wallet/'.length);
+        if (!lookupAllowed(clientIp(req))) { sendJson(res, 429, { error: 'too many lookups from this address; retry in a minute' }); return; }
         try {
           const micro = await rail.balance(wallet);
           sendJson(res, 200, { wallet, rail: rail.name, currency: spec.currency ?? 'USD', available: microToUsd(micro), micro });
@@ -1215,6 +1291,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       }
       if (pathname.startsWith('/.well-known/tab/evm/nonce/') && method === 'GET' && rail.accountNonce) {
         const address = pathname.slice('/.well-known/tab/evm/nonce/'.length);
+        if (!lookupAllowed(clientIp(req))) { sendJson(res, 429, { error: 'too many lookups from this address; retry in a minute' }); return; }
         try {
           sendJson(res, 200, { address: address.toLowerCase(), nonce: await rail.accountNonce(address) });
         } catch (err) {
@@ -1346,26 +1423,31 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           const supplied = x && typeof x === 'object' && 'revocation' in x ? x.mandate : undefined;
           return { r, c: checkRevocation(r, supplied) };
         });
-        // a revocation for a chain this gateway was paid under is kept and shared; one for a chain it never
-        // saw (anyone can mint a mandate and revoke it) goes to a small capped table, not to peers
+        // a revocation of a mandate this gateway was paid under is kept and shared; one for a mandate it never
+        // saw (anyone can mint mandates, and sub-mandates under a paid one, and revoke them) is held pending, not
+        // shared, until that mandate is presented here
         const valid = checked.filter((x) => 'mandate' in x.c).map((x) => ({ revocation: x.r, mandate: (x.c as { mandate: Mandate }).mandate }));
-        const known = valid.filter((x) => mandateChain(x.mandate).some((m) => store.seenMandate(m.id)));
+        const known = valid.filter((x) => store.seenMandate(x.mandate.id));
         const fresh = known.length ? takeRevocations(known) : [];
         const at = new Date().toISOString();
+        let full = false;
         const results = checked.map((x) => {
           if (!('mandate' in x.c)) return { mandate: x.r?.mandate ?? null, error: (x.c as { error: string }).error };
           const k = known.findIndex((y) => y.revocation === x.r);
           if (k >= 0) return { mandate: x.r.mandate, by: x.r.by, new: fresh[k] };
           const m = (x.c as { mandate: Mandate }).mandate;
-          return { mandate: x.r.mandate, by: x.r.by, new: store.addPendingRevocation(x.r, m, m.expires_at, at), pending: true };
+          const added = store.addPendingRevocation(x.r, pendingUntil(m.expires_at), at, opts.pendingRevocationCap);
+          if (added === null) { full = true; return { mandate: x.r.mandate, by: x.r.by, error: 'this gateway holds too many pending revocations; post it with the mandate at a gateway that was paid under it' }; }
+          return { mandate: x.r.mandate, by: x.r.by, new: added, pending: true };
         });
-        sendJson(res, results.some((x) => 'error' in x) && list.length === 1 ? 400 : 200, { results });
+        sendJson(res, full ? 503 : results.some((x) => 'error' in x) && list.length === 1 ? 400 : 200, { results });
         return;
       }
       if (pathname === '/.well-known/tab/revocations' && method === 'GET') {
         const after = Number(u.searchParams.get('after') ?? 0) || 0;
         const rows = store.revocationsAfter(after, Number(u.searchParams.get('limit') ?? 500) || 500);
-        sendJson(res, 200, { realm: spec.realm, revocations: rows.map((r) => ({ ...r.revocation, seq: r.seq, received_at: r.received_at, mandate_doc: r.mandate })) });
+        // the revoked mandate's terms stay here: its keys, limits and parent chain are nobody else's business
+        sendJson(res, 200, { realm: spec.realm, revocations: rows.map((r) => ({ ...r.revocation, seq: r.seq, received_at: r.received_at, expires_at: (r.mandate as Mandate | null)?.expires_at ?? null })) });
         return;
       }
       if (pathname.startsWith('/.well-known/tab/revocations/') && method === 'GET') {
@@ -1394,6 +1476,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         if (!store.ownerSeen(doc.request.owner)) { sendJson(res, 400, { error: 'this gateway has not been paid under any mandate of that owner; attach the approval to the retry instead' }); return; }
         store.pruneApprovals(new Date().toISOString());
         if (store.approvalCount() >= 5_000) { sendJson(res, 503, { error: 'too many approvals waiting here; attach this one to the retry instead' }); return; }
+        // and one owner cannot take the whole table: a few hundred waiting approvals each
+        if (!store.approvalFor(doc.request.id) && store.approvalCountOf(doc.request.owner) >= (opts.approvalsPerOwner ?? 200)) { sendJson(res, 503, { error: 'too many of this owner\'s approvals are waiting here; attach this one to the retry instead' }); return; }
         store.putApproval(doc.request.id, doc.approval!);
         log(`approval for ${doc.request.resource} ${fmt(Number(doc.request.amount))} by ${doc.request.owner}`);
         sendJson(res, 200, { ok: true, request: doc.request.id, expires_at: doc.approval!.expires_at });
@@ -1580,7 +1664,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         // the root, when nothing is priced there: a page for a person, the terms for a program
         const origin = (opts.origin ?? `https://${spec.realm}`).replace(/\/$/, '');
         if (/text\/html/.test(String(req.headers.accept ?? ''))) {
-          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'max-age=300' });
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'max-age=300', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'", 'referrer-policy': 'strict-origin-when-cross-origin' });
           res.end(homePage(discovery(), origin));
         } else {
           sendJson(res, 200, { realm: spec.realm, terms: `${origin}/.well-known/tab`, catalog: 'https://paidwithtab.com/catalog', routes: spec.services.reduce((n, sv) => n + sv.routes.length, 0) });
@@ -1672,7 +1756,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         }
         let delivered: Buffer;
         try {
-          delivered = Buffer.from(await upstream.arrayBuffer());
+          delivered = await readUpstream(upstream);
         } catch (err) {
           await releaseHold(hold);
           await respondProblem(res, 'upstream-failed', `upstream body failed: ${(err as Error).message}`, 502);
@@ -1782,7 +1866,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         let delivered: Buffer;
         void 0;
         try {
-          delivered = Buffer.from(await upstream.arrayBuffer());
+          delivered = await readUpstream(upstream);
         } catch (err) {
           await releaseHold(hold);
           await respondProblem(res, 'upstream-failed', `upstream body failed: ${(err as Error).message}`, 502);

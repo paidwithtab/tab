@@ -61,12 +61,12 @@ const USAGE = `tab ${VERSION_STRING}: a payment gateway for software agents (HTT
                     approve one payment above a mandate's threshold; the agent's retry goes through
   tab mint    --wallet <pub|file> --amount 5.00 [--db tab.db]
   tab balance --wallet <pub|file> [--db tab.db]
-  tab serve   --spec spec.json [--db tab.db] [--port 1402] [--announce http://catalog:1403] [--origin url] [--x402-settler key.json] [--upstream-timeout s] [--faucet amount [--faucet-key key.json --faucet-gas eth]]
+  tab serve   --spec spec.json [--db tab.db] [--port 1402] [--listen 127.0.0.1] [--announce http://catalog:1403] [--origin url] [--x402-settler key.json] [--upstream-timeout s] [--faucet amount [--faucet-key key.json --faucet-gas eth]]
               [--peer https://other-gateway]...   share revocations with other gateways
               [--escrow-key key.json]   evm rail: the address that holds pay-on-delivery orders and channel deposits
               [--faucet 1.00]   ledger rail: starter credits any wallet can claim once
               [--faucet-per-ip 20]   claims per address per day (a hosted company server claims for all its users from one)
-  tab catalog serve [--db catalog.db] [--port 1403] [--try-agent key.json --try-mandate mandate.json]
+  tab catalog serve [--db catalog.db] [--port 1403] [--listen 127.0.0.1] [--try-agent key.json --try-mandate mandate.json]
                     [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
   tab evm address <key.json>                                          key file -> 0x address
   tab evm approve --owner key.json --agent <key.json|0x> --amount 1.00 --token <0x> [--rpc url]
@@ -236,6 +236,7 @@ async function main(): Promise<void> {
         spec: { type: 'string' },
         db: { type: 'string', default: 'tab.db' },
         port: { type: 'string', default: '1402' },
+        listen: { type: 'string' },
         announce: { type: 'string' },
         origin: { type: 'string' },
         faucet: { type: 'string' },
@@ -264,8 +265,9 @@ async function main(): Promise<void> {
         escrowKey: values['escrow-key'] ? loadKey(values['escrow-key'] as string) : undefined,
       });
       const port = Number(values.port);
-      server.listen(port, () => {
-        log(`gateway for realm ${spec.realm} (${spec.rail ?? 'ledger'} rail) listening on :${port}, db ${values.db}${values.faucet ? `, faucet ${values.faucet}` : ''}${x402Settler ? `, x402 settled by ${addressFromSeed(new Uint8Array(Buffer.from(x402Settler.privateKey, 'base64url')))}` : ''}`);
+      // --listen 127.0.0.1 keeps the gateway off every other interface when a tunnel or proxy fronts it
+      server.listen(port, values.listen as string | undefined, () => {
+        log(`gateway for realm ${spec.realm} (${spec.rail ?? 'ledger'} rail) listening on ${values.listen ?? ''}:${port}, db ${values.db}${values.faucet ? `, faucet ${values.faucet}` : ''}${x402Settler ? `, x402 settled by ${addressFromSeed(new Uint8Array(Buffer.from(x402Settler.privateKey, 'base64url')))}` : ''}`);
         if (values.announce) {
           const origin = (values.origin as string) ?? `http://127.0.0.1:${port}`;
           void announce(values.announce as string, origin, log);
@@ -279,6 +281,7 @@ async function main(): Promise<void> {
       const { values } = opts(rest.slice(1), {
         db: { type: 'string', default: 'catalog.db' },
         port: { type: 'string', default: '1403' },
+        listen: { type: 'string' },
         'try-agent': { type: 'string' },
         'try-mandate': { type: 'string' },
         'try-max-per-call': { type: 'string' },
@@ -304,8 +307,8 @@ async function main(): Promise<void> {
         log,
       });
       const port = Number(values.port);
-      server.listen(port, () => {
-        log(`catalog listening on :${port}, db ${values.db}${tryAgent ? ', try-it enabled' : ''}`);
+      server.listen(port, values.listen as string | undefined, () => {
+        log(`catalog listening on ${values.listen ?? ''}:${port}, db ${values.db}${tryAgent ? ', try-it enabled' : ''}`);
         for (const origin of (values.seed as string[] | undefined) ?? []) {
           void (server as any).announce(origin.replace(/\/$/, ''));
         }

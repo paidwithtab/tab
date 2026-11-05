@@ -220,7 +220,8 @@ export function createTabTools(opts: TabToolOptions): { list: ToolSpec[]; call: 
               }, true);
             }
             const ticket = escrowOf(r);
-            if (ticket) await opts.onEscrow?.(ticket, String(args.url));
+            // only a call the agent placed pay on delivery is an order
+            if (ticket && args.escrow === true) await opts.onEscrow?.(ticket, String(args.url));
             const bytes = new Uint8Array(await r.arrayBuffer());
             const bodyText = new TextDecoder().decode(bytes);
             const receipt = receiptOf(r);

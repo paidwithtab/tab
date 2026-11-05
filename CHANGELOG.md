@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.0.1 (2026-11)
+
+Security release from a full audit of the gateway, tab OS and the deployment. Wire compatible with 3.0.0.
+
+- **Client: a challenge is paid only to the realm it came from.** A 402 claiming another realm than the host fetched is refused before anything is signed (loopback and `.local` hosts excepted). On the evm rail every signed transfer is counted against the whole mandate chain before it leaves. Before, a hostile site could answer with an allowed gateway's realm and collect signed transfers.
+- **Revocations hold under load.** Pending revocations are never evicted (a flood used to push out a real one and bring a revoked mandate back), are kept compactly for at most 30 days, and a full table refuses new entries with 503. A revocation counts as known only for a mandate this gateway was paid under; peer rows are checked the same way.
+- **The revocation list no longer publishes mandate terms.** Peers configured with `--peer` still receive the full document.
+- **Bounded upstream bodies.** Upstream answers are streamed with a 32 MB cap (`maxUpstreamBytes`); past it the call is a 502 and nothing is charged.
+- **Catalog announces are limited**: per IP rate, at most 2,000 origins, failed newcomers are not stored, refresh runs 8 at a time, and a newcomer's discovery document is capped at 4 MB.
+- **Smaller fixes.** `payment-signature` and `x-payment` are not forwarded upstream. RPC errors name the host only, and evm wallet and nonce lookups are rate limited. At most 200 approvals may wait per owner. Gateway home pages send `nosniff`, `frame-ancestors 'none'` and a referrer policy. `tab serve` and `tab catalog serve` take `--listen 127.0.0.1`.
+- **tab OS.** Orders count only at the company's own gateways, so a page an agent fetches can no longer claim a refund and erase spend from the books. A ticket done or cancelled stays that way when a late run reports, and only the assignee (or the colleague a ticket was handed to) moves a ticket; a mentioned colleague adds evidence. A payment approved while the asking run is still finishing is no longer lost. The runs per ticket per hour cap applies to every ticket, not only those with a budget. Starter credits go to at most two companies per account and gateway, and to a capped number a day.
+
 ## 3.0.0 (2026-11)
 
 Control after the mandate is signed. Protocol draft 0.7; the wire version stays `tab/0` and every new member is optional, so 2.x mandates, credentials, receipts and clients keep working unchanged.

@@ -418,6 +418,23 @@ export class CompanyStore {
       .map((r) => this.rowToCompany(r));
   }
 
+  /** Starter credits granted, per gateway: to one user's companies (all time) and to everyone (since a time). */
+  creditsGranted(userId: string, since: string): { mine: Map<string, number>; all: number } {
+    const rows = this.db.prepare("SELECT e.body, e.at, c.user_id FROM events e JOIN companies c ON c.id = e.company_id WHERE e.kind = 'fund' AND (c.user_id = ? OR e.at >= ?)").all(userId, since) as Array<{ body: string; at: string; user_id: string }>;
+    const mine = new Map<string, number>();
+    let all = 0;
+    for (const r of rows) {
+      try {
+        for (const x of (JSON.parse(r.body) as { results?: Array<{ origin?: string; status?: number }> }).results ?? []) {
+          if (x.status !== 200 || !x.origin) continue;
+          if (r.user_id === userId) mine.set(x.origin, (mine.get(x.origin) ?? 0) + 1);
+          if (r.at >= since) all++;
+        }
+      } catch { /* not a funding row */ }
+    }
+    return { mine, all };
+  }
+
   allCompanies(): CompanyRow[] {
     return (this.db.prepare('SELECT * FROM companies ORDER BY created_at').all() as Record<string, unknown>[])
       .map((r) => this.rowToCompany(r));

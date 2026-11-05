@@ -38,10 +38,17 @@ export interface CatalogOptions {
    * at internal infrastructure or cloud metadata services (SSRF).
    */
   allowPrivateOrigins?: boolean;
+  /** Most origins the catalog keeps; an announce of a new one past it is refused. Default 2,000. */
+  maxOrigins?: number;
+  /** Announces (and refresh requests) per minute per client address; default 10. */
+  announcesPerMinute?: number;
   log?: (msg: string) => void;
 }
 
 const MAX_DISCOVERY_BYTES = 16_000_000; // about 40,000 routes
+// an origin the catalog has never fetched successfully gets a smaller document: today's largest gateway is about 2 MB
+const MAX_NEW_DISCOVERY_BYTES = 4_000_000;
+const REFRESH_CONCURRENCY = 8;
 
 /**
  * SSRF gate for announced origins: the hostname, or every address it resolves to, must be
@@ -214,20 +221,20 @@ export function createCatalog(opts: CatalogOptions): Server {
         })
       : null;
 
-  async function fetchGateway(origin: string): Promise<GatewayRow> {
+  async function fetchGateway(origin: string, maxBytes = MAX_DISCOVERY_BYTES): Promise<GatewayRow> {
     const now = new Date().toISOString();
     try {
       if (!opts.allowPrivateOrigins) {
         const pub = await originIsPublic(origin);
         if (!pub.ok) throw new Error(`refused: ${pub.reason}`);
       }
-      const res = await egress(MAX_DISCOVERY_BYTES, 10_000)(origin.replace(/\/$/, '') + '/.well-known/tab', {
+      const res = await egress(maxBytes, 10_000)(origin.replace(/\/$/, '') + '/.well-known/tab', {
         signal: AbortSignal.timeout(10_000),
         redirect: 'error',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const text = await res.text();
-      if (text.length > MAX_DISCOVERY_BYTES) throw new Error('discovery document too large');
+      if (text.length > maxBytes) throw new Error('discovery document too large');
       const doc = JSON.parse(text) as Record<string, unknown>;
       if (typeof doc.realm !== 'string' || !Array.isArray(doc.services)) {
         throw new Error('not a tab discovery document');
@@ -240,17 +247,48 @@ export function createCatalog(opts: CatalogOptions): Server {
     }
   }
 
-  async function announce(origin: string): Promise<GatewayRow> {
-    const row = await fetchGateway(origin);
-    store.put(row);
+  /**
+   * Fetch an origin's discovery document and keep it. An origin that has answered before (or a seed the
+   * operator named) keeps the full document size; a new one gets a smaller cap, and is not kept at all
+   * unless it answers, so failed announces cannot pile up rows that every refresh fetches again.
+   */
+  async function announce(origin: string, trusted = false): Promise<GatewayRow> {
+    const known = store.all().find((r) => r.origin === origin);
+    const proven = trusted || !!known?.last_ok_at;
+    const row = await fetchGateway(origin, proven ? MAX_DISCOVERY_BYTES : MAX_NEW_DISCOVERY_BYTES);
+    if (row.ok || proven) store.put(row);
+    else if (known) store.remove(origin);
     log(`announce ${origin}: ${row.ok ? 'ok' : `failed (${row.error})`}`);
     return row;
   }
 
   async function refreshAll(): Promise<number> {
     const rows = store.all();
-    await Promise.all(rows.map((r) => announce(r.origin)));
+    // a few at a time: every document is held while it parses, so all at once would hold them all
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(REFRESH_CONCURRENCY, rows.length) }, async () => {
+      while (next < rows.length) await announce(rows[next++].origin);
+    }));
     return rows.length;
+  }
+
+  // announces and refresh requests per client address: a bucket of announcesPerMinute
+  const buckets = new Map<string, { tokens: number; at: number }>();
+  function allowed(req: IncomingMessage): boolean {
+    const peer = req.socket.remoteAddress ?? '';
+    const viaLocalProxy = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+    const ip = (viaLocalProxy ? String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? peer) : peer).split(',')[0].trim();
+    const perMinute = opts.announcesPerMinute ?? 10;
+    const now = Date.now();
+    const b = buckets.get(ip) ?? { tokens: perMinute, at: now };
+    b.tokens = Math.min(perMinute, b.tokens + ((now - b.at) * perMinute) / 60_000);
+    b.at = now;
+    buckets.delete(ip);
+    buckets.set(ip, b);
+    while (buckets.size > 10_000) buckets.delete(buckets.keys().next().value!);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
   }
 
   const server = createServer(async (req, res) => {
@@ -419,6 +457,7 @@ export function createCatalog(opts: CatalogOptions): Server {
       }
 
       if (method === 'POST' && path === '/v1/announce') {
+        if (!allowed(req)) { sendJson(res, 429, { error: 'too many announces from this address; retry in a minute' }); return; }
         const body = await readJson(req);
         if (typeof body.origin !== 'string' || !/^https?:\/\//.test(body.origin)) {
           sendJson(res, 400, { error: 'origin must be an http(s) URL' });
@@ -433,12 +472,17 @@ export function createCatalog(opts: CatalogOptions): Server {
             return;
           }
         }
+        if (!store.all().some((r) => r.origin === origin) && store.count() >= (opts.maxOrigins ?? 2_000)) {
+          sendJson(res, 503, { error: 'the catalog is full; open an issue to be listed' });
+          return;
+        }
         const row = await announce(origin);
         sendJson(res, 200, { origin: row.origin, ok: row.ok, error: row.error });
         return;
       }
 
       if (method === 'POST' && path === '/v1/refresh') {
+        if (!allowed(req)) { sendJson(res, 429, { error: 'too many refresh requests from this address; retry in a minute' }); return; }
         const n = await refreshAll();
         sendJson(res, 200, { refreshed: n });
         return;
@@ -586,7 +630,8 @@ export function createCatalog(opts: CatalogOptions): Server {
   timer.unref();
   server.on('close', () => clearInterval(timer));
 
-  (server as any).announce = announce; // used by --seed and tests
+  // --seed and tests: an origin the operator names is trusted with the full document size
+  (server as any).announce = (origin: string) => announce(origin, true);
   return server;
 }
 
