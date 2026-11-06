@@ -27,6 +27,7 @@
   "scripts": {
     "cli": "node --no-warnings=ExperimentalWarning --import tsx src/cli.ts",
     "build": "tsc",
+    "prepare": "tsc",
     "test": "node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts",
     "test:adversarial": "node --no-warnings=ExperimentalWarning --import tsx test/adversarial.ts",
     "test:v3": "node --no-warnings=ExperimentalWarning --import tsx test/v3.ts",
