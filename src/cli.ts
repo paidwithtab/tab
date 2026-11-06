@@ -16,7 +16,12 @@ import { Store, CatalogStore } from './store.js';
 import { loadSpec, createGateway, announce } from './gateway.js';
 import { createCatalog } from './catalog.js';
 import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf, approvalRequestOf, type EscrowTicket } from './client.js';
-import { runMcpServer } from './mcp.js';
+import { runMcpServer, serveMcpStdio } from './mcp.js';
+import { connectTools, serveMcpHttp, listMcpTools } from './mcp-bridge.js';
+import { signListing, mcpToolPath, LISTING_PATH, LISTING_LIMITS, type ListingRoute } from './listings.js';
+import { signAlertSub, ALERTS_PATH } from './alerts.js';
+import { randomBytes } from 'node:crypto';
+import { saveProof, verifyProof, listProofs } from './proof.js';
 import { addressFromSeed, checksumAddress } from './evm/secp256k1.js';
 import { EvmRpc } from './evm/rpc.js';
 import { evmSend } from './evm/send.js';
@@ -63,6 +68,8 @@ const USAGE = `tab ${VERSION_STRING}: a payment gateway for software agents (HTT
   tab balance --wallet <pub|file> [--db tab.db]
   tab serve   --spec spec.json [--db tab.db] [--port 1402] [--listen 127.0.0.1] [--announce http://catalog:1403] [--origin url] [--x402-settler key.json] [--upstream-timeout s] [--faucet amount [--faucet-key key.json --faucet-gas eth]]
               [--peer https://other-gateway]...   share revocations with other gateways
+              [--listings]   take hosted listings sellers sign and post (tab sell)
+              [--alerts]     send owners the spend alerts they subscribe to (tab alerts)
               [--escrow-key key.json]   evm rail: the address that holds pay-on-delivery orders and channel deposits
               [--faucet 1.00]   ledger rail: starter credits any wallet can claim once
               [--faucet-per-ip 20]   claims per address per day (a hosted company server claims for all its users from one)
@@ -85,8 +92,21 @@ const USAGE = `tab ${VERSION_STRING}: a payment gateway for software agents (HTT
   tab channel open  --gateway url --deposit 1.00 [--ttl seconds]   one deposit, then vouchers per call
   tab channel list
   tab channel close --gateway url                                  settle: spent to the seller, the rest back
+  tab verify <proof folder | receipt.json> [--body file] [--key receipt-key] [--offline] [--json]
+            check a purchase: gateway signature and key, body hash, request, the agent's own authorization, the mandate
+  tab receipts [--dir ~/.tab/receipts] [--limit 20]      paid calls kept as proof folders
+  tab sell <https upstream> --price 0.01 [--name] [--slug] [--description] [--route "GET /path [price]"]... [--gateway url]
+            list your API on a hosted gateway, paid to your own wallet; no server of your own
+  tab sell <MCP server URL> --mcp --price 0.01 [--tool-price name=0.02]...   one paid route per tool
+  tab sell list [--gateway url]          tab sell remove <slug> [--gateway url]
+  tab alerts set (--url https://... | --ntfy) [--at 50,90,100] [--daily] [--gateway url]...
+            be told when an agent reaches a share of its budget, and a daily statement
+  tab alerts off [--gateway url]...
   tab version
-  tab mcp   (env: TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CURRENCY], [TAB_CATALOG], [TAB_ALLOW_DELEGATE=1])
+  tab mcp   (env: TAB_AGENT, TAB_MANDATE, [TAB_MAX_PER_CALL], [TAB_CURRENCY], [TAB_CATALOG], [TAB_ALLOW_DELEGATE=1], [TAB_PROOFS=dir|off])
+            sets itself up on first launch (keys, a $1/day mandate, starter credits) when tab init never ran
+  tab mcp connect <listing url>          a hosted listing's routes as MCP tools, paid per call
+  tab mcp http [--port 8808] [--listen 127.0.0.1] [--path /mcp] -- <command> [args]   a stdio MCP server over HTTP, to sell it
   tab company serve|signup|login|new|fund|hire|ticket|comment|approve|pause|resume|budget|status|key
             a company of agents with tab as its money layer; tab company --help for the flags
 
@@ -94,7 +114,7 @@ const USAGE = `tab ${VERSION_STRING}: a payment gateway for software agents (HTT
   unless --currency or TAB_CURRENCY names the token a gateway charges in.
 `;
 
-export const PUBLIC_GATEWAY = 'https://pay.paidwithtab.com';
+export const PUBLIC_GATEWAY = process.env.TAB_GATEWAY || 'https://pay.paidwithtab.com';
 export const PUBLIC_CATALOG = 'https://paidwithtab.com';
 const TAB_HOME = process.env.TAB_HOME || join(homedir(), '.tab');
 
@@ -248,6 +268,8 @@ async function main(): Promise<void> {
         // seconds the upstream may take; a service whose work takes minutes (an agent team) needs more than the default 60
         'upstream-timeout': { type: 'string' },
         peer: { type: 'string', multiple: true },
+        listings: { type: 'boolean', default: false },
+        alerts: { type: 'boolean', default: false },
         'escrow-key': { type: 'string' },
       });
       if (!values.spec) die('--spec is required');
@@ -261,6 +283,8 @@ async function main(): Promise<void> {
         faucetPerIpPerDay: values['faucet-per-ip'] ? Math.max(1, Number(values['faucet-per-ip']) || 20) : undefined,
         origin: values.origin as string | undefined,
         upstreamTimeoutMs: values['upstream-timeout'] ? Math.max(1, Number(values['upstream-timeout']) || 60) * 1000 : undefined,
+        listings: values.listings as boolean,
+        alerts: values.alerts as boolean,
         revocationPeers: (values.peer as string[] | undefined)?.map((p) => p.replace(/\/$/, '')),
         escrowKey: values['escrow-key'] ? loadKey(values['escrow-key'] as string) : undefined,
       });
@@ -408,6 +432,10 @@ async function main(): Promise<void> {
           const check = await client.verify(positionals[0], res, bytes, init);
           const via = receipt.channel ? ` from channel ${receipt.channel.id}, ${formatAmount(Number(receipt.channel.spent ?? 0), receipt.currency)} spent on it` : '';
           log(`paid ${formatAmount(Number(receipt.amount), receipt.currency)} (${receipt.ref})${via}, receipt ${check?.ok ? 'verified' : `NOT verified: ${check?.reason}`}`);
+          if (process.env.TAB_PROOFS !== 'off') {
+            const kept = saveProof(process.env.TAB_PROOFS || join(dirname(files.mandate), 'receipts'), { url: positionals[0], method: String(init.method ?? 'GET'), body: typeof init.body === 'string' ? init.body : undefined }, { status: res.status, contentType: res.headers.get('content-type') }, bytes, receipt, loadMandate(files.mandate));
+            if (kept) log(`proof kept in ${kept.dir} (check it with: tab verify ${kept.dir})`);
+          }
         }
         process.stdout.write(body.endsWith('\n') || body === '' ? body : body + '\n');
         process.exit(res.ok ? 0 : 1);
@@ -420,7 +448,54 @@ async function main(): Promise<void> {
       }
     }
 
+    case 'sell':
+      await sellCommand(rest);
+      return;
+
+    case 'alerts':
+      await alertsCommand(rest);
+      return;
+
+    case 'verify': {
+      const { values, positionals } = opts(rest, { body: { type: 'string' }, key: { type: 'string' }, offline: { type: 'boolean', default: false }, json: { type: 'boolean', default: false } }, true);
+      if (positionals.length !== 1) die('usage: tab verify <proof folder | receipt.json> [--body file] [--key receipt-key] [--offline] [--json]');
+      const report = await verifyProof(resolve(positionals[0]), {
+        bodyPath: values.body as string | undefined,
+        key: values.key as string | undefined,
+        publishedKey: values.offline ? undefined : publishedReceiptKey,
+      });
+      if (values.json) console.log(JSON.stringify(report, null, 2));
+      else {
+        const s = report.summary;
+        console.log(`${s.realm}${s.resource.replace(/^[A-Z]+ /, ' ')}: ${formatAmount(Number(s.amount), s.currency)} at ${s.at} (${s.ref})`);
+        for (const c of report.checks) console.log(`  ${c.ok === true ? 'ok  ' : c.ok === false ? 'FAIL' : '--  '} ${c.name.padEnd(20)} ${c.detail ?? ''}`);
+        console.log(report.ok ? 'proof holds' : 'proof does NOT hold');
+      }
+      process.exit(report.ok ? 0 : 1);
+    }
+
+    case 'receipts': {
+      const { values } = opts(rest, { dir: { type: 'string' }, limit: { type: 'string', default: '20' } });
+      const root = (values.dir as string) || process.env.TAB_PROOFS || join(TAB_HOME, 'receipts');
+      const all = listProofs(root);
+      if (!all.length) { console.log(`no proofs in ${root} yet; paid calls from tab fetch and the MCP server are kept there`); return; }
+      for (const d of all.slice(0, Number(values.limit))) {
+        const r = JSON.parse(readFileSync(join(d, 'receipt.json'), 'utf8')) as { realm: string; resource: string; amount: string; currency: string; at: string };
+        console.log(`${r.at}  ${formatAmount(Number(r.amount), r.currency).padStart(10)}  ${r.realm}${r.resource.replace(/^[A-Z]+ /, ' ')}  ${d}`);
+      }
+      if (all.length > Number(values.limit)) console.log(`(${all.length - Number(values.limit)} more; --limit to see them)`);
+      return;
+    }
+
     case 'mcp': {
+      if (rest[0] === 'connect' || rest[0] === 'http') {
+        await mcpSubcommand(rest[0], rest.slice(1));
+        return;
+      }
+      // first launch with nothing set up: do what `tab init` does, quietly on stderr, since stdout carries the protocol
+      if (!process.env.TAB_AGENT && !process.env.TAB_MANDATE && !existsSync(join(TAB_HOME, 'mandate.json'))) {
+        await initTab({ dir: TAB_HOME, budgetUsd: '1.00', maxPerCallUsd: '0.05', days: 90, gateway: PUBLIC_GATEWAY, catalog: PUBLIC_CATALOG, say: (m) => process.stderr.write(m + '\n'), brief: true });
+      }
       const files = defaultAgentFiles(process.env.TAB_AGENT, process.env.TAB_MANDATE);
       const agent = loadKey(files.agent);
       const mandate = loadMandate(files.mandate);
@@ -435,6 +510,7 @@ async function main(): Promise<void> {
         catalog: process.env.TAB_CATALOG || PUBLIC_CATALOG,
         x402Ledger: join(dirname(files.mandate), 'x402-spent.json'),
         channelsFile: join(dirname(files.mandate), 'channels.json'),
+        proofDir: process.env.TAB_PROOFS === 'off' ? undefined : process.env.TAB_PROOFS || join(dirname(files.mandate), 'receipts'),
       });
       return;
     }
@@ -622,6 +698,15 @@ async function channelCommand(args: string[]): Promise<void> {
   }
 }
 
+/** The receipt key a gateway publishes in its discovery document; null when it cannot be read. */
+async function publishedReceiptKey(realm: string): Promise<string | null> {
+  const origin = /^(localhost|127\.|\[::1\])/.test(realm) ? `http://${realm}` : `https://${realm}`;
+  const r = await fetch(origin + '/.well-known/tab', { signal: AbortSignal.timeout(10_000) });
+  if (!r.ok) return null;
+  const key = ((await r.json()) as { receipt_key?: unknown }).receipt_key;
+  return typeof key === 'string' ? key : null;
+}
+
 // ---------------------------------------------------------------------------
 // init: everything a new buyer needs, in one command
 
@@ -642,9 +727,12 @@ interface InitOptions {
   days: number;
   gateway: string;
   catalog: string;
+  say?: (line: string) => void; // default stdout
+  brief?: boolean; // skip the closing instructions (the MCP server sets itself up this way)
 }
 
 async function initTab(o: InitOptions): Promise<void> {
+  const say = o.say ?? ((m: string) => console.log(m));
   const ownerPath = join(o.dir, 'owner.json');
   const agentPath = join(o.dir, 'agent.json');
   const mandatePath = join(o.dir, 'mandate.json');
@@ -654,19 +742,19 @@ async function initTab(o: InitOptions): Promise<void> {
   let agent: KeyPair;
   if (existsSync(ownerPath)) {
     owner = loadKey(ownerPath);
-    console.log(`owner key   ${ownerPath} (existing)`);
+    say(`owner key   ${ownerPath} (existing)`);
   } else {
     owner = newKeyPair();
     saveKey(ownerPath, owner);
-    console.log(`owner key   ${ownerPath} (new)`);
+    say(`owner key   ${ownerPath} (new)`);
   }
   if (existsSync(agentPath)) {
     agent = loadKey(agentPath);
-    console.log(`agent key   ${agentPath} (existing)`);
+    say(`agent key   ${agentPath} (existing)`);
   } else {
     agent = newKeyPair();
     saveKey(agentPath, agent);
-    console.log(`agent key   ${agentPath} (new)`);
+    say(`agent key   ${agentPath} (new)`);
   }
 
   // the mandate: what the agent may spend, signed by the owner
@@ -680,7 +768,7 @@ async function initTab(o: InitOptions): Promise<void> {
     evmOwner: addressFromSeed(new Uint8Array(Buffer.from(owner.privateKey, 'base64url'))),
   });
   saveMandate(mandatePath, mandate);
-  console.log(`mandate     ${mandatePath}: ${o.budgetUsd}/day, ${o.maxPerCallUsd} per call, ${o.days} days`);
+  say(`mandate     ${mandatePath}: ${o.budgetUsd}/day, ${o.maxPerCallUsd} per call, ${o.days} days`);
 
   // starter credits from the public gateway, if it offers them
   let available: string | null = null;
@@ -698,23 +786,24 @@ async function initTab(o: InitOptions): Promise<void> {
       const body = (await r.json()) as { credited?: string; available?: string; error?: string };
       if (!r.ok) throw new Error(body.error ?? `HTTP ${r.status}`);
       available = body.available ?? null;
-      console.log(
+      say(
         body.credited && body.credited !== '0.00'
           ? `credits     ${body.credited} starter credits from ${doc.realm ?? o.gateway}; balance ${available}`
           : `credits     already claimed on ${doc.realm ?? o.gateway}; balance ${available}`,
       );
     } else {
-      console.log(`credits     ${o.gateway} offers no starter credits; fund the owner wallet yourself`);
+      say(`credits     ${o.gateway} offers no starter credits; fund the owner wallet yourself`);
     }
   } catch (err) {
-    console.log(`credits     could not reach ${o.gateway} (${(err as Error).message}); run tab init again later`);
+    say(`credits     could not reach ${o.gateway} (${(err as Error).message}); run tab init again later`);
   }
 
-  console.log(`
+  if (o.brief) return;
+  say(`
 owner wallet  ${owner.publicKey}
 agent wallet  ${agent.publicKey}
 
-Claude Code (once, for every project):
+Claude Code (once, for every project; it sets itself up from here, even without init):
 
   claude mcp add --scope user tab -- npx -y paidwithtab mcp
 
@@ -868,3 +957,162 @@ async function evmCommand(rest: string[]): Promise<void> {
 }
 
 main().catch((err) => die((err as Error).stack ?? String(err)));
+
+// ---------------------------------------------------------------------------
+// 3.1: MCP connect (buy a hosted listing's tools) and MCP over HTTP (so a stdio server can be sold)
+
+async function mcpSubcommand(sub: string, args: string[]): Promise<void> {
+  if (sub === 'http') {
+    const dash = args.indexOf('--');
+    if (dash < 0 || dash === args.length - 1) die('usage: tab mcp http [--port 8808] [--listen 127.0.0.1] [--path /mcp] -- <command> [args...]');
+    const { values } = opts(args.slice(0, dash), { port: { type: 'string', default: '8808' }, listen: { type: 'string', default: '127.0.0.1' }, path: { type: 'string', default: '/mcp' } });
+    serveMcpHttp({ command: args[dash + 1], args: args.slice(dash + 2), port: Number(values.port), host: values.listen as string, path: values.path as string, log });
+    return;
+  }
+  // connect: a hosted listing's routes as tools of a local MCP server
+  if (!args[0]) die('usage: tab mcp connect <listing url, e.g. https://pay.paidwithtab.com/s/weather>');
+  if (!process.env.TAB_AGENT && !process.env.TAB_MANDATE && !existsSync(join(TAB_HOME, 'mandate.json'))) {
+    await initTab({ dir: TAB_HOME, budgetUsd: '1.00', maxPerCallUsd: '0.05', days: 90, gateway: PUBLIC_GATEWAY, catalog: PUBLIC_CATALOG, say: (m) => process.stderr.write(m + '\n'), brief: true });
+  }
+  const files = defaultAgentFiles(process.env.TAB_AGENT, process.env.TAB_MANDATE);
+  const mandate = loadMandate(files.mandate);
+  const tools = await connectTools({
+    url: args[0],
+    agent: loadKey(files.agent),
+    mandate,
+    maxPerCallUsd: process.env.TAB_MAX_PER_CALL,
+    x402Ledger: join(dirname(files.mandate), 'x402-spent.json'),
+    proofDir: process.env.TAB_PROOFS === 'off' ? undefined : process.env.TAB_PROOFS || join(dirname(files.mandate), 'receipts'),
+  }).catch((err) => die((err as Error).message));
+  serveMcpStdio(tools, `tab: ${tools.service}`);
+}
+
+// ---------------------------------------------------------------------------
+// 3.1: sell on a hosted gateway
+
+function sellerKey(path?: string): KeyPair {
+  const file = path || join(TAB_HOME, 'seller.json');
+  if (existsSync(file)) return loadKey(file);
+  const pair = newKeyPair();
+  saveKey(file, pair);
+  log(`seller key ${file} (new): this key owns your listings and is paid for them; back it up`);
+  return pair;
+}
+
+async function gatewayDoc(gateway: string): Promise<{ realm: string; rail: string; listings?: string; alerts?: string }> {
+  const r = await fetch(gateway + '/.well-known/tab', { signal: AbortSignal.timeout(15_000) }).catch((err) => die(`cannot reach ${gateway}: ${(err as Error).message}`));
+  if (!r.ok) die(`${gateway} has no tab discovery document (HTTP ${r.status})`);
+  return (await r.json()) as { realm: string; rail: string; listings?: string; alerts?: string };
+}
+
+async function postSigned(url: string, doc: unknown): Promise<Record<string, unknown>> {
+  const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc), signal: AbortSignal.timeout(30_000) });
+  const out = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!r.ok) die(String(out.error ?? `HTTP ${r.status}`));
+  return out;
+}
+
+const slugOf = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32).replace(/-+$/, '');
+
+async function sellCommand(rest: string[]): Promise<void> {
+  const sub = rest[0] === 'list' || rest[0] === 'remove' ? rest[0] : 'add';
+  const { values, positionals } = opts(sub === 'add' ? rest : rest.slice(1), {
+    price: { type: 'string' },
+    name: { type: 'string' },
+    slug: { type: 'string' },
+    description: { type: 'string' },
+    route: { type: 'string', multiple: true },
+    mcp: { type: 'boolean', default: false },
+    'tool-price': { type: 'string', multiple: true },
+    gateway: { type: 'string', default: PUBLIC_GATEWAY },
+    key: { type: 'string' },
+    'evm-payout': { type: 'string' },
+  }, true);
+  const gateway = (values.gateway as string).replace(/\/$/, '');
+  if (sub === 'list') {
+    const r = await fetch(gateway + LISTING_PATH, { signal: AbortSignal.timeout(15_000) });
+    const doc = (await r.json()) as { listings?: Array<{ slug: string; name: string; url: string; routes: number; seller: string; mcp?: boolean }>; error?: string };
+    if (!r.ok) die(doc.error ?? `HTTP ${r.status}`);
+    const mine = values.key || existsSync(join(TAB_HOME, 'seller.json')) ? sellerKey(values.key as string | undefined).publicKey : null;
+    if (!doc.listings?.length) { console.log(`no hosted listings at ${gateway} yet`); return; }
+    for (const l of doc.listings) console.log(`${l.slug.padEnd(24)} ${String(l.routes).padStart(3)} routes  ${l.mcp ? 'MCP  ' : 'API  '} ${l.url}${mine === l.seller ? '  (yours)' : ''}  ${l.name}`);
+    return;
+  }
+  const disc = await gatewayDoc(gateway);
+  if (!disc.listings) die(`${gateway} does not take hosted listings`);
+  const seller = sellerKey(values.key as string | undefined);
+  const evmPayout = disc.rail === 'evm' ? ((values['evm-payout'] as string) || checksumAddress(addressFromSeed(new Uint8Array(Buffer.from(seller.privateKey, 'base64url'))))) : undefined;
+  if (sub === 'remove') {
+    if (!positionals[0]) die('usage: tab sell remove <slug> [--gateway url] [--key seller.json]');
+    const out = await postSigned(gateway + LISTING_PATH, signListing(seller, { realm: disc.realm, slug: positionals[0], name: '', upstream: '', routes: [], remove: true }));
+    console.log(`removed ${out.removed}`);
+    return;
+  }
+  if (positionals.length !== 1 || !values.price) {
+    die('usage: tab sell <https upstream> --price 0.01 [--name "Weather"] [--slug weather] [--description text] [--route "GET /forecast"]... [--mcp [--tool-price name=0.02]...] [--gateway url] [--key seller.json] [--evm-payout 0x]');
+  }
+  const upstream = positionals[0].replace(/\/$/, '');
+  const price = values.price as string;
+  let routes: ListingRoute[];
+  let name = values.name as string | undefined;
+  if (values.mcp) {
+    const tools = await listMcpTools(upstream).catch((err) => die(`could not list the MCP server's tools at ${upstream}: ${(err as Error).message}`));
+    if (!tools.length) die(`${upstream} offers no tools`);
+    const special = new Map((values['tool-price'] as string[] | undefined ?? []).map((t) => { const [k, v] = t.split('='); return [k, v] as [string, string]; }));
+    routes = tools.slice(0, LISTING_LIMITS.maxRoutes).map((t) => ({
+      method: 'POST', path: mcpToolPath(t.name), price: special.get(t.name) ?? price, mcp_tool: t.name,
+      ...(t.description ? { description: t.description.slice(0, 500) } : {}),
+      ...(t.inputSchema && JSON.stringify(t.inputSchema).length <= 8000 ? { input_schema: t.inputSchema } : {}),
+    }));
+    log(`${tools.length} tools found${tools.length > LISTING_LIMITS.maxRoutes ? `, the first ${LISTING_LIMITS.maxRoutes} listed` : ''}: ${tools.slice(0, 8).map((t) => t.name).join(', ')}${tools.length > 8 ? ', ...' : ''}`);
+  } else {
+    const given = (values.route as string[] | undefined) ?? ['GET /', 'POST /'];
+    routes = given.map((r) => {
+      const [method, path, p] = r.trim().split(/\s+/);
+      if (!method || !path) die(`--route must look like "GET /forecast" (optionally followed by a price), got ${JSON.stringify(r)}`);
+      return { method: method.toUpperCase(), path, price: p ?? price };
+    });
+  }
+  name ??= new URL(upstream).hostname.replace(/^(api|www|mcp)\./, '');
+  const slug = (values.slug as string) || slugOf(name);
+  const listing = signListing(seller, {
+    realm: disc.realm, slug, name, upstream, routes,
+    ...(values.description ? { description: values.description as string } : {}),
+    ...(values.mcp ? { mcp: true } : {}),
+    ...(evmPayout ? { evm_payout: evmPayout } : {}),
+  });
+  const out = (await postSigned(gateway + LISTING_PATH, listing)) as { url: string; routes: Array<{ method: string; url: string; price: string; mcp_tool?: string }>; paid_to: string };
+  console.log(`listed at ${out.url}, paid to ${out.paid_to}\n`);
+  for (const r of out.routes) console.log(`  ${r.method.padEnd(6)} ${r.url}  ${r.price}${r.mcp_tool ? `  (tool ${r.mcp_tool})` : ''}`);
+  console.log(`
+Any agent with tab can buy it now:
+  tab fetch ${values.mcp ? '-d \'{...tool arguments}\' ' : ''}${out.routes[0].url}
+${values.mcp ? '  claude mcp add ' + slug + ' -- npx -y paidwithtab mcp connect ' + out.url + '\n' : ''}It shows in the catalog (paidwithtab.com/catalog) within a minute. Earnings: tab sell list, and ${disc.rail === 'evm' ? 'your 0x address on chain' : `${gateway}/.well-known/tab/wallet/${seller.publicKey}`}.`);
+}
+
+// ---------------------------------------------------------------------------
+// 3.1: spend alerts
+
+async function alertsCommand(rest: string[]): Promise<void> {
+  const sub = rest[0];
+  if (sub !== 'set' && sub !== 'off') die('usage: tab alerts set (--url https://... | --ntfy) [--at 50,90,100] [--daily] [--gateway url]... [--owner owner.json]\n       tab alerts off [--gateway url]... [--owner owner.json]');
+  const { values } = opts(rest.slice(1), {
+    url: { type: 'string' }, ntfy: { type: 'boolean', default: false }, at: { type: 'string' }, daily: { type: 'boolean', default: false },
+    gateway: { type: 'string', multiple: true }, owner: { type: 'string' }, format: { type: 'string' },
+  });
+  const owner = loadKey((values.owner as string) || join(TAB_HOME, 'owner.json'));
+  const gateways = ((values.gateway as string[] | undefined) ?? [PUBLIC_GATEWAY]).map((g) => g.replace(/\/$/, ''));
+  let url = values.url as string | undefined;
+  if (sub === 'set' && !url && values.ntfy) url = `https://ntfy.sh/tab-${randomBytes(9).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+  if (sub === 'set' && !url) die('give --url https://your-webhook, or --ntfy for a private ntfy.sh topic (phone push, no account)');
+  const format = (values.format as 'json' | 'text' | undefined) ?? (url && new URL(url).hostname === 'ntfy.sh' ? 'text' : 'json');
+  const thresholds = values.at ? String(values.at).split(',').map((t) => Number(t.trim())) : undefined;
+  for (const g of gateways) {
+    const disc = await gatewayDoc(g);
+    if (!disc.alerts) { console.log(`${g}: sends no alerts, skipped`); continue; }
+    const doc = signAlertSub(owner, sub === 'off' ? { realm: disc.realm, off: true } : { realm: disc.realm, url, format, ...(thresholds ? { thresholds } : {}), daily: values.daily as boolean });
+    const out = await postSigned(g + ALERTS_PATH, doc);
+    console.log(sub === 'off' ? `${g}: alerts off` : `${g}: alerts at ${(out.thresholds as number[]).join(', ')}%${out.daily ? ' and a daily statement' : ''}; test message ${out.test_delivered ? 'delivered' : 'NOT delivered (check the URL)'}`);
+  }
+  if (sub === 'set' && url && new URL(url).hostname === 'ntfy.sh') console.log(`\nOn your phone: install ntfy, subscribe to ${new URL(url).pathname.slice(1)} (or open ${url}).`);
+}

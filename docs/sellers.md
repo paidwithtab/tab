@@ -2,6 +2,49 @@
 
 You have an HTTP API. tab puts a price tag on it and collects per request, in USDG on Robinhood Chain, with no accounts, no billing code, and no payment keys on your server.
 
+## The fast path: no server at all (3.1)
+
+List your API on a hosted gateway. One signed command; you are paid to your own wallet, and it shows in the catalog within a minute.
+
+```sh
+npx paidwithtab sell https://api.example.com --price 0.01 \
+  --route "GET /forecast" --route "GET /cities/:id 0.02" --name "Example Weather"
+```
+
+```
+listed at https://pay.paidwithtab.com/s/example-weather, paid to <your wallet id>
+
+  GET    https://pay.paidwithtab.com/s/example-weather/forecast  0.01
+  GET    https://pay.paidwithtab.com/s/example-weather/cities/:id  0.02
+```
+
+- The first run makes `~/.tab/seller.json`. That key owns the listing and is paid for it: back it up.
+- On `pay.paidwithtab.com` you earn ledger credits, which spend anywhere on that gateway. For dollars, list on `mainnet.paidwithtab.com` (`--gateway https://mainnet.paidwithtab.com`): every call pays USDG on Robinhood Chain straight to your 0x address, the one `tab evm address ~/.tab/seller.json` prints, or `--evm-payout 0x...`.
+- Prices from 0.001 to 1.00 a call, up to 50 routes, 5 listings per seller. Your upstream must be public `https`. Calls arrive from the gateway with `Tab-Payer`, `Tab-Owner` and `Tab-Hold` headers; a non-2xx answer is never charged.
+- Change a listing by running `tab sell` again with the same `--slug`; `tab sell list` shows yours, `tab sell remove <slug>` takes one down.
+
+### Sell an MCP server
+
+Every tool becomes a paid route. The gateway makes the tool call for the buyer, and a tool that reports an error is not charged.
+
+```sh
+npx paidwithtab sell https://mcp.example.com/mcp --mcp --price 0.005 --tool-price deep_search=0.02
+```
+
+A server that only speaks stdio goes on HTTP first, then behind a public https address (a tunnel or a reverse proxy):
+
+```sh
+npx paidwithtab mcp http --port 8808 -- npx -y @example/my-mcp-server
+```
+
+Buyers add your tools to Claude Code as their own, paid from their mandate:
+
+```sh
+claude mcp add example -- npx -y paidwithtab mcp connect https://pay.paidwithtab.com/s/example
+```
+
+Running your own gateway, below, gives you everything else: your own domain as the realm, any price, x402, pay on delivery and channels.
+
 ## What you are setting up
 
 ```

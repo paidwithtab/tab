@@ -101,8 +101,9 @@ examples/
   demo.sh                   # one-command sandbox
 test/e2e.ts                 # 90 in-process checks, temp DB, ~1-2 min
 test/v3.ts                  # 109 checks of the 3.0 features on the ledger rail: revoke and peer sharing, sub-mandates, approvals, escrow, channels, the MCP tools
+test/v31.ts                 # 69 checks of 3.1: MCP self setup, proofs and tab verify, hosted listings and their refusals, MCP selling, spend alerts
 test/adversarial.ts         # 68 hostile checks: concurrency, replay, mutation, SSRF, forgery, tampered receipts, voucher floods, sibling races
-test/evm.ts                 # 91 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway and its faucet, escrow and channels on chain, live Robinhood testnet reads
+test/evm.ts                 # 96 checks: crypto vectors, a mock EVM node, rpc failover, an 18-decimal token gateway and its faucet, escrow and channels on chain, live Robinhood testnet reads
 test/contract.ts            # 20 checks of contracts/TabChannel.sol on a real EVM (ganache); opt in, needs GANACHE
 contracts/TabChannel.sol    # the trustless payment channel contract, compiled in contracts/TabChannel.json
 ```
@@ -117,8 +118,9 @@ npm ci                      # or npm install; installs tsx + typescript only
 npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 90 passed, 0 failed on the dev box
 npm run test:v3             # 109 passed, 0 failed: revoke (and gateways sharing it), sub-mandates, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools
+npm run test:v31            # 69 passed, 0 failed: MCP self setup, proofs and tab verify, hosted listings, MCP selling, spend alerts
 npm run test:adversarial    # 68 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts, voucher floods, sibling sub-mandates racing one budget
-npm run test:evm            # 91 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, escrow and channels through an escrow address, live testnet reads
+npm run test:evm            # 96 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, escrow and channels through an escrow address, live testnet reads
 npm run test:company        # 139 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests (with model and per call cap), signed board log, sealed model keys, the claude adapter against a fake Messages API, payment approvals, revoke, delegated budgets, orders, channels
 npm run test:dashboard      # 40 passed, 0 failed: tab OS in headless Chromium end to end, including a payment approved at phone width, a revoked run, a channel opened and settled, an order released (npx playwright install chromium first); --live also loads the public site and app
 GANACHE=/path/to/ganache/dist/node/cli.js npm run test:contract   # 20 passed, 0 failed: TabChannel.sol on a real EVM (npm i ganache@7.9.2 outside the repo)
@@ -213,6 +215,8 @@ tab serve   --spec spec.json [--db tab.db] [--port 1402] [--listen 127.0.0.1] [-
             [--faucet 1.00]                                         ledger rail: starter credits, once per wallet
             [--faucet-per-ip 20]                                    faucet claims per client address per day
             [--peer https://other-gateway]...                       share revocations: push new ones, poll theirs every 5 s
+            [--listings]                                            3.1: take hosted listings sellers sign (tab sell), served under /s/<slug>/
+            [--alerts]                                              3.1: send owners the spend alerts and daily statements they subscribe to
             [--escrow-key key.json]                                 evm rail: the escrow address for pay on delivery and channel deposits
 tab catalog serve [--db catalog.db] [--port 1403] [--listen 127.0.0.1] [--try-agent key.json --try-mandate mandate.json]
                   [--try-max-per-call 0.05] [--allow-private-origins] [--seed origin]...
@@ -240,6 +244,8 @@ Notes:
 - `--allow` may be repeated. Values are globs over realms: `*`, `*.example.com`, `quotes.local`. Omitted means `*`.
 - `--window day` resets the budget per UTC calendar day; `total` (default) is a lifetime budget.
 - `tab fetch` exit codes: 0 paid and 2xx, 1 non-2xx, 2 refused by the client's own cap before paying, 3 waiting for the owner's approval (the request is written next to the mandate as `approval-request-<id>.json` and the approve command is printed).
+- 3.1, hosted listings: `tab serve --listings` opens `POST /.well-known/tab/listings`. A seller's signed listing becomes a service under `/s/<slug>/` that pays the seller's own wallet (on an evm gateway, the `evm_payout` address the listing names, straight from the agent's transfer). Upstreams are called only at public https addresses through the guarded fetch (checked at connect time, no redirects), each listing is limited to 300 upstream calls a minute, and the store holds at most 2,000 listings, 5 per seller, 10 new per client address an hour. x402 and channel vouchers are refused on hosted routes, since they would pay the gateway's own recipient. Listings live in the gateway database (`listings` table) and survive restarts; deleting a row and restarting takes one down by force.
+- 3.1, spend alerts: `tab serve --alerts` opens `POST /.well-known/tab/alerts`. Webhooks get the same egress guard. A subscription that fails 20 deliveries in a row goes quiet until the owner renews it. Daily statements are checked every 15 minutes.
 - 3.0, revoke: `tab mandate revoke` signs with whichever key you pass: the owner's (any mandate in its chains), a delegating agent's (the sub-mandates it signed) or the agent's own (giving it up). It posts to every `--gateway` (default the public one); gateways started with `--peer` pass it on. `tab mandate status` asks each gateway about every mandate in the chain.
 - 3.0, delegate: `tab mandate delegate` refuses a sub-mandate wider than its parent in any limit, and more than 3 levels below the owner. Hand the output file to the other agent with its own key.
 - 3.0, approve: `tab mandate approve` checks the request id, signs for at most an hour (`--ttl`, seconds) and posts to the gateways named; the agent's plain retry then pays once.
@@ -579,6 +585,8 @@ The front end is static files under `web/` with no build step and no external sc
 | `GET /.well-known/tab/receipts?payer=&since=` | the same, filtered to one payer wallet and/or receipts at or after an ISO time |
 | `GET /.well-known/tab/mandate/<id>/spent` | what one mandate has spent here, total and per window; a mandate id is the hash of a document only its owner and agent hold |
 | `POST /.well-known/tab/revocations` | 3.0: one signed revocation or a list of up to 100; kept if the signature verifies, pushed to `--peer` gateways when new |
+| `GET`/`POST /.well-known/tab/listings` | 3.1, with `--listings`: the hosted listings, and a seller's signed listing (or removal) |
+| `POST /.well-known/tab/alerts` | 3.1, with `--alerts`: an owner's signed alert subscription (or `off`); answers with whether the test message arrived |
 | `GET /.well-known/tab/revocations?since=` | 3.0: revocations in the order received, for peers that poll |
 | `GET /.well-known/tab/revocations/<mandate id>` | 3.0: what is held against one mandate |
 | `POST /.well-known/tab/approvals {request, approval}` | 3.0: the owner's approval for one payment above a threshold, for the agent's retry to find |

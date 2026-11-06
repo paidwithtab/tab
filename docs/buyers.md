@@ -5,10 +5,10 @@ This guide takes you from nothing to an agent that can discover APIs, pay for th
 ## The fast path
 
 ```sh
-npx paidwithtab init
+claude mcp add --scope user tab -- npx -y paidwithtab mcp
 ```
 
-One command creates the keys below, signs a mandate, and claims $1.00 of starter credits on the public gateway. Those credits are sandbox money that only spends on `pay.paidwithtab.com`. The rest of this guide is the real-money path: USDG on Robinhood Chain, where the same keys and the same mandate work unchanged.
+That is all Claude Code needs: on first launch the MCP server sets itself up. From a shell, `npx paidwithtab init` does the same and prints what it made. Either way, one command creates the keys below, signs a mandate, and claims $1.00 of starter credits on the public gateway. Those credits are sandbox money that only spends on `pay.paidwithtab.com`. The rest of this guide is the real-money path: USDG on Robinhood Chain, where the same keys and the same mandate work unchanged.
 
 ## The three keys, and who holds what
 
@@ -117,6 +117,37 @@ npx paidwithtab evm balance --wallet owner.json \
 ```
 
 That prints your dollars, your ETH, and exactly how much allowance the agent has left.
+
+### Proof of what it bought (3.1)
+
+`tab fetch` and the MCP server keep every paid response in `~/.tab/receipts/` (set `TAB_PROOFS` to another folder, or `off`). Each folder holds the body, the signed receipt, the request and the mandate, and anyone can check it:
+
+```sh
+npx paidwithtab receipts
+npx paidwithtab verify ~/.tab/receipts/2026-11-06T13-33-32-516Z-QZt2SKGkEUN9
+```
+
+```
+pay.paidwithtab.com /wikipedia/api/rest_v1/page/summary/HTTP_402: $0.001 at 2026-11-06T13:33:32.516Z (ledger:QZt2SKGkEUN94c4Z)
+  ok   gateway signature    key YyKjgMBzQLgPkqo36vmPuSeKpcsxUj8CfwMUKZ2jyt4
+  ok   gateway key          pay.paidwithtab.com publishes this key
+  ok   response body        2564 bytes, SHA-256 2S9XKcTXHe6FQ_UdVyaIP0WLxDDmWJuY5miWuooa0Zs
+  ok   response status      HTTP 200
+  ok   request              GET https://pay.paidwithtab.com/wikipedia/api/rest_v1/page/summary/HTTP_402
+  ok   agent authorization  signed by agent GYzcfwu2kSFQJeQnTRQRtSZGjUxV0Xvc34iNge3EvMQ
+  ok   mandate              owner idWAp7Whj0Hx9fqWrRmieurZGGaXUZe28Ze7j8EFV9U signed it for this agent
+proof holds
+```
+
+Change one byte of the body, the receipt or the request and it fails. What it cannot show is that the upstream API wrote the body: the gateway signs what it relayed (SPEC.md §9).
+
+### Hear about spending (3.1)
+
+```sh
+npx paidwithtab alerts set --ntfy --at 50,90,100 --daily
+```
+
+The gateway posts when one of your agents reaches 50, 90 and 100 percent of its budget in a window, and once a day a statement of what your agents paid there. `--ntfy` makes a private ntfy.sh topic: install the ntfy app, subscribe to the topic it prints, and the alerts land on your phone with no account anywhere. Or give `--url` any https webhook and get JSON. `tab alerts off` stops them.
 
 ## Paying in a gateway's own token
 

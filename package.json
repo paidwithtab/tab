@@ -1,6 +1,6 @@
 {
   "name": "paidwithtab",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "mcpName": "io.github.paidwithtab/tab",
   "description": "Give your agents spending power. tab prices any HTTP API in a JSON spec and gets it paid per request over HTTP 402 and x402, spending capped by signed mandates, settled in USDG on Robinhood Chain. Zero runtime dependencies.",
   "type": "module",
@@ -31,6 +31,7 @@
     "test": "node --no-warnings=ExperimentalWarning --import tsx test/e2e.ts",
     "test:adversarial": "node --no-warnings=ExperimentalWarning --import tsx test/adversarial.ts",
     "test:v3": "node --no-warnings=ExperimentalWarning --import tsx test/v3.ts",
+    "test:v31": "node --no-warnings=ExperimentalWarning --import tsx test/v31.ts",
     "test:evm": "node --no-warnings=ExperimentalWarning --import tsx test/evm.ts",
     "test:contract": "node --no-warnings=ExperimentalWarning --import tsx test/contract.ts",
     "test:company": "node --no-warnings=ExperimentalWarning --import tsx test/company.ts",

@@ -185,6 +185,13 @@ export class Store {
         next_try_at TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS payouts_due ON payouts (state, next_try_at);
+      CREATE TABLE IF NOT EXISTS listings (
+        slug TEXT PRIMARY KEY, seller TEXT NOT NULL, doc TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS listings_seller ON listings (seller);
+      CREATE INDEX IF NOT EXISTS holds_owner_time ON holds (owner, created_at);
+      CREATE TABLE IF NOT EXISTS alert_subs (owner TEXT PRIMARY KEY, doc TEXT NOT NULL, last_daily TEXT, failures INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS alerts_sent (mandate_id TEXT NOT NULL, window_key TEXT NOT NULL, pct INTEGER NOT NULL, at TEXT NOT NULL, PRIMARY KEY (mandate_id, window_key, pct));
     `);
     try { this.db.exec('ALTER TABLE payouts ADD COLUMN cancels TEXT'); } catch { /* column already exists */ }
     // 3.0: revocations keep the mandate that authorizes them, so peers can check it too
@@ -725,6 +732,75 @@ export class Store {
     args.push(Math.max(1, Math.min(filter.limit ?? 50, 200)));
     return (this.db.prepare(`SELECT id FROM channels${where.length ? ' WHERE ' + where.join(' AND ') : ''} ORDER BY opened_at DESC LIMIT ?`).all(...args) as Array<{ id: string }>)
       .map((r) => this.channel(String(r.id))!);
+  }
+
+  // -- 3.1: hosted listings ------------------------------------------------------------
+
+  listings(): Array<{ slug: string; seller: string; doc: string; created_at: string; updated_at: string }> {
+    return this.db.prepare('SELECT slug, seller, doc, created_at, updated_at FROM listings ORDER BY created_at').all() as Array<{ slug: string; seller: string; doc: string; created_at: string; updated_at: string }>;
+  }
+
+  listing(slug: string): { slug: string; seller: string; doc: string } | undefined {
+    return this.db.prepare('SELECT slug, seller, doc FROM listings WHERE slug = ?').get(slug) as { slug: string; seller: string; doc: string } | undefined;
+  }
+
+  listingCounts(seller: string, ip: string, sinceIso: string): { seller: number; ipRecent: number; all: number } {
+    const one = (sql: string, ...a: string[]) => Number((this.db.prepare(sql).get(...a) as { n: number }).n);
+    return {
+      seller: one('SELECT COUNT(*) AS n FROM listings WHERE seller = ?', seller),
+      ipRecent: one('SELECT COUNT(*) AS n FROM listings WHERE ip = ? AND updated_at >= ?', ip, sinceIso),
+      all: one('SELECT COUNT(*) AS n FROM listings'),
+    };
+  }
+
+  putListing(slug: string, seller: string, doc: string, ip: string, now: string): void {
+    this.db.prepare(
+      'INSERT INTO listings (slug, seller, doc, ip, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(slug) DO UPDATE SET doc = excluded.doc, ip = excluded.ip, updated_at = excluded.updated_at',
+    ).run(slug, seller, doc, ip, now, now);
+  }
+
+  removeListing(slug: string): void {
+    this.db.prepare('DELETE FROM listings WHERE slug = ?').run(slug);
+  }
+
+  // -- 3.1: spend alerts --------------------------------------------------------------
+
+  alertSub(owner: string): { owner: string; doc: string; last_daily: string | null; failures: number } | undefined {
+    return this.db.prepare('SELECT owner, doc, last_daily, failures FROM alert_subs WHERE owner = ?').get(owner) as { owner: string; doc: string; last_daily: string | null; failures: number } | undefined;
+  }
+
+  alertSubs(): Array<{ owner: string; doc: string; last_daily: string | null; failures: number }> {
+    return this.db.prepare('SELECT owner, doc, last_daily, failures FROM alert_subs').all() as Array<{ owner: string; doc: string; last_daily: string | null; failures: number }>;
+  }
+
+  alertSubCount(): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM alert_subs').get() as { n: number }).n);
+  }
+
+  putAlertSub(owner: string, doc: string, now: string): void {
+    this.db.prepare('INSERT INTO alert_subs (owner, doc, created_at) VALUES (?, ?, ?) ON CONFLICT(owner) DO UPDATE SET doc = excluded.doc, failures = 0').run(owner, doc, now);
+  }
+
+  removeAlertSub(owner: string): void {
+    this.db.prepare('DELETE FROM alert_subs WHERE owner = ?').run(owner);
+  }
+
+  alertDelivered(owner: string, ok: boolean, dailyAt?: string): void {
+    if (dailyAt) this.db.prepare('UPDATE alert_subs SET last_daily = ? WHERE owner = ?').run(dailyAt, owner);
+    this.db.prepare(ok ? 'UPDATE alert_subs SET failures = 0 WHERE owner = ?' : 'UPDATE alert_subs SET failures = failures + 1 WHERE owner = ?').run(owner);
+  }
+
+  /** Record that a threshold alert went out; false when it already had for this mandate and window. */
+  markAlertSent(mandateId: string, windowKey: string, pct: number, now: string): boolean {
+    const r = this.db.prepare('INSERT OR IGNORE INTO alerts_sent (mandate_id, window_key, pct, at) VALUES (?, ?, ?, ?)').run(mandateId, windowKey, pct, now);
+    return Number(r.changes) > 0;
+  }
+
+  /** What an owner's mandates paid here since a time: total, count and the biggest destinations. */
+  ownerSpendSince(owner: string, sinceIso: string): { total: number; calls: number; top: Array<{ resource: string; amount: number; calls: number }> } {
+    const sum = this.db.prepare("SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS calls FROM holds WHERE owner = ? AND state = 'captured' AND created_at >= ?").get(owner, sinceIso) as { total: number; calls: number };
+    const top = this.db.prepare("SELECT resource, SUM(amount) AS amount, COUNT(*) AS calls FROM holds WHERE owner = ? AND state = 'captured' AND created_at >= ? GROUP BY resource ORDER BY amount DESC LIMIT 5").all(owner, sinceIso) as Array<{ resource: string; amount: number; calls: number }>;
+    return { total: Number(sum.total), calls: Number(sum.calls), top: top.map((t) => ({ resource: String(t.resource), amount: Number(t.amount), calls: Number(t.calls) })) };
   }
 
   close(): void {

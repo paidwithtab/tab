@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.1.0 (2026-11)
+
+Useful in the first minute, for buyers, sellers and owners. Protocol draft 0.8; the wire version stays `tab/0` and every new member is optional.
+
+- **One line to start.** `tab mcp` sets itself up on first launch when nothing is there: keys, a $1.00 a day mandate and the public gateway's starter credits, reported on stderr so stdout stays the protocol. `claude mcp add --scope user tab -- npx -y paidwithtab mcp` is the whole setup. `TAB_GATEWAY` points it (and `tab init`) at another gateway.
+- **Proof of purchase.** `tab fetch` and the MCP server keep each paid response in `~/.tab/receipts/<time>-<id>/` with its signed receipt, the request and the mandate (`TAB_PROOFS` moves it or turns it off; `tab_fetch` returns the folder). `tab verify` checks the gateway's signature and published key, the body hash, the request, the agent's own signature on the payment and the owner's on the mandate, offline or online; `tab receipts` lists them. SPEC.md §3.4.
+- **Hosted listings.** `tab sell <https url> --price 0.01 [--route "GET /path [price]"]...` signs a listing and posts it to a gateway that takes them (`tab serve --listings`); it is served under `/s/<slug>/`, listed in discovery and the catalog, and pays the seller's own wallet, or on an evm gateway the seller's 0x address straight from the agent's transfer. Services may now name their own `recipient` and `evm_recipient`. `tab sell list`, `tab sell remove`. SPEC.md §5.7.
+- **MCP servers, sold per tool call.** `tab sell <MCP url> --mcp --price 0.005 [--tool-price name=0.02]` makes one paid route per tool; the gateway makes the JSON-RPC call (JSON or SSE, with the session id), and a tool that reports an error is not charged. `tab mcp connect <listing url>` gives Claude Code those tools as its own, paid from the mandate. `tab mcp http -- <command>` puts a stdio MCP server on HTTP so it can be sold.
+- **Spend alerts.** `tab alerts set (--url https://... | --ntfy) [--at 50,90,100] [--daily]` signs a subscription at each gateway (`tab serve --alerts`): a post when a mandate crosses a share of its budget in its window, once per threshold, and a daily statement. `--ntfy` makes a private ntfy.sh topic, so alerts reach a phone with no account. SPEC.md §5.8.
+- **Egress is guarded.** Hosted upstreams and webhooks are called only at public https addresses, checked when connecting, with no redirects; listings are rate limited per listing and capped per seller, per address and in total, and signed listings and subscriptions are bound to one gateway and a 10 minute window. x402 and channel vouchers are refused on hosted routes.
+- New suite `test:v31` (69 checks), and the evm suite pays a hosted listing on chain.
+
 ## 3.0.1 (2026-11)
 
 Security release from a full audit of the gateway, tab OS and the deployment. Wire compatible with 3.0.0.

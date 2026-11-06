@@ -12,10 +12,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/spec-draft%200.7-1f6feb?style=flat-square" alt="Spec draft 0.7">
+  <img src="https://img.shields.io/badge/spec-draft%200.8-1f6feb?style=flat-square" alt="Spec draft 0.8">
   <img src="https://img.shields.io/badge/wire-tab%2F0-1f6feb?style=flat-square" alt="Wire protocol tab/0">
   <img src="https://img.shields.io/badge/node-22.13%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 22.13+">
-  <img src="https://img.shields.io/badge/checks-497-2da44e?style=flat-square" alt="497 automated checks">
+  <img src="https://img.shields.io/badge/checks-571-2da44e?style=flat-square" alt="571 automated checks">
   <img src="https://img.shields.io/badge/settlement-USDG-2775ca?style=flat-square" alt="USDG settlement">
   <img src="https://img.shields.io/badge/license-MIT-24292f?style=flat-square" alt="MIT license">
 </p>
@@ -43,6 +43,7 @@
 [What is tab](#what-is-tab) ·
 [Why tab](#why-tab) ·
 [Mandates](#mandates) ·
+[New in 3.1](#new-in-31) ·
 [New in 3.0](#new-in-30) ·
 [How a payment works](#how-a-payment-works) ·
 [Quickstart](#quickstart) ·
@@ -140,6 +141,20 @@ A mandate is a signed spending authorization from an owner to an agent.
 
 The owner key never has to be online while the agent is working. Every payment is checked independently by the seller's gateway against the signed mandate, so changing the agent's prompt cannot increase its authority.
 
+## New in 3.1
+
+Five upgrades that make tab useful in the first minute, for buyers, sellers and owners.
+
+| Upgrade | What it does | From the CLI |
+| --- | --- | --- |
+| One line to start | The MCP server sets itself up on first launch: keys, a $1.00 a day mandate and $1.00 of starter credits. No `init`, no signup. | `claude mcp add --scope user tab -- npx -y paidwithtab mcp` |
+| Proof of purchase | Every paid response is kept as a folder: the body, the gateway's signed receipt, the request and the mandate. One command checks the gateway's signature and published key, the body hash, the request, the agent's own signature on the payment, and the owner's signature on the mandate. | `tab verify ~/.tab/receipts/<folder>`, `tab receipts` |
+| Sell without a server | Sign a listing for your API and post it to a hosted gateway. It is served under `/s/<name>/`, shows in the catalog, and every call pays your own wallet (your 0x address on a chain gateway). | `tab sell https://api.example.com --price 0.01 --route "GET /forecast"` |
+| Charge for an MCP server | List an MCP server and each tool becomes a paid route; the gateway makes the tool call, and a tool that fails is not charged. Buyers add it to Claude Code as tools of their own. A stdio server goes on HTTP with one command. | `tab sell https://mcp.example.com/mcp --mcp --price 0.005`, `tab mcp connect <listing url>`, `tab mcp http -- <command>` |
+| Spend alerts | The owner signs a subscription at a gateway: a webhook (an ntfy.sh topic puts it on a phone with no account), budget percentages, and a daily statement. | `tab alerts set --ntfy --at 50,90,100 --daily` |
+
+Hosted listings and alerts are opt-in for an operator (`tab serve --listings --alerts`), and both only reach public https addresses: no private networks, no redirects, checked again when connecting. SPEC.md sections 5.7 and 5.8 are the wire format.
+
 ## New in 3.0
 
 Five things an owner can do after the mandate is signed, all optional, all backward compatible with 2.x mandates, clients and receipts.
@@ -179,13 +194,13 @@ The receipt is signed by a key the gateway publishes, and it binds the whole pur
 
 > **Requires** Node.js 22.13 or newer.
 
-Give an agent a tab in one command:
+Give Claude Code a tab in one line:
 
 ```sh
-npx paidwithtab init
+claude mcp add --scope user tab -- npx -y paidwithtab mcp
 ```
 
-This creates an owner key and an agent key in `~/.tab`, signs a mandate ($1.00 per day, $0.05 per call, 90 days), and claims $1.00 of starter credits on the public gateway at `pay.paidwithtab.com`. Nothing to fund, no chain, no API keys.
+On its first launch it creates an owner key and an agent key in `~/.tab`, signs a mandate ($1.00 per day, $0.05 per call, 90 days), and claims $1.00 of starter credits on the public gateway at `pay.paidwithtab.com`. Nothing to fund, no chain, no API keys. Then ask Claude for something it needs to pay for, for example "find the weather in Lisbon through tab". From a shell, `npx paidwithtab init` does the same setup and prints what it made.
 
 Those credits buy real things: 8,638 routes across 484 services, from web search, translation and speech to text to block explorers for 42 chains, market data from 20 exchanges, Wikipedia in 48 languages, SEC filings, US Treasury data, genomes, proteins and chemistry, package registries, RDAP and DNS, weather and space weather, between $0.001 and $0.02 a call. The full list with prices is in the [quickstart](docs/quickstart.md#what-the-starter-credits-buy).
 
@@ -200,13 +215,14 @@ paid 0.001 (ledger:cpKKYHocOLKlDW8n)
 {"type":"standard","title":"Lisbon", ...}
 ```
 
-**2. Let Claude Code spend.**
+**2. Prove what it bought.**
 
 ```sh
-claude mcp add --scope user tab -- npx -y paidwithtab mcp
+npx paidwithtab receipts
+npx paidwithtab verify ~/.tab/receipts/<folder>
 ```
 
-Then ask Claude for something it needs to pay for, for example "find the weather in Lisbon through tab". It searches the catalog at [paidwithtab.com/catalog](https://paidwithtab.com/catalog), pays per request, and can never exceed the mandate.
+Every paid call is kept with its signed receipt. `verify` checks the gateway's signature against the key it publishes, that the body is the one it signed for, and that the agent itself signed the payment under the owner's mandate. Change one byte and it fails.
 
 **3. See a price tag.**
 
@@ -256,6 +272,13 @@ tab serve \
 ```
 
 The gateway handles payment negotiation, authorization, settlement, receipts, and proxying. Your application keeps serving normal HTTP.
+
+**No server to run?** List your API on the hosted gateway instead. It is paid to your own wallet, and it shows in the catalog:
+
+```sh
+npx paidwithtab sell https://api.example.com --price 0.01 --route "GET /forecast" --route "GET /cities/:id"
+npx paidwithtab sell https://mcp.example.com/mcp --mcp --price 0.005     # an MCP server: one paid route per tool
+```
 
 **[Read the seller documentation](docs/sellers.md)**
 
@@ -389,14 +412,15 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 497 automated checks across protocol behavior, the 3.0 features, adversarial conditions, EVM settlement and the company orchestrator, plus 40 browser checks of the dashboard and 20 checks of the channel contract on a real EVM.
+tab currently runs 571 automated checks across protocol behavior, the 3.0 and 3.1 features, adversarial conditions, EVM settlement and the company orchestrator, plus 40 browser checks of the dashboard and 20 checks of the channel contract on a real EVM.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
 | `npm test` | 90 | Gateway and its home page, catalog, MCP, receipts, payment lifecycle, starter credits, `tab init`, body rules, spend by mandate, catalog health and stale serving, amounts in a token gateway's own currency |
 | `npm run test:v3` | 109 | Revoke and gateways sharing revocations, sub-mandates and their limits, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools and CLI |
 | `npm run test:adversarial` | 68 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts, voucher floods against one deposit, sibling sub-mandates racing one budget, revocation floods, oversized upstream answers, catalog announce floods |
-| `npm run test:evm` | 91 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways, the testnet faucet, escrow and channels through an escrow address |
+| `npm run test:v31` | 69 | The MCP server setting itself up on first launch, proof folders and `tab verify` against forged bodies, receipts, requests and mandates, hosted listings paid to the seller and every way one is refused (SSRF, replay, slug theft, prices, limits), MCP servers sold per tool call over JSON and SSE, spend alerts and the daily statement |
+| `npm run test:evm` | 96 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways, the testnet faucet, escrow and channels through an escrow address, hosted listings paid on chain to the seller's address |
 | `npm run test:company` | 139 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, hire requests with model and per call cap, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary, payment approvals, revoke, delegated budgets, orders and channels |
 | `npm run test:dashboard` | 40 | tab OS in a real browser (Playwright, `npx playwright install chromium` once): sign up, the quickstart's starter agent paying and answering, found from a template, add a model key, claim credits, a ticket runs to done, evidence and run log, a payment approved at phone width, a revoked run, a channel opened and settled, an order released, log out; `--live` also loads the public site and app |
 | `npm run test:contract` | 20 | `contracts/TabChannel.sol` on a real EVM (needs `GANACHE`): open, cumulative vouchers, payee close, replay, forged and oversized vouchers, unilateral close and the dispute window, deployment from the CLI |
@@ -438,7 +462,9 @@ tab currently runs 497 automated checks across protocol behavior, the 3.0 featur
 
 ```text
 src/          protocol, gateway, catalog, client, CLI and MCP
-src/tools.ts  the five tab tools, shared by the MCP server and the company's claude adapter
+src/tools.ts  the tab tools, shared by the MCP server and the company's claude adapter
+src/proof.ts  proof folders and tab verify
+src/listings.ts, src/alerts.ts, src/mcp-bridge.ts   hosted listings, spend alerts, MCP connect and MCP over HTTP
 src/company/  the company orchestrator: store, engine, adapters, model (the Messages API loop), secrets, packet, board, server
 src/evm/      EVM cryptography, transactions and JSON RPC
 src/rails/    sandbox and EVM settlement rails
@@ -456,7 +482,7 @@ DEPLOY.md     deployment and operations
 
 The specification lives in [SPEC.md](SPEC.md).
 
-**Current version:** Draft 0.7 · **Wire protocol:** `tab/0`, and x402 version 2
+**Current version:** Draft 0.8 · **Wire protocol:** `tab/0`, and x402 version 2
 
 ## Roadmap
 

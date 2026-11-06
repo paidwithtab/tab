@@ -3,6 +3,12 @@
 ## The one-minute version
 
 ```sh
+claude mcp add --scope user tab -- npx -y paidwithtab mcp
+```
+
+That is the whole setup for Claude Code: on its first launch the MCP server does what `init` does below. From a shell:
+
+```sh
 npx paidwithtab init
 ```
 
@@ -13,7 +19,7 @@ npx paidwithtab fetch "https://pay.paidwithtab.com/weather/forecast?latitude=38.
 claude mcp add --scope user tab -- npx -y paidwithtab mcp
 ```
 
-The second line gives Claude Code the five tab tools. Ask it to look something up and it will search [paidwithtab.com/catalog](https://paidwithtab.com/catalog), pay, and show you the receipt. Running `init` again is safe: it keeps your keys and tells you the credits were already claimed.
+The second line gives Claude Code the tab tools. Ask it to look something up and it will search [paidwithtab.com/catalog](https://paidwithtab.com/catalog), pay, and show you the receipt. Running `init` again is safe: it keeps your keys and tells you the credits were already claimed. Every paid call is kept in `~/.tab/receipts/`; `npx paidwithtab verify <folder>` proves what was bought.
 
 ## What the starter credits buy
 

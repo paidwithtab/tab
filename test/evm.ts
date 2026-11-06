@@ -20,6 +20,7 @@ import { Engine } from '../src/company/engine.js';
 import { createCompanyServer } from '../src/company/server.js';
 import { Store } from '../src/store.js';
 import { createGateway, loadSpec, type Spec } from '../src/gateway.js';
+import { signListing } from '../src/listings.js';
 import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf } from '../src/client.js';
 import { EvmRail } from '../src/rails/evm.js';
 import { keccak256Hex } from '../src/evm/keccak.js';
@@ -403,6 +404,34 @@ async function main(): Promise<void> {
     check('a payment that cannot settle after the upstream answered withholds the response and charges nothing', r.status === 402
       && !text.includes('/sabotage') && r.headers.get('tab-void') !== null && (chain.bal.get(sellerAddr) ?? 0n) === before);
     // give back the 0.01 the one-nonce check spent, so the allowance arithmetic below holds
+    const k = `${ownerAddr}|${agentAddr}`;
+    chain.allowance.set(k, (chain.allowance.get(k) ?? 0n) + 10_000n);
+  }
+
+  // -- 3b. 3.1: a hosted listing on an evm gateway pays the seller's own address on chain ---------
+  {
+    const lister = newKeyPair();
+    const listerAddr = '0x' + '5e'.repeat(20);
+    const hostStore = new Store(join(scratch, 'tab-evm-hosted.db'));
+    const hostGw = await gatewayAt({ ...spec, services: [spec.services[0]] }, { store: hostStore, listings: true, allowPrivateEgress: true, egressFetch: fetch, listingRatePerMinute: 60_000 });
+    const listingUrl = `${hostGw.url}/.well-known/tab/listings`;
+    const postJson = async (body: unknown) => { const r = await fetch(listingUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); return { status: r.status, doc: await r.json() as any }; };
+    const noPayout = await postJson(signListing(lister, { realm: 'quotes.local', slug: 'q-api', name: 'Q', upstream: `http://127.0.0.1:${upPort}`, routes: [{ method: 'GET', path: '/quote', price: '0.01' }] }));
+    check('3.1: an evm gateway refuses a listing without an evm_payout address', noPayout.status === 400 && /evm_payout/.test(noPayout.doc.error), noPayout);
+    const listed = await postJson(signListing(lister, { realm: 'quotes.local', slug: 'q-api', name: 'Q', upstream: `http://127.0.0.1:${upPort}`, routes: [{ method: 'GET', path: '/quote', price: '0.01' }], evm_payout: listerAddr }));
+    check('3.1: and takes one with it', listed.status === 201 && listed.doc.paid_to === listerAddr, listed);
+    const hc = parseChallengeHeader((await fetch(`${hostGw.url}/s/q-api/quote`)).headers.get('www-authenticate'))!;
+    check('3.1: the challenge names the lister\'s address on chain', hc.recipient === lister.publicKey && hc.evm?.recipient === listerAddr, hc);
+    const opBefore = chain.bal.get(sellerAddr) ?? 0n;
+    const hostedPaid = await client.fetch(`${hostGw.url}/s/q-api/quote`);
+    check('3.1: a hosted call settles to the lister\'s address, not the operator\'s', hostedPaid.status === 200 && /^evm:0x/.test(receiptOf(hostedPaid)?.ref ?? '')
+      && chain.bal.get(listerAddr) === 10_000n && (chain.bal.get(sellerAddr) ?? 0n) === opBefore && receiptOf(hostedPaid)?.recipient === lister.publicKey, { bal: String(chain.bal.get(listerAddr)), status: hostedPaid.status });
+    // a credential that pays the operator's address under the lister's challenge is refused before the upstream
+    const swapped = { ...hc, evm: { ...hc.evm!, recipient: sellerAddr } };
+    const nonceNow = BigInt(((await (await fetch(`${hostGw.url}/.well-known/tab/evm/nonce/${agentAddr}`)).json()) as any).nonce);
+    const forged = await fetch(`${hostGw.url}/s/q-api/quote`, { headers: { authorization: encodeCredentialHeader(signCredential(agent, swapped, mandate, { evm: { tx: buildSignedPaymentTxEvm(swapped, ownerAddr, agent, nonceNow) } })) } });
+    check('3.1: a transfer to another address than the listing\'s is refused', forged.status === 402 && (chain.bal.get(sellerAddr) ?? 0n) === opBefore, forged.status);
+    hostGw.server.close();
     const k = `${ownerAddr}|${agentAddr}`;
     chain.allowance.set(k, (chain.allowance.get(k) ?? 0n) + 10_000n);
   }

@@ -24,12 +24,23 @@ export interface McpOptions {
   catalog?: string; // catalog origin
   x402Ledger?: string; // where x402 spend against the mandate is kept between runs
   channelsFile?: string; // where the agent's payment channels are kept between runs
+  proofDir?: string; // where paid responses are kept as proof folders
 }
 
 const PROTOCOL_VERSION = '2024-11-05';
 
 export function runMcpServer(opts: McpOptions): void {
-  const tools = createTabTools({ ...opts, channels: { file: opts.channelsFile }, allowDelegate: process.env.TAB_ALLOW_DELEGATE === '1' });
+  serveMcpStdio(createTabTools({ ...opts, channels: { file: opts.channelsFile }, proofDir: opts.proofDir, allowDelegate: process.env.TAB_ALLOW_DELEGATE === '1' }));
+}
+
+/** What an MCP server on stdio offers: a tool list and a way to call one. */
+export interface McpToolSet {
+  list: unknown[];
+  call: (name: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
+}
+
+/** Serve a tool set over stdio until stdin closes. */
+export function serveMcpStdio(tools: McpToolSet, name = 'tab'): void {
 
   const write = (msg: unknown) => process.stdout.write(JSON.stringify(msg) + '\n');
   const reply = (id: unknown, result: unknown) => write({ jsonrpc: '2.0', id, result });
@@ -57,7 +68,7 @@ export function runMcpServer(opts: McpOptions): void {
       reply(id, {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: 'tab', version: PKG_VERSION },
+        serverInfo: { name, version: PKG_VERSION },
       });
     } else if (method === 'notifications/initialized' || String(method ?? '').startsWith('notifications/')) {
       // notifications need no reply

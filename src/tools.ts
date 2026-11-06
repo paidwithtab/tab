@@ -2,6 +2,7 @@
 // MCP server exposes to Claude Code and what the company's model adapter hands
 // to the Messages API. One place, so both agents see the same tools.
 
+import { saveProof } from './proof.js';
 import { microToUsd, formatAmount, usdToMicro, normalizeUsd } from './protocol.js';
 import { approvalThreshold, delegateMandate, mandateChain, perCallCap, type Mandate } from './mandate.js';
 import type { KeyPair } from './keys.js';
@@ -29,6 +30,8 @@ export interface TabToolOptions {
    * its mandate to whatever key it was given. Turn it on for agents meant to hire helpers.
    */
   allowDelegate?: boolean;
+  /** 3.1: keep every paid response as a proof folder here (body, signed receipt, request, mandate), checkable with tab verify. */
+  proofDir?: string;
 }
 
 /** What a host passes to the tools besides the key and mandate. */
@@ -226,6 +229,9 @@ export function createTabTools(opts: TabToolOptions): { list: ToolSpec[]; call: 
             const bodyText = new TextDecoder().decode(bytes);
             const receipt = receiptOf(r);
             const check = receipt ? await client.verify(String(args.url), r, bytes, init) : null;
+            const proof = receipt && opts.proofDir
+              ? saveProof(opts.proofDir, { url: String(args.url), method, body: init.body }, { status: r.status, contentType: r.headers.get('content-type') }, bytes, receipt, opts.mandate)
+              : null;
             return text({
               status: r.status,
               paid: receipt ? formatAmount(Number(receipt.amount), receipt.currency) : null,
@@ -233,6 +239,7 @@ export function createTabTools(opts: TabToolOptions): { list: ToolSpec[]; call: 
               receipt,
               receipt_verified: check ? check.ok : null,
               ...(check && !check.ok ? { receipt_problem: check.reason } : {}),
+              ...(proof ? { proof: proof.dir } : {}),
               // paid to an x402 site: what it reports settling (its transaction on chain is the record)
               ...(x402ResponseOf(r) ? { x402: x402ResponseOf(r) } : {}),
               ...(ticket ? { escrow: { order: ticket.id, state: ticket.state, deadline: ticket.deadline, status: ticket.status, token: ticket.token } } : {}),

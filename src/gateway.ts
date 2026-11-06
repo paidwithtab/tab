@@ -40,6 +40,9 @@ import type { KeyPair } from './keys.js';
 import { encodeX402, decodeX402, X402_VERSION, type X402PaymentPayload, type X402SettlementResponse } from './x402.js';
 import { channelState, type HoldRow, type Store, type ChannelRow } from './store.js';
 import { homePage } from './home.js';
+import { guardedFetch } from './net.js';
+import { LISTING_PATH, LISTING_PREFIX, LISTING_LIMITS, listingProblem, type Listing } from './listings.js';
+import { ALERTS_PATH, ALERT_LIMITS, alertSubProblem, thresholdsOf, deliverAlert, type AlertSub } from './alerts.js';
 import { EvmRpc } from './evm/rpc.js';
 import { evmSend, evmAddressOfKey } from './evm/send.js';
 import { erc20, selector, parseTx, hexToBytes, bytesToHex } from './evm/tx.js';
@@ -75,6 +78,10 @@ export interface RouteSpec {
    * reports in a Tab-Units response header, never more than `price`, which per-call buyers pay.
    */
   meter?: { unit: string; per_unit: string };
+  /** 3.1: the route calls this MCP tool on an MCP upstream; the buyer's JSON body is the tool's arguments. */
+  mcp_tool?: string;
+  /** 3.1: the tool's JSON Schema, shown in discovery. */
+  input_schema?: Record<string, unknown>;
 }
 
 export interface ServiceSpec {
@@ -99,6 +106,11 @@ export interface ServiceSpec {
   rate_limit_group?: string;
   /** Environment variables the service needs (API keys). If any is unset or empty, loadSpec drops the service and lists it in Spec.skipped. */
   requires?: string[];
+  /** 3.1: who this service pays, when not the gateway's own recipient: a ledger wallet id, and an 0x address on the evm rail. */
+  recipient?: string;
+  evm_recipient?: string;
+  /** 3.1: a hosted listing a seller signed and posted; served under /s/<slug>/ through the guarded fetch. */
+  hosted?: { seller: string; slug: string; mcp?: boolean; listed_at: string };
   routes: RouteSpec[];
 }
 
@@ -312,6 +324,19 @@ export interface GatewayOptions {
   pendingRevocationCap?: number;
   /** Approvals one owner may have waiting at this gateway at once; default 200. */
   approvalsPerOwner?: number;
+  /** 3.1: take hosted listings that sellers sign and post (POST /.well-known/tab/listings). Off by default. */
+  listings?: boolean;
+  /** 3.1: spend alerts owners subscribe to (POST /.well-known/tab/alerts). Off by default. */
+  alerts?: boolean;
+  /** 3.1: the fetch used for hosted upstreams and alert webhooks; default guardedFetch (public addresses only). Tests pass their own. */
+  egressFetch?: typeof fetch;
+  /** 3.1: upstream calls a minute per hosted listing; default 300. */
+  listingRatePerMinute?: number;
+  /** 3.1, tests only: let listings and webhooks name http and private addresses. */
+  allowPrivateEgress?: boolean;
+  /** 3.1: how often daily statements are checked (default 15 min) and how long a statement covers (default 24 h). */
+  statementCheckMs?: number;
+  statementPeriodMs?: number;
   /** How often overdue escrows are refunded and expired channels settled; default 5 s. */
   sweepMs?: number;
   /** A payout that did not settle is tried again after this, doubling each time up to an hour; default 10 s. */
@@ -367,6 +392,35 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   const ttlMs = opts.challengeTtlMs ?? 120_000;
   const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? 60_000;
   const maxUpstreamBytes = opts.maxUpstreamBytes ?? 32 * 1024 * 1024;
+  const egress = opts.egressFetch ?? guardedFetch({ timeoutMs: upstreamTimeoutMs, maxBytes: maxUpstreamBytes });
+
+  // -- 3.1: hosted listings, kept in the store and served as services under /s/<slug>/
+  const listingsOn = opts.listings === true;
+  function serviceOfListing(l: Listing, listedAt: string): ServiceSpec {
+    return {
+      name: l.name,
+      prefix: LISTING_PREFIX + l.slug,
+      upstream: l.upstream,
+      description: l.description,
+      rate_limit_per_minute: opts.listingRatePerMinute ?? LISTING_LIMITS.ratePerMinute,
+      rate_limit_group: 'listing:' + l.slug,
+      recipient: l.seller,
+      ...(l.evm_payout ? { evm_recipient: l.evm_payout.toLowerCase() } : {}),
+      hosted: { seller: l.seller, slug: l.slug, ...(l.mcp ? { mcp: true } : {}), listed_at: listedAt },
+      routes: l.routes.map((r) => ({
+        method: r.method.toUpperCase(), path: r.path, price: r.price, description: r.description,
+        ...(r.mcp_tool ? { mcp_tool: r.mcp_tool } : {}), ...(r.input_schema ? { input_schema: r.input_schema } : {}),
+      })),
+    };
+  }
+  function loadListings(): void {
+    spec.services = spec.services.filter((sv) => !sv.hosted);
+    if (!listingsOn) return;
+    for (const row of store.listings()) {
+      try { spec.services.push(serviceOfListing(JSON.parse(row.doc) as Listing, row.created_at)); } catch { /* a row that no longer parses is skipped */ }
+    }
+  }
+  loadListings();
 
   /** An upstream body, read with a running cap: one huge answer must not take the gateway's memory with it. */
   async function readUpstream(upstream: Response): Promise<Buffer> {
@@ -448,6 +502,9 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       description: s.description,
       ...(s.rate_limit_per_minute ? { rate_limit_per_minute: s.rate_limit_per_minute } : {}),
       ...(s.rate_limit_group ? { rate_limit_group: s.rate_limit_group } : {}),
+      ...(s.recipient ? { recipient: s.recipient } : {}),
+      ...(s.evm_recipient ? { evm_recipient: s.evm_recipient } : {}),
+      ...(s.hosted ? { hosted: { seller: s.hosted.seller, ...(s.hosted.mcp ? { mcp: true } : {}), listed_at: s.hosted.listed_at } } : {}),
       routes: s.routes.map((r) => ({
         method: r.method.toUpperCase(),
         path: r.path,
@@ -455,16 +512,21 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         description: r.description,
         ...(escrowTerms(r) && canHold ? { escrow: escrowTerms(r) } : {}),
         ...(r.meter && channelsOn ? { meter: r.meter } : {}),
+        ...(r.mcp_tool ? { mcp_tool: r.mcp_tool } : {}),
+        ...(r.input_schema ? { input_schema: r.input_schema } : {}),
       })),
     })),
     // 3.0: what this gateway takes beyond a plain paid call, and where
-    features: ['revoke', 'delegation', 'approval', ...(spec.services.some((s) => s.routes.some((r) => r.escrow)) && canHold ? ['escrow'] : []), ...(channelsOn ? ['channels'] : [])],
+    features: ['revoke', 'delegation', 'approval', ...(listingsOn ? ['listings'] : []), ...(opts.alerts ? ['alerts'] : []), ...(spec.services.some((s) => s.routes.some((r) => r.escrow)) && canHold ? ['escrow'] : []), ...(channelsOn ? ['channels'] : [])],
     revocations: '/.well-known/tab/revocations',
     approvals: '/.well-known/tab/approvals',
+    ...(listingsOn ? { listings: LISTING_PATH } : {}),
+    ...(opts.alerts ? { alerts: ALERTS_PATH } : {}),
     ...(channelsOn ? { channels: { open: CHANNEL_PATH, min_deposit: microToUsd(minDeposit), max_ttl_s: maxChannelTtl / 1000 } } : {}),
   });
 
-  interface ChallengeTerms { escrow?: { timeout_s: number }; recipient?: string }
+  // recipient: the evm address paid (an escrow address, or a hosted seller's); payee: the wallet id the challenge names (a hosted seller)
+  interface ChallengeTerms { escrow?: { timeout_s: number }; recipient?: string; payee?: string }
 
   async function freshChallenge(priceMicro: number, resource: string, terms: ChallengeTerms = {}): Promise<Challenge> {
     const extras = await rail.challengeExtras(terms.recipient ? { recipient: terms.recipient } : undefined);
@@ -474,7 +536,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       rail: rail.name,
       amount: String(priceMicro),
       currency: spec.currency,
-      recipient: spec.recipient,
+      recipient: terms.payee ?? spec.recipient,
       resource,
       expires_at: new Date(Date.now() + ttlMs).toISOString(),
       nonce: randomId(9),
@@ -566,7 +628,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
 
   interface ReserveMode {
     perCall?: boolean; // false for a channel deposit
-    payTo?: string; // evm: the escrow address, for a pay-on-delivery order
+    payTo?: string; // evm: the escrow address, for a pay-on-delivery order, or a hosted seller's address
+    payee?: string; // a hosted seller's wallet id, which the challenge must name
   }
 
   /** All the checks before money moves. Throws PayError. Returns the hold. */
@@ -586,7 +649,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     if (
       chal.realm !== spec.realm ||
       chal.rail !== rail.name ||
-      chal.recipient !== spec.recipient ||
+      chal.recipient !== (mode.payee ?? spec.recipient) ||
+      (mode.payee !== undefined && rail.name === 'evm' && mode.payTo !== undefined && chal.evm?.recipient !== mode.payTo) ||
       chal.amount !== String(priceMicro) ||
       chal.resource !== resource
     ) {
@@ -636,7 +700,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         amount: priceMicro,
         payer: cred.agent,
         owner: cred.mandate.owner,
-        recipient: spec.recipient,
+        recipient: mode.payee ?? spec.recipient,
         resource,
         realm: spec.realm,
         rail: rail.name,
@@ -696,6 +760,110 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     store.setHoldState(hold.id, 'voided');
   }
 
+  // -- 3.1: an MCP tool behind a paid route. The buyer posts the tool's arguments; the gateway
+  // makes the JSON-RPC call (initialize once per upstream, then tools/call), and answers with the
+  // tool's result: 200 when it ran, 422 when the tool reported an error, 502 when the call failed.
+  // Only a 2xx is paid, so a seller is never paid for a tool that failed.
+  const mcpSessions = new Map<string, { id: string | null; at: number }>();
+  async function callMcpTool(endpoint: string, tool: string, body: Buffer, passHeaders: Record<string, string>, send: typeof fetch): Promise<Response> {
+    const answer = (status: number, doc: unknown) => new Response(JSON.stringify(doc), { status, headers: { 'content-type': 'application/json' } });
+    let args: unknown = {};
+    try { args = body.length ? JSON.parse(body.toString('utf8')) : {}; } catch { return answer(400, { error: 'the body must be the tool arguments as a JSON object' }); }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return answer(400, { error: 'the body must be the tool arguments as a JSON object' });
+    const base: Record<string, string> = { 'content-type': 'application/json', accept: 'application/json, text/event-stream' };
+    for (const k of ['tab-payer', 'tab-owner', 'tab-hold']) if (passHeaders[k]) base[k] = passHeaders[k];
+    let next = 1;
+    const rpc = async (method: string, params: unknown, session: string | null, notify = false): Promise<{ status: number; session: string | null; msg: any }> => {
+      const id = next++;
+      const r = await send(endpoint, {
+        method: 'POST',
+        headers: { ...base, ...(session ? { 'mcp-session-id': session } : {}) },
+        body: JSON.stringify(notify ? { jsonrpc: '2.0', method, params } : { jsonrpc: '2.0', id, method, params }),
+        signal: AbortSignal.timeout(upstreamTimeoutMs),
+      });
+      const text = (await readUpstream(r)).toString('utf8');
+      let msg: any = null;
+      if (!notify && text) {
+        const candidates = /text\/event-stream/.test(r.headers.get('content-type') ?? '')
+          ? text.split(/\r?\n/).filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim())
+          : [text];
+        for (const c of candidates) {
+          try {
+            const parsed = JSON.parse(c);
+            const found = (Array.isArray(parsed) ? parsed : [parsed]).find((m) => m && m.id === id);
+            if (found) { msg = found; break; }
+          } catch { /* not JSON; keep looking */ }
+        }
+      }
+      return { status: r.status, session: r.headers.get('mcp-session-id') ?? session, msg };
+    };
+    const open = async (): Promise<string | null> => {
+      const init = await rpc('initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'tab-gateway', version: VERSION } }, null);
+      if (init.status < 200 || init.status >= 300 || !init.msg?.result) throw new Error(`MCP initialize failed (HTTP ${init.status})`);
+      await rpc('notifications/initialized', {}, init.session, true).catch(() => undefined);
+      mcpSessions.set(endpoint, { id: init.session, at: Date.now() });
+      return init.session;
+    };
+    try {
+      const cached = mcpSessions.get(endpoint);
+      let session = cached && Date.now() - cached.at < 10 * 60_000 ? cached.id : await open();
+      let out = await rpc('tools/call', { name: tool, arguments: args }, session);
+      if (cached && (out.status === 400 || out.status === 404 || !out.msg)) { session = await open(); out = await rpc('tools/call', { name: tool, arguments: args }, session); }
+      if (out.status < 200 || out.status >= 300 || !out.msg) return answer(502, { error: `MCP server answered HTTP ${out.status}` });
+      if (out.msg.error) return answer(502, { error: `MCP error ${out.msg.error.code ?? ''}: ${String(out.msg.error.message ?? '').slice(0, 300)}` });
+      const result = out.msg.result ?? {};
+      return answer(result.isError ? 422 : 200, result);
+    } catch (err) {
+      mcpSessions.delete(endpoint);
+      return answer(502, { error: `MCP server unreachable: ${(err as Error).message}` });
+    }
+  }
+
+  // -- 3.1: spend alerts. After each paid call, the owner hears when a mandate crosses a threshold.
+  const alertsOn = opts.alerts === true;
+  async function alertOnSpend(hold: HoldRow): Promise<void> {
+    if (!alertsOn) return;
+    const row = store.alertSub(hold.owner);
+    if (!row || row.failures >= ALERT_LIMITS.maxFailures) return;
+    const sub = JSON.parse(row.doc) as AlertSub;
+    const m = store.seenMandate(hold.mandate_id) as Mandate | undefined;
+    const budget = m ? Number(m.budget) : 0;
+    if (!m || !(budget > 0)) return;
+    const spent = store.spent(hold.mandate_id, hold.window_key);
+    const pct = Math.floor((spent * 100) / budget);
+    const crossed = thresholdsOf(sub).filter((t) => pct >= t);
+    if (!crossed.length) return;
+    const now = new Date().toISOString();
+    // every threshold crossed is marked, and the highest new one is the message
+    const fresh = crossed.filter((t) => store.markAlertSent(hold.mandate_id, hold.window_key, t, now));
+    if (!fresh.length) return;
+    const top = fresh[fresh.length - 1];
+    const window = m.window === 'day' ? 'today' : 'in total';
+    const title = top >= 100 ? 'tab: an agent used its whole budget' : `tab: an agent used ${top}% of its budget`;
+    const text = `Agent ${hold.payer.slice(0, 8)} has paid ${fmt(spent)} of its ${fmt(budget)} budget ${window} at ${spec.realm} (mandate ${hold.mandate_id.slice(0, 10)}). Last: ${hold.resource}.`;
+    const ok = await deliverAlert(egress, sub, title, text, { event: 'threshold', percent: top, realm: spec.realm, mandate: hold.mandate_id, agent: hold.payer, spent: microToUsd(spent), budget: microToUsd(budget), currency: spec.currency ?? 'USD', last: hold.resource });
+    store.alertDelivered(hold.owner, ok);
+  }
+  async function dailyStatements(): Promise<void> {
+    if (!alertsOn) return;
+    const now = new Date();
+    for (const row of store.alertSubs()) {
+      if (row.failures >= ALERT_LIMITS.maxFailures) continue;
+      const sub = JSON.parse(row.doc) as AlertSub;
+      if (!sub.daily) continue;
+      const period = opts.statementPeriodMs ?? 86_400_000;
+      const since = row.last_daily ?? new Date(now.getTime() - period).toISOString();
+      if (now.getTime() - Date.parse(since) < period) continue;
+      const day = store.ownerSpendSince(sub.owner, since);
+      if (day.calls === 0) { store.alertDelivered(sub.owner, true, now.toISOString()); continue; }
+      const lines = day.top.map((t) => `${fmt(t.amount)}  ${t.resource} (${t.calls})`).join('\n');
+      const ok = await deliverAlert(egress, sub, `tab: ${fmt(day.total)} paid in the last day`, `Your agents paid ${fmt(day.total)} over ${day.calls} calls at ${spec.realm}.\n${lines}`, {
+        event: 'daily', realm: spec.realm, owner: sub.owner, total: microToUsd(day.total), calls: day.calls, currency: spec.currency ?? 'USD', top: day.top.map((t) => ({ resource: t.resource, amount: microToUsd(t.amount), calls: t.calls })), since,
+      });
+      store.alertDelivered(sub.owner, ok, now.toISOString());
+    }
+  }
+
   async function forwardUpstream(
     req: IncomingMessage,
     body: Buffer,
@@ -733,7 +901,10 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     }
     Object.assign(headers, extraHeaders);
     const method = (req.method ?? 'GET').toUpperCase();
-    return fetch(url, {
+    // a hosted listing's upstream is a stranger's URL: only public addresses, never a redirect
+    const send = match.service.hosted ? egress : fetch;
+    if (match.route.mcp_tool) return callMcpTool(match.service.upstream, match.route.mcp_tool, body, headers, send);
+    return send(url, {
       method,
       headers,
       body: method === 'GET' || method === 'HEAD' ? undefined : new Uint8Array(body),
@@ -1461,6 +1632,77 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         return;
       }
 
+      // -- 3.1: hosted listings ------------------------------------------------------------
+      if (pathname === LISTING_PATH && method === 'GET') {
+        if (!listingsOn) { sendJson(res, 404, { error: 'this gateway takes no hosted listings' }); return; }
+        const origin = (opts.origin ?? `https://${spec.realm}`).replace(/\/$/, '');
+        sendJson(res, 200, {
+          realm: spec.realm,
+          listings: spec.services.filter((sv) => sv.hosted).map((sv) => ({
+            slug: sv.hosted!.slug, name: sv.name, description: sv.description, seller: sv.hosted!.seller, ...(sv.hosted!.mcp ? { mcp: true } : {}),
+            url: origin + sv.prefix, routes: sv.routes.length, listed_at: sv.hosted!.listed_at,
+          })),
+          limits: { price: [LISTING_LIMITS.minPrice, LISTING_LIMITS.maxPrice], routes: LISTING_LIMITS.maxRoutes, per_seller: LISTING_LIMITS.perSeller },
+        });
+        return;
+      }
+      if (pathname === LISTING_PATH && method === 'POST') {
+        if (!listingsOn) { sendJson(res, 404, { error: 'this gateway takes no hosted listings' }); return; }
+        const ip = clientIp(req);
+        if (!revocationAllowed(ip)) { sendJson(res, 429, { error: 'too many posts from this address; retry in a minute' }); return; }
+        let l: Listing;
+        try { l = JSON.parse((await readBody(req)).toString('utf8')) as Listing; } catch { sendJson(res, 400, { error: 'post a signed listing as JSON (tab sell builds one)' }); return; }
+        const why = listingProblem(l, { realm: spec.realm, rail: rail.name, allowPrivate: opts.allowPrivateEgress });
+        if (why) { sendJson(res, 400, { error: why }); return; }
+        const existing = store.listing(l.slug);
+        if (existing && existing.seller !== l.seller) { sendJson(res, 409, { error: `${l.slug} is taken; pick another name` }); return; }
+        if (existing && Date.parse((JSON.parse(existing.doc) as Listing).at) >= Date.parse(l.at)) { sendJson(res, 409, { error: 'a newer listing is already here; sign it again' }); return; }
+        const origin = (opts.origin ?? `https://${spec.realm}`).replace(/\/$/, '');
+        if (l.remove) {
+          if (!existing) { sendJson(res, 404, { error: `no listing ${l.slug}` }); return; }
+          store.removeListing(l.slug);
+          loadListings();
+          log(`listing ${l.slug} removed by ${l.seller.slice(0, 8)}`);
+          sendJson(res, 200, { removed: l.slug });
+          return;
+        }
+        const now = new Date();
+        const counts = store.listingCounts(l.seller, ip, new Date(now.getTime() - 3_600_000).toISOString());
+        if (!existing && counts.seller >= LISTING_LIMITS.perSeller) { sendJson(res, 429, { error: `a seller may have ${LISTING_LIMITS.perSeller} listings here` }); return; }
+        if (counts.ipRecent >= LISTING_LIMITS.perIpPerHour) { sendJson(res, 429, { error: 'too many listings from this address this hour' }); return; }
+        if (!existing && counts.all >= LISTING_LIMITS.total) { sendJson(res, 503, { error: 'this gateway is not taking new listings right now' }); return; }
+        store.putListing(l.slug, l.seller, JSON.stringify(l), ip, now.toISOString());
+        loadListings();
+        log(`listing ${l.slug} ${existing ? 'updated' : 'added'} by ${l.seller.slice(0, 8)}: ${l.routes.length} routes -> ${new URL(l.upstream).host}`);
+        sendJson(res, existing ? 200 : 201, {
+          slug: l.slug, url: origin + LISTING_PREFIX + l.slug, terms: origin + '/.well-known/tab',
+          routes: l.routes.map((r) => ({ method: r.method.toUpperCase(), url: origin + LISTING_PREFIX + l.slug + r.path, price: r.price, ...(r.mcp_tool ? { mcp_tool: r.mcp_tool } : {}) })),
+          paid_to: rail.name === 'evm' ? l.evm_payout : l.seller,
+        });
+        return;
+      }
+
+      // -- 3.1: spend alerts -------------------------------------------------------------
+      if (pathname === ALERTS_PATH && method === 'POST') {
+        if (!alertsOn) { sendJson(res, 404, { error: 'this gateway sends no alerts' }); return; }
+        if (!revocationAllowed(clientIp(req))) { sendJson(res, 429, { error: 'too many posts from this address; retry in a minute' }); return; }
+        let a: AlertSub;
+        try { a = JSON.parse((await readBody(req)).toString('utf8')) as AlertSub; } catch { sendJson(res, 400, { error: 'post a signed subscription as JSON (tab alerts set builds one)' }); return; }
+        const why = alertSubProblem(a, { realm: spec.realm, allowPrivate: opts.allowPrivateEgress });
+        if (why) { sendJson(res, 400, { error: why }); return; }
+        const existing = store.alertSub(a.owner);
+        if (existing && Date.parse((JSON.parse(existing.doc) as AlertSub).at) >= Date.parse(a.at)) { sendJson(res, 409, { error: 'a newer subscription is already here; sign it again' }); return; }
+        if (a.off) { store.removeAlertSub(a.owner); sendJson(res, 200, { owner: a.owner, alerts: 'off' }); return; }
+        if (!existing && store.alertSubCount() >= ALERT_LIMITS.total) { sendJson(res, 503, { error: 'this gateway is not taking new subscriptions right now' }); return; }
+        const now = new Date().toISOString();
+        store.putAlertSub(a.owner, JSON.stringify(a), now);
+        if (!existing) store.alertDelivered(a.owner, true, now); // the first statement covers the day from now
+        // a test message, so the owner sees it works; its result is reported, not required
+        const delivered = await deliverAlert(egress, a, 'tab: alerts are on', `You will hear when an agent reaches ${thresholdsOf(a).join(', ')}% of its budget at ${spec.realm}${a.daily ? ', and get a daily statement' : ''}.`, { event: 'subscribed', realm: spec.realm, owner: a.owner });
+        sendJson(res, 200, { owner: a.owner, url: a.url, thresholds: thresholdsOf(a), daily: a.daily === true, test_delivered: delivered });
+        return;
+      }
+
       // -- 3.0: approvals the owner posts, for an agent's retry to find --------------------
       if (pathname === '/.well-known/tab/approvals' && method === 'POST') {
         if (!revocationAllowed(clientIp(req))) { sendJson(res, 429, { error: 'too many posts from this address; retry in a minute' }); return; }
@@ -1678,7 +1920,10 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       const priceMicro = usdToMicro(match.route.price);
       const resource = resourceOf(method, pathname);
       const routeEscrow = canHold ? escrowTerms(match.route) : null;
-      const terms: ChallengeTerms = routeEscrow ? { escrow: routeEscrow } : {};
+      const hosted = match.service.hosted;
+      // a hosted listing pays its seller: their wallet id in the challenge, and on the evm rail their address
+      const hostedTerms: ChallengeTerms = hosted ? { payee: match.service.recipient, ...(rail.name === 'evm' ? { recipient: match.service.evm_recipient } : {}) } : {};
+      const terms: ChallengeTerms = { ...(routeEscrow ? { escrow: routeEscrow } : {}), ...hostedTerms };
       const body = await readBody(req);
       // the credential commits to the body the buyer sent; the body forwarded may carry the route's fixed keys
       const rules = applyBodyRules(match.route, body);
@@ -1704,6 +1949,10 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
 
       // an x402 buyer: a signed EIP-3009 transfer instead of a tab credential
       const x402Header = req.headers['payment-signature'];
+      if (typeof x402Header === 'string' && !req.headers.authorization && hosted) {
+        await respondProblem(res, 'bad-request', 'a hosted listing is paid with a Tab credential, not x402', 400);
+        return;
+      }
       if (x402 && typeof x402Header === 'string' && !req.headers.authorization) {
         const network = x402.x402Requirements(priceMicro).network;
         const refuse = async (code: string, detail: string, status = 402) => {
@@ -1796,6 +2045,10 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       }
       // 3.0: a voucher from an open payment channel instead of a per-call payment
       if (/^\s*TabVoucher\s/.test(auth)) {
+        if (hosted) {
+          await respondChallenge(res, 'invalid-challenge', 'a hosted listing is paid per call, not from a channel', priceMicro, resource, {}, terms);
+          return;
+        }
         await payByVoucher(req, res, auth, match, priceMicro, resource, body, forwardBody, u.search, started);
         return;
       }
@@ -1822,7 +2075,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       let hold: HoldRow;
       try {
         hold = verifyAndReserve(cred, priceMicro, resource, { query: u.search, bodySha256: sha256b64url(body) }, new Date(), {
-          payTo: escrow && rail.name === 'evm' ? cred.challenge.escrow?.recipient : undefined,
+          payTo: escrow && rail.name === 'evm' ? cred.challenge.escrow?.recipient : hosted && rail.name === 'evm' ? match.service.evm_recipient : undefined,
+          payee: hosted ? match.service.recipient : undefined,
         });
       } catch (err) {
         if (err instanceof PayError) {
@@ -1948,6 +2202,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         store.setHoldState(hold.id, 'captured', ref);
         store.addReceipt(receipt);
         await relayResponse(res, upstream, { 'tab-receipt': encodeReceiptHeader(receipt) }, delivered);
+        void alertOnSpend(hold).catch(() => undefined);
         log(`${method} ${pathname} -> ${upstream.status} paid ${fmt(priceMicro)} ${ref} ${Date.now() - started}ms`);
       } else {
         await releaseHold(hold);
@@ -1980,7 +2235,9 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   sweeper.unref();
   const poller = opts.revocationPeers?.length ? setInterval(() => void pollPeers(), opts.revocationPollMs ?? 5_000) : null;
   poller?.unref();
-  server.on('close', () => { clearInterval(prune); clearInterval(sweeper); if (poller) clearInterval(poller); });
+  const statements = alertsOn ? setInterval(() => void dailyStatements().catch(() => undefined), opts.statementCheckMs ?? 15 * 60_000) : null;
+  statements?.unref();
+  server.on('close', () => { clearInterval(prune); clearInterval(sweeper); if (poller) clearInterval(poller); if (statements) clearInterval(statements); });
 
   return server;
 }
