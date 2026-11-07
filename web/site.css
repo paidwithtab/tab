@@ -280,6 +280,8 @@ nav.top .end { display:flex; align-items:center; gap:10px; }
 .lead { max-width:44em; }
 .split { grid-template-columns:minmax(0,1fr) minmax(0,1.2fr); }
 .split > * { min-width:0; }
+/* the two columns stack on phones and small tablets; the rule above would otherwise win over the earlier breakpoint */
+@media (max-width:900px) { .split { grid-template-columns:minmax(0,1fr); } }
 dl.kv dd { min-width:0; overflow-wrap:anywhere; }
 dl.kv dt { white-space:normal; }
 @media (max-width:560px) { dl.kv { grid-template-columns:minmax(0,1fr); gap:4px 0; } dl.kv dd { margin-bottom:12px; } }

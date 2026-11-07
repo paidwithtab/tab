@@ -803,6 +803,10 @@
         <section class="card"><header><h2>${ic('bolt')} Earn</h2></header><div class="body"><p class="fg2" style="margin-top:0">${e && e.gateway ? `Selling through <span class="mono wrap-any">${esc(e.gateway)}</span>. Earned <b>${money(e.earned)}</b> across ${e.receipts.length} receipts.` : 'Publish your company on a gateway and other agents pay it per call, in the same receipts.'}</p>
           <div class="acts"><button class="btn" data-act="publish">${e && e.gateway ? 'Change gateway' : 'Publish'}</button></div></div></section>
       </div>
+      <section class="card"><header><h2>${ic('plug')} Use tab in your editor</h2><span class="dim" style="font-size:12.5px">Your own agents, paying per call under their own budget</span></header><div class="body">
+        <p class="fg2" style="margin-top:0">One command puts tab in the agent tool you already use. On first launch it makes its keys, a $1 a day budget, and claims starter credits.</p>
+        <table class="t">${[['Claude Code', 'claude mcp add --scope user tab -- npx -y paidwithtab mcp'], ['Cursor', 'npx -y paidwithtab setup cursor'], ['Codex', 'npx -y paidwithtab setup codex'], ['Windsurf', 'npx -y paidwithtab setup windsurf'], ['VS Code', 'npx -y paidwithtab setup vscode']].map(([n, cmd]) => `<tr><td style="width:120px"><b>${n}</b></td><td class="mono wrap-any" style="font-size:12.5px">${esc(cmd)}</td><td style="width:70px"><button class="btn" data-copy="${esc(cmd)}">Copy</button></td></tr>`).join('')}</table>
+        <p class="dim" style="font-size:12.5px;margin-bottom:0">Then <span class="mono">tab cost</span> shows what each branch or task spent, <span class="mono">tab verify</span> checks any purchase, and repeated calls within ten minutes are answered from the cache for free.</p></div></section>
       <section class="card"><header><h2>${ic('shield')} Board log</h2><span class="dim" style="font-size:12.5px">Every owner action, signed with the owner key</span></header><div class="body">${v.board.length ? `<table class="t"><tr><th>#</th><th>Action</th><th class="hide-s">When</th><th>Signature</th></tr>${[...v.board].reverse().slice(0, 30).map((b) => `<tr><td class="mono">${b.seq}</td><td><b style="font-weight:500">${esc(b.action)}</b> <span class="dim">${esc(boardWhat(b))}</span></td><td class="dim hide-s">${ago(b.at)}</td><td class="${b.verified ? 'ok' : 'bad'}">${b.verified ? '✓ verified' : '✗ invalid'}</td></tr>`).join('')}</table>` : empty('No board actions yet', 'Hiring, budgets and approvals are signed and listed here.')}</div></section>`;
   };
 
@@ -909,7 +913,7 @@
     const delegs = (v.delegations || []).filter((g) => g.agent_id === id);
     const live = v.runs.filter((r) => r.agent_id === id && r.state === 'running' && r.mandate && !r.mandate.revoked).concat(delegs.filter((g) => !g.mandate.revoked && Date.parse(g.mandate.expires_at) > Date.now()));
     overlay(`<aside class="drawer" role="dialog" aria-label="Agent"><header><img class="av lg" src="${a.img}" alt=""><div style="flex:1;min-width:0"><h2>${esc(a.name)}</h2><div class="fg2">${esc(a.role || '')}</div><div style="margin-top:8px">${st(a.status, STATUS[a.status])}</div></div><button class="icon-btn" data-act="close" aria-label="Close">${ic('x')}</button></header>
-      <div class="scroll"><dl class="kv"><dt>Runs on</dt><dd>${esc(ADAPTERS[a.adapter] || a.adapter)}${a.adapter === 'claude' ? ` <span class="dim mono" style="font-size:12px">${esc((a.config && a.config.model) || 'claude-sonnet-5-5')}</span>` : ''}</dd><dt>Per run</dt><dd class="mono">${money(a.budget_per_run)}</dd><dt>Heartbeat</dt><dd>${a.heartbeat_s ? `every ${esc(a.heartbeat_s)} s` : 'wakes when assigned or mentioned'}</dd>${a.config && a.config.approve_above ? `<dt>Approve above</dt><dd class="mono">${money(a.config.approve_above)}</dd>` : ''}<dt>Spent today</dt><dd class="mono">${money(a.spentToday)}</dd><dt>Last run</dt><dd>${a.last_run_at ? ago(a.last_run_at) : 'never'}</dd><dt>Key</dt><dd class="mono wrap-any" style="font-size:11.5px">${esc(a.agent_pub)}</dd></dl>
+      <div class="scroll"><dl class="kv"><dt>Runs on</dt><dd>${esc(ADAPTERS[a.adapter] || a.adapter)}${a.adapter === 'claude' ? ` <span class="dim mono" style="font-size:12px">${esc((a.config && a.config.model) || 'claude-sonnet-5-5')}</span>` : ''}</dd><dt>Per run</dt><dd class="mono">${money(a.budget_per_run)}</dd><dt>Heartbeat</dt><dd>${a.heartbeat_s ? `every ${esc(a.heartbeat_s)} s` : 'wakes when assigned or mentioned'}</dd>${a.config && a.config.approve_above ? `<dt>Approve above</dt><dd class="mono">${money(a.config.approve_above)}</dd>` : ''}${a.config && a.config.paths ? `<dt>Only routes</dt><dd class="mono wrap-any" style="font-size:12px">${esc(a.config.paths.join(', '))}</dd>` : ''}${a.config && a.config.hours ? `<dt>Only hours</dt><dd>${esc(hoursText(a.config.hours))} UTC</dd>` : ''}<dt>Spent today</dt><dd class="mono">${money(a.spentToday)}</dd><dt>Last run</dt><dd>${a.last_run_at ? ago(a.last_run_at) : 'never'}</dd><dt>Key</dt><dd class="mono wrap-any" style="font-size:11.5px">${esc(a.agent_pub)}</dd></dl>
         ${a.state === 'active' ? `<div class="acts"><button class="btn primary" data-act="new-task" data-for="${esc(a.name)}">${ic('plus')} Give a task</button><button class="btn" data-act="agent-settings" data-for="${esc(a.id)}">${ic('settings')} Settings</button>${live.length ? `<button class="btn danger" data-act="revoke-agent" data-for="${esc(a.id)}" data-name="${esc(a.name)}">${ic('shield')} Revoke mandates</button>` : ''}<button class="btn danger" data-retire="${esc(a.id)}">Retire</button></div>` : ''}
         ${delegs.length ? `<div class="sec"><h3>Delegated budgets</h3><p class="dim" style="font-size:12.5px;margin-top:0">${esc(a.name)} signs a slice of these to each sub-task run. Everything spent under the slices counts against the budget.</p>${delegs.map((g) => `<div class="msg" style="display:flex;justify-content:space-between;gap:10px;align-items:center"><span style="min-width:0"><b style="font-weight:500">${esc(d.ticket(g.ticket_id)?.title || g.ticket_id)}</b><br><span class="dim" style="font-size:12.5px">${money(g.spent)} of ${money(g.mandate.budget)} spent by ${esc(g.to.join(', ') || 'nobody yet')} over ${esc(g.runs)} run${g.runs === 1 ? '' : 's'}</span></span>${g.mandate.revoked ? st('revoked', 'revoked') : `<button class="btn sm danger" data-act="revoke-delegation" data-for="${esc(g.ticket_id)}">Revoke</button>`}</div>`).join('')}</div>` : ''}
         ${a.instructions ? `<div class="sec"><h3>Instructions</h3><div style="white-space:pre-wrap" class="fg2 wrap-any">${esc(a.instructions)}</div></div>` : ''}
@@ -922,7 +926,7 @@
     try {
       const r = (await api(`${C()}/runs/${id}`)).run;
       const mv = S.view.runs.find((x) => x.id === id)?.mandate;
-      el.textContent = `run ${r.id}: ${r.state}${r.error ? `\nerror: ${r.error}` : ''}\nspent ${r.spent} through tab, ${r.model_cost} model${r.mandate ? `\nmandate ${r.mandate.id} at ${(r.mandate.allow || []).join(', ')}` : ''}${mv && mv.delegated_by ? `\ndelegated by ${mv.delegated_by} from ${mv.chain.map((x) => `${x.agent} (${x.budget})`).join(' < ')}` : ''}${mv && mv.approve_above ? `\npayments above ${mv.approve_above} need your approval` : ''}${mv && mv.revoked ? '\nREVOKED: the gateways refuse this mandate' : ''}\n\n${r.result ? JSON.stringify(r.result, null, 2) + '\n\n' : ''}${r.output || ''}`;
+      el.textContent = `run ${r.id}: ${r.state}${r.error ? `\nerror: ${r.error}` : ''}\nspent ${r.spent} through tab, ${r.model_cost} model${r.mandate ? `\nmandate ${r.mandate.id} at ${(r.mandate.allow || []).join(', ')}` : ''}${mv && mv.delegated_by ? `\ndelegated by ${mv.delegated_by} from ${mv.chain.map((x) => `${x.agent} (${x.budget})`).join(' < ')}` : ''}${mv && mv.approve_above ? `\npayments above ${mv.approve_above} need your approval` : ''}${mv && mv.paths ? `\nonly routes ${mv.paths.join(', ')}` : ''}${mv && mv.hours ? `\nonly ${mv.hours}` : ''}${mv && mv.revoked ? '\nREVOKED: the gateways refuse this mandate' : ''}\n\n${r.result ? JSON.stringify(r.result, null, 2) + '\n\n' : ''}${r.output || ''}`;
     } catch (e) { el.textContent = e.message; }
   }
 
@@ -990,13 +994,22 @@
   const revokedText = (r) => r.revoked && r.revoked.length ? `Revoked at ${r.results.filter((x) => x.ok).length} of ${r.results.length} gateway${r.results.length === 1 ? '' : 's'}` : 'Already revoked';
   async function togglePause() { const paused = S.view.company.state === 'paused'; await api(`${C()}/${paused ? 'resume' : 'pause'}`, {}); toast(paused ? 'Company resumed' : 'Company paused'); await refresh(); }
   const MODELS = [['claude-sonnet-5-5', 'Sonnet 5.5 (default)'], ['claude-haiku-5-5', 'Haiku 5.5, fastest and cheapest'], ['claude-opus-5-5', 'Opus 5.5, most capable']];
+  const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+  /** An agent's hours as the form writes them: "mon,tue 9-17". */
+  function hoursText(h) {
+    if (!h) return '';
+    const days = Array.isArray(h.days) ? h.days.map((d) => DAYS[d]).join(',') : '';
+    const span = h.from !== undefined || h.to !== undefined ? `${h.from ?? 0}-${h.to ?? 24}` : '';
+    return [days, span].filter(Boolean).join(' ');
+  }
   function agentSettingsModal(el) {
     const a = S.d.byId.get(el.dataset.for); if (!a) return;
     const cur = (a.config && a.config.model) || 'claude-sonnet-5-5';
     modal(`${a.name}'s settings`, 'What this agent thinks with and what it may spend. This is a signed board action.', `${a.adapter === 'claude' ? `<label class="f" for="as-model">Model</label><select id="as-model">${MODELS.map(([id, n]) => `<option value="${id}"${id === cur ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>` : ''}
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px"><div><label class="f" for="as-budget">Per run</label><input id="as-budget" value="${esc(a.budget_per_run)}" inputmode="decimal"></div><div><label class="f" for="as-max">Per call</label><input id="as-max" value="${esc((a.config && a.config.max_per_call) || '')}" placeholder="no cap" inputmode="decimal"></div><div><label class="f" for="as-appr">Approve above</label><input id="as-appr" value="${esc((a.config && a.config.approve_above) || '')}" placeholder="never" inputmode="decimal"></div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><div><label class="f" for="as-paths">Only these routes</label><input id="as-paths" value="${esc(((a.config && a.config.paths) || []).join(', '))}" placeholder="any route, e.g. /search*, /weather/*"></div><div><label class="f" for="as-hours">Only these hours (UTC)</label><input id="as-hours" value="${esc(hoursText(a.config && a.config.hours))}" placeholder="any time, e.g. mon-fri 9-17"></div></div>
       <label class="f" for="as-instr">Instructions</label><textarea id="as-instr">${esc(a.instructions || '')}</textarea>`, 'Save', async () => {
-      const body = { budget_per_run: val('as-budget'), max_per_call: val('as-max'), approve_above: val('as-appr'), instructions: $('as-instr').value };
+      const body = { budget_per_run: val('as-budget'), max_per_call: val('as-max'), approve_above: val('as-appr'), paths: val('as-paths'), hours: val('as-hours'), instructions: $('as-instr').value };
       if ($('as-model')) body.model = val('as-model');
       await api(`${C()}/agents/${a.id}/configure`, body);
       toast(`${a.name} updated`);
@@ -1048,6 +1061,8 @@
   };
   // one delegated click handler for the whole OS
   document.addEventListener('click', (e) => {
+    const cp = e.target.closest('[data-copy]');
+    if (cp) { navigator.clipboard?.writeText(cp.dataset.copy).then(() => toast('Copied'), () => toast(cp.dataset.copy)); return; }
     const t = e.target.closest('[data-act],[data-go],[data-agent],[data-ticket],[data-approve],[data-reject],[data-review],[data-retire],[data-run],[data-range],[data-theme],[data-switch]');
     document.querySelectorAll('.menu').forEach((m) => { if (!m.parentElement.contains(e.target)) m.remove(); });
     if (!$('notes').hidden && !e.target.closest('#notes, #bell')) $('notes').hidden = true;

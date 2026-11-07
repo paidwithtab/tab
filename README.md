@@ -12,10 +12,10 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/spec-draft%200.8-1f6feb?style=flat-square" alt="Spec draft 0.8">
+  <img src="https://img.shields.io/badge/spec-draft%200.9-1f6feb?style=flat-square" alt="Spec draft 0.9">
   <img src="https://img.shields.io/badge/wire-tab%2F0-1f6feb?style=flat-square" alt="Wire protocol tab/0">
   <img src="https://img.shields.io/badge/node-22.13%2B-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node 22.13+">
-  <img src="https://img.shields.io/badge/checks-571-2da44e?style=flat-square" alt="571 automated checks">
+  <img src="https://img.shields.io/badge/checks-706-2da44e?style=flat-square" alt="706 automated checks">
   <img src="https://img.shields.io/badge/settlement-USDG-2775ca?style=flat-square" alt="USDG settlement">
   <img src="https://img.shields.io/badge/license-MIT-24292f?style=flat-square" alt="MIT license">
 </p>
@@ -140,6 +140,25 @@ A mandate is a signed spending authorization from an owner to an agent.
 | Expires | `2026-10-01` |
 
 The owner key never has to be online while the agent is working. Every payment is checked independently by the seller's gateway against the signed mandate, so changing the agent's prompt cannot increase its authority.
+
+## New in 3.2
+
+tab inside the x402 market that already exists, money saved you can see, more reasons to sell, and every charge publicly checkable.
+
+| Upgrade | What it does | From the CLI |
+| --- | --- | --- |
+| x402 sellers in search | The catalog reads the public x402 discovery list, about 33,000 routes from 3,200 sellers that take USDC on Base, beside tab's own. Agents pay them from their own address within the same mandate. | `tab catalog serve --x402-list bazaar`, `tab catalog add-x402 <origin>` |
+| A cache of paid results | The same GET within ten minutes is answered from the first purchase's proof, for nothing, and still verifies. POST answers only when the seller marks them reusable. | `TAB_CACHE_TTL`, `tab_fetch` with `fresh: true` |
+| Cost per task | Every paid call is tagged with the task, or the git branch, and summed with what the cache saved. `tab_estimate` prices a plan first. | `tab cost --by task` |
+| The cheapest seller that works | Gateways publish each route's 7-day reliability; search ranks working sellers first, and a failed call comes back with alternatives. | `tab_search` with `sort: "cheapest"` |
+| Rules in the mandate | Which routes, and which hours, signed into the mandate and enforced by gateways and the client. In tab OS, per agent. | `tab mandate issue --paths "/search*" --hours "mon-fri 9-17"` |
+| A public receipt log | Every receipt goes into a Merkle tree with a signed head. `tab verify` checks a receipt is in it; `tab log check` proves the log only grew. | `tab log check` |
+| For sellers | Free calls per buyer per day, a notice on the first sale and daily earnings, signed earnings stats, routes priced by the kilobyte. | `tab sell ... --free 3 --notify-ntfy`, `tab sell stats` |
+| Card top-ups and referrals | Stripe Checkout credits a ledger wallet once its signed webhook arrives; a referrer earns 10% of a referred buyer's card-funded spend. | `tab topup 5`, `tab serve --stripe --referrals` |
+| One command per tool | Cursor, Windsurf, VS Code and Codex, beside Claude Code. | `tab setup cursor` |
+| Base | A gateway spec for USDC on Base, and the client's Base signing domain checked against the chain. | `examples/spec-base.json` |
+
+SPEC.md draft 0.9 has the wire format: rules in §2.3, free calls and metering in §5.6, the log in §5.9. docs/integrations.md covers every agent tool and framework.
 
 ## New in 3.1
 
@@ -412,7 +431,7 @@ Security issues involving payment invariants should be reported privately throug
 
 ## Testing
 
-tab currently runs 571 automated checks across protocol behavior, the 3.0 and 3.1 features, adversarial conditions, EVM settlement and the company orchestrator, plus 40 browser checks of the dashboard and 20 checks of the channel contract on a real EVM.
+tab currently runs 706 automated checks across protocol behavior, the 3.0, 3.1 and 3.2 features, adversarial conditions, EVM settlement and the company orchestrator, plus 40 browser checks of the dashboard and 20 checks of the channel contract on a real EVM.
 
 | Suite | Checks | Coverage |
 | --- | :---: | --- |
@@ -420,8 +439,9 @@ tab currently runs 571 automated checks across protocol behavior, the 3.0 and 3.
 | `npm run test:v3` | 109 | Revoke and gateways sharing revocations, sub-mandates and their limits, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools and CLI |
 | `npm run test:adversarial` | 68 | Concurrency, replay, mutation, SSRF, persistence, body smuggling, forged and tampered receipts, voucher floods against one deposit, sibling sub-mandates racing one budget, revocation floods, oversized upstream answers, catalog announce floods |
 | `npm run test:v31` | 69 | The MCP server setting itself up on first launch, proof folders and `tab verify` against forged bodies, receipts, requests and mandates, hosted listings paid to the seller and every way one is refused (SSRF, replay, slug theft, prices, limits), MCP servers sold per tool call over JSON and SSE, spend alerts and the daily statement |
-| `npm run test:evm` | 96 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways, the testnet faucet, escrow and channels through an escrow address, hosted listings paid on chain to the seller's address |
-| `npm run test:company` | 139 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, hire requests with model and per call cap, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary, payment approvals, revoke, delegated budgets, orders and channels |
+| `npm run test:v32` | 127 | Spending rules in mandates on both sides and in sub-mandates, free calls, calls priced by size, route reliability, the receipt log with inclusion and consistency proofs and `tab log check`, seller stats and sale notices, card top-ups through a fake Stripe (forged, replayed and mismatched webhooks), referrals and their caps, usage stats, the cache, cost per task, estimates, x402 sellers in the catalog with ranking and alternatives, `tab setup` |
+| `npm run test:evm` | 99 | Cryptography, EVM transactions, Robinhood Chain, x402 both ways, the testnet faucet, escrow and channels through an escrow address, hosted listings paid on chain to the seller's address, and Base read live: its USDC signing domain matches what tab signs |
+| `npm run test:company` | 144 | Accounts and the trust boundary, runs that pay at a real gateway, evidence and verified receipts, budgets, hire requests with model and per call cap, the signed board log, sealed model keys, the claude adapter against a scripted Messages API, claude-code through a fake binary, payment approvals, revoke, delegated budgets, orders and channels, agents' route and hour rules carried into their mandates |
 | `npm run test:dashboard` | 40 | tab OS in a real browser (Playwright, `npx playwright install chromium` once): sign up, the quickstart's starter agent paying and answering, found from a template, add a model key, claim credits, a ticket runs to done, evidence and run log, a payment approved at phone width, a revoked run, a channel opened and settled, an order released, log out; `--live` also loads the public site and app |
 | `npm run test:contract` | 20 | `contracts/TabChannel.sol` on a real EVM (needs `GANACHE`): open, cumulative vouchers, payee close, replay, forged and oversized vouchers, unilateral close and the dispute window, deployment from the CLI |
 

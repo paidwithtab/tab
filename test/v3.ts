@@ -115,7 +115,7 @@ async function main(): Promise<void> {
   const { server: gwC, url: C } = await gatewayAt(spec('c.local'), { store: storeC, revocationPeers: [A], revocationPollMs: 300, sweepMs: 200 });
 
   const disc = await json(await fetch(`${A}/.well-known/tab`));
-  check('discovery names the 3.0 features and where they live', disc.features.join(',') === 'revoke,delegation,approval,escrow,channels'
+  check('discovery names the 3.0 features and where they live', disc.features.join(',') === 'revoke,delegation,approval,log,escrow,channels'
     && disc.revocations === '/.well-known/tab/revocations' && disc.channels.min_deposit === '0.05'
     && disc.services[0].routes.find((r: any) => r.path === '/job').escrow.timeout_s === 30
     && disc.services[0].routes.find((r: any) => r.path === '/model').meter.unit === 'token'

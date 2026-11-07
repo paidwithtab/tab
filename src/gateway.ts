@@ -29,11 +29,14 @@ import {
   type ProblemCode,
   type Receipt,
 } from './protocol.js';
-import { mandateExpired, realmAllowed, verifyMandate, mandateChain, approvalThreshold, perCallCap, type Mandate } from './mandate.js';
+import { mandateExpired, realmAllowed, verifyMandate, mandateChain, approvalThreshold, perCallCap, ruleProblem, type Mandate } from './mandate.js';
 import { checkAndSpendChain, refundChain } from './rails/budget.js';
 import { revokedIn, verifyRevocation, mayRevoke, type Revocation } from './revoke.js';
 import { approvalRequest, approvalProblem, approvalRequestValid, approvalKey, type Approval, type ApprovalRequest } from './approval.js';
 import { CHANNEL_PATH, parseVoucherHeader, verifyVoucher, closeMessage } from './channel.js';
+import { treeHash, inclusionProof, consistencyProof, signTreeHead, receiptLeaf, b64, type TreeHead } from './log.js';
+import { createCheckout, verifyWebhook, TOPUP_LIMITS, type StripeConfig } from './stripe.js';
+import { usageStats, sellerStatsMessage } from './usage.js';
 import { verifyBytes } from './keys.js';
 import { createRail, EvmRail, PayoutPending, PayoutUnknown, LockTimeout, type Rail } from './rails/index.js';
 import type { KeyPair } from './keys.js';
@@ -49,6 +52,14 @@ import { erc20, selector, parseTx, hexToBytes, bytesToHex } from './evm/tx.js';
 
 // chains where a faucet would give away real money
 const MAINNETS = new Set([1, 10, 56, 137, 4663, 8453, 42161, 43114]);
+
+// 3.2 endpoints
+export const LOG_PATH = '/.well-known/tab/log';
+export const TOPUP_PATH = '/.well-known/tab/topup';
+export const STATS_PATH = '/.well-known/tab/stats';
+export const SELLER_STATS_PATH = '/.well-known/tab/seller/stats';
+/** Referrals: the referrer earns this percent of a referred buyer's card-funded spend, on up to this much of it. */
+export const REFERRAL = { pct: 10, capMicro: 5_000_000 };
 
 // ---------------------------------------------------------------------------
 // spec
@@ -74,14 +85,18 @@ export interface RouteSpec {
    */
   escrow?: { timeout_s?: number } | boolean;
   /**
-   * 3.0, metered: on a payment channel the call costs per_unit times the units the upstream
-   * reports in a Tab-Units response header, never more than `price`, which per-call buyers pay.
+   * 3.0, metered: the call costs per_unit times the units used, never more than `price`. Units are
+   * what the upstream reports in a Tab-Units response header, or for unit "kb" the response size the
+   * gateway counts itself (3.2). On a channel and, from 3.2, per call on the ledger rail the buyer
+   * pays what was used; per-call buyers on the evm rail pay `price`.
    */
   meter?: { unit: string; per_unit: string };
   /** 3.1: the route calls this MCP tool on an MCP upstream; the buyer's JSON body is the tool's arguments. */
   mcp_tool?: string;
   /** 3.1: the tool's JSON Schema, shown in discovery. */
   input_schema?: Record<string, unknown>;
+  /** 3.2: calls each buyer gets free per day before paying, counted per agent key and per client address. */
+  free_per_day?: number;
 }
 
 export interface ServiceSpec {
@@ -110,7 +125,7 @@ export interface ServiceSpec {
   recipient?: string;
   evm_recipient?: string;
   /** 3.1: a hosted listing a seller signed and posted; served under /s/<slug>/ through the guarded fetch. */
-  hosted?: { seller: string; slug: string; mcp?: boolean; listed_at: string };
+  hosted?: { seller: string; slug: string; mcp?: boolean; listed_at: string; notify?: string };
   routes: RouteSpec[];
 }
 
@@ -195,6 +210,9 @@ export function loadSpec(path: string): Spec {
           throw new Error(`service ${s.name} route ${r.path}: meter needs {"unit": "token", "per_unit": "0.000002"}`);
         }
         if (usdToMicro(r.meter.per_unit) <= 0) throw new Error(`service ${s.name} route ${r.path}: meter.per_unit must be above zero`);
+      }
+      if (r.free_per_day !== undefined && !(Number.isInteger(r.free_per_day) && r.free_per_day >= 1 && r.free_per_day <= 10_000)) {
+        throw new Error(`service ${s.name} route ${r.path}: free_per_day must be a whole number 1 to 10000`);
       }
       const micro = usdToMicro(r.price); // validate prices early
       // a token with fewer than 6 decimals cannot carry every micro amount
@@ -337,12 +355,28 @@ export interface GatewayOptions {
   /** 3.1: how often daily statements are checked (default 15 min) and how long a statement covers (default 24 h). */
   statementCheckMs?: number;
   statementPeriodMs?: number;
+  /** 3.2: card top-ups through Stripe Checkout (ledger rail). Off unless set. */
+  stripe?: StripeConfig;
+  /** 3.2: a starter-credit claim may name a referrer, who earns 10% of that buyer's card-funded spend, up to $5 of it. */
+  referrals?: boolean;
+  /** 3.2: addresses and owner wallets that are the operator's own, left out of the usage stats. */
+  houseIps?: string[];
+  houseOwners?: string[];
+  /** 3.2: GET /.well-known/tab/stats answers only with this bearer token; unset means the stats are off. */
+  statsToken?: string;
   /** How often overdue escrows are refunded and expired channels settled; default 5 s. */
   sweepMs?: number;
   /** A payout that did not settle is tried again after this, doubling each time up to an hour; default 10 s. */
   payoutRetryMs?: number;
   /** Tries before a payout is marked stuck for the operator; default 12. */
   maxPayoutTries?: number;
+}
+
+const escHtml = (v: string): string => v.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+/** Compare secrets in constant time. */
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
 }
 
 /** Escrow terms of a route, or null when it does not take pay on delivery. */
@@ -406,10 +440,11 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       rate_limit_group: 'listing:' + l.slug,
       recipient: l.seller,
       ...(l.evm_payout ? { evm_recipient: l.evm_payout.toLowerCase() } : {}),
-      hosted: { seller: l.seller, slug: l.slug, ...(l.mcp ? { mcp: true } : {}), listed_at: listedAt },
+      hosted: { seller: l.seller, slug: l.slug, ...(l.mcp ? { mcp: true } : {}), listed_at: listedAt, ...(l.notify ? { notify: l.notify } : {}) },
       routes: l.routes.map((r) => ({
         method: r.method.toUpperCase(), path: r.path, price: r.price, description: r.description,
         ...(r.mcp_tool ? { mcp_tool: r.mcp_tool } : {}), ...(r.input_schema ? { input_schema: r.input_schema } : {}),
+        ...(r.free_per_day ? { free_per_day: r.free_per_day } : {}),
       })),
     };
   }
@@ -421,6 +456,16 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     }
   }
   loadListings();
+
+  // 3.2: receipts from before the log existed join it first, in the order they were issued
+  for (const r of store.unloggedReceipts()) store.logAppend(r.id, receiptLeaf(r), r.at);
+  let headCache: { size: number; head: TreeHead; at: number } | null = null;
+  function headOf(size: number, leaves: Buffer[]): TreeHead {
+    if (headCache && headCache.size === size && Date.now() - headCache.at < 60_000) return headCache.head;
+    const head = signTreeHead(store.receiptKey, spec.realm, size, treeHash(leaves));
+    if (size === store.logSize()) headCache = { size, head, at: Date.now() };
+    return head;
+  }
 
   /** An upstream body, read with a running cap: one huge answer must not take the gateway's memory with it. */
   async function readUpstream(upstream: Response): Promise<Buffer> {
@@ -485,6 +530,23 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     });
   };
 
+  // 3.2: per route reliability over the last 7 days, read at most once a minute
+  let statsCache: { at: number; map: Map<string, { ok: number; fail: number; avg_ms: number | null }> } | null = null;
+  const routeStatsNow = () => {
+    if (!statsCache || Date.now() - statsCache.at > 60_000) statsCache = { at: Date.now(), map: store.routeStats(new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10)) };
+    return statsCache.map;
+  };
+  const routeKey = (sv: ServiceSpec, r: RouteSpec) => `${sv.name}|${r.method.toUpperCase()} ${r.path}`;
+  const statsOf = (sv: ServiceSpec, r: RouteSpec) => {
+    const st = routeStatsNow().get(routeKey(sv, r));
+    if (!st || st.ok + st.fail === 0) return undefined;
+    return { calls_7d: st.ok + st.fail, ok_rate: Math.round((st.ok * 1000) / (st.ok + st.fail)) / 1000, ...(st.avg_ms !== null ? { avg_ms: st.avg_ms } : {}) };
+  };
+  // 3.2: metered routes charge per call on the ledger rail too (any unit the upstream reports, or kb the gateway counts)
+  const meterPerCall = rail.name === 'ledger';
+  const topupsOn = !!opts.stripe && rail.name === 'ledger';
+  const referralsOn = opts.referrals === true && rail.name === 'ledger' && faucetMicro > 0;
+
   const discovery = () => ({
     ver: VERSION,
     realm: spec.realm,
@@ -511,17 +573,21 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         price: r.price,
         description: r.description,
         ...(escrowTerms(r) && canHold ? { escrow: escrowTerms(r) } : {}),
-        ...(r.meter && channelsOn ? { meter: r.meter } : {}),
+        ...(r.meter && (channelsOn || meterPerCall) ? { meter: r.meter } : {}),
         ...(r.mcp_tool ? { mcp_tool: r.mcp_tool } : {}),
         ...(r.input_schema ? { input_schema: r.input_schema } : {}),
+        ...(r.free_per_day ? { free_per_day: r.free_per_day } : {}),
+        ...(statsOf(s, r) ? { stats: statsOf(s, r) } : {}),
       })),
     })),
     // 3.0: what this gateway takes beyond a plain paid call, and where
-    features: ['revoke', 'delegation', 'approval', ...(listingsOn ? ['listings'] : []), ...(opts.alerts ? ['alerts'] : []), ...(spec.services.some((s) => s.routes.some((r) => r.escrow)) && canHold ? ['escrow'] : []), ...(channelsOn ? ['channels'] : [])],
+    features: ['revoke', 'delegation', 'approval', 'log', ...(listingsOn ? ['listings'] : []), ...(topupsOn ? ['topup'] : []), ...(referralsOn ? ['referrals'] : []), ...(opts.alerts ? ['alerts'] : []), ...(spec.services.some((s) => s.routes.some((r) => r.escrow)) && canHold ? ['escrow'] : []), ...(channelsOn ? ['channels'] : [])],
     revocations: '/.well-known/tab/revocations',
     approvals: '/.well-known/tab/approvals',
     ...(listingsOn ? { listings: LISTING_PATH } : {}),
     ...(opts.alerts ? { alerts: ALERTS_PATH } : {}),
+    log: LOG_PATH,
+    ...(topupsOn ? { topup: { path: TOPUP_PATH, min: String(TOPUP_LIMITS.minUsd), max: String(TOPUP_LIMITS.maxUsd) } } : {}),
     ...(channelsOn ? { channels: { open: CHANNEL_PATH, min_deposit: microToUsd(minDeposit), max_ttl_s: maxChannelTtl / 1000 } } : {}),
   });
 
@@ -678,6 +744,9 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     if (!realmAllowed(cred.mandate, spec.realm)) {
       throw new PayError('mandate-denied', `realm ${spec.realm} not in mandate allow list`);
     }
+    // a channel deposit is not a route; each voucher against it is checked in payByVoucher
+    const rule = resource === resourceOf('POST', CHANNEL_PATH) ? null : ruleProblem(cred.mandate, resource, now);
+    if (rule) throw new PayError('mandate-denied', rule);
     const revoked = revocationError(cred.mandate);
     if (revoked) throw revoked;
     const approvalId = approvalNeeded(cred.mandate, cred.approval, priceMicro, resource, actual, now);
@@ -861,6 +930,42 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         event: 'daily', realm: spec.realm, owner: sub.owner, total: microToUsd(day.total), calls: day.calls, currency: spec.currency ?? 'USD', top: day.top.map((t) => ({ resource: t.resource, amount: microToUsd(t.amount), calls: t.calls })), since,
       });
       store.alertDelivered(sub.owner, ok, now.toISOString());
+    }
+  }
+
+  // -- 3.2: reliability, metering, sellers' sale notices --------------------------------------
+  function noteOutcome(match: Match, ok: boolean, started: number): void {
+    try { store.routeOutcome(routeKey(match.service, match.route), new Date().toISOString().slice(0, 10), ok, Date.now() - started); } catch { /* stats never fail a call */ }
+  }
+  /** Units a metered call used: kb the gateway counts itself, or what the upstream reports in Tab-Units. */
+  function meteredUnits(meter: { unit: string }, upstream: Response, delivered: Buffer): number | null {
+    if (meter.unit === 'kb') return Math.max(1, Math.ceil(delivered.length / 1024));
+    const reported = upstream.headers.get('tab-units');
+    return reported !== null && /^\d+(\.\d+)?$/.test(reported.trim()) ? Number(reported) : null;
+  }
+  async function afterSale(hold: HoldRow, match: Match): Promise<void> {
+    if (referralsOn) {
+      const r = store.rewardReferral(hold.owner, hold.amount, REFERRAL.capMicro, REFERRAL.pct);
+      if (r && r.earned > 0) log(`referral: ${r.referrer.slice(0, 8)} earned ${fmt(r.earned)} from ${hold.owner.slice(0, 8)}`);
+    }
+    const notify = match.service.hosted?.notify;
+    if (notify && store.salesCount(hold.recipient) === 1) {
+      await deliverAlert(egress, sellerSub(notify), 'tab: your first sale', `Someone paid ${fmt(hold.amount)} for ${hold.resource} at ${spec.realm}. It is in your wallet now.`, { event: 'first-sale', realm: spec.realm, resource: hold.resource, amount: microToUsd(hold.amount), currency: spec.currency ?? 'USD' });
+    }
+  }
+  const sellerSub = (url: string): AlertSub => ({ ver: '', kind: 'alerts', realm: spec.realm, owner: '', url, format: /^https:\/\/ntfy\.sh\//.test(url) ? 'text' : 'json', at: '', sig: '' });
+  async function sellerStatements(): Promise<void> {
+    const day = new Date().toISOString().slice(0, 10);
+    const since = new Date(Date.now() - (opts.statementPeriodMs ?? 86_400_000)).toISOString();
+    const seen = new Set<string>();
+    for (const sv of spec.services) {
+      const h = sv.hosted;
+      if (!h?.notify || seen.has(h.seller)) continue;
+      seen.add(h.seller);
+      const e = store.earningsOf(h.seller, since);
+      if (e.calls === 0 || !store.markAlertSent(`seller:${h.seller}`, day, 0, new Date().toISOString())) continue;
+      const lines = e.resources.slice(0, 5).map((r) => `${fmt(r.amount)}  ${r.resource} (${r.calls})`).join('\n');
+      await deliverAlert(egress, sellerSub(h.notify), `tab: you earned ${fmt(e.total)} in the last day`, `${e.calls} paid calls at ${spec.realm}.\n${lines}`, { event: 'seller-daily', realm: spec.realm, seller: h.seller, total: microToUsd(e.total), calls: e.calls, currency: spec.currency ?? 'USD' });
     }
   }
 
@@ -1204,6 +1309,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     const revoked = revocationError(mandate);
     if (revoked) return refuse(revoked.code, revoked.detail);
     if (mandateExpired(mandate, now)) return refuse('mandate-invalid', 'mandate expired');
+    const rule = ruleProblem(mandate, resource, now);
+    if (rule) return refuse('mandate-denied', rule);
     const cap = perCallCap(mandate);
     if (cap !== null && priceMicro > cap) return refuse('mandate-exceeded', `amount ${fmt(priceMicro)} exceeds the mandate per-call cap ${fmt(cap)}`);
     const threshold = approvalThreshold(mandate);
@@ -1236,9 +1343,11 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       delivered = await readUpstream(upstream);
     } catch (err) {
       store.channelSettleCall(c.id, priceMicro, 0);
+      noteOutcome(match, false, started);
       await respondProblem(res, 'upstream-failed', `upstream unreachable: ${(err as Error).message}`, 502);
       return;
     }
+    noteOutcome(match, upstream.status < 500, started);
     if (upstream.status < 200 || upstream.status >= 300) {
       store.channelSettleCall(c.id, priceMicro, 0);
       await relayResponse(res, upstream, { 'tab-void': c.id, 'tab-channel': stateHeader() }, delivered);
@@ -1249,9 +1358,9 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     let units: number | undefined;
     let charged = priceMicro;
     const meter = match.route.meter;
-    const reported = upstream.headers.get('tab-units');
-    if (meter && reported !== null && /^\d+(\.\d+)?$/.test(reported.trim())) {
-      units = Number(reported);
+    const n = meter ? meteredUnits(meter, upstream, delivered) : null;
+    if (meter && n !== null) {
+      units = n;
       charged = Math.min(priceMicro, Math.ceil(units * usdToMicro(meter.per_unit)));
     }
     store.channelSettleCall(c.id, priceMicro, charged);
@@ -1493,8 +1602,11 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           return;
         }
         let wallet = '';
+        let referrer = '';
         try {
-          wallet = String(JSON.parse((await readBody(req)).toString('utf8') || '{}').wallet ?? '');
+          const doc = JSON.parse((await readBody(req)).toString('utf8') || '{}');
+          wallet = String(doc.wallet ?? '');
+          referrer = typeof doc.ref === 'string' ? doc.ref : '';
         } catch {
           /* fall through to the validation below */
         }
@@ -1542,7 +1654,9 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           return;
         }
         const credited = store.claimFaucet(wallet, ip, faucetMicro, now.toISOString());
-        log(`faucet ${wallet} ${credited ? 'credited ' + microToUsd(faucetMicro) : 'already claimed'} (${ip})`);
+        // 3.2: a new wallet may name who sent it; that referrer earns from its card-funded spend
+        const referred = credited && referralsOn && /^[A-Za-z0-9_-]{43}$/.test(referrer) && referrer !== wallet && store.setReferral(wallet, referrer, now.toISOString());
+        log(`faucet ${wallet} ${credited ? 'credited ' + microToUsd(faucetMicro) : 'already claimed'} (${ip})${referred ? ` referred by ${referrer.slice(0, 8)}` : ''}`);
         sendJson(res, 200, {
           wallet,
           credited: credited ? microToUsd(faucetMicro) : '0.00',
@@ -1633,6 +1747,124 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       }
 
       // -- 3.1: hosted listings ------------------------------------------------------------
+      // -- 3.2: the public receipt log ----------------------------------------------------------
+      if (pathname === LOG_PATH || pathname.startsWith(LOG_PATH + '/')) {
+        if (method !== 'GET') { sendJson(res, 405, { error: 'method not allowed' }); return; }
+        if (!lookupAllowed(clientIp(req))) { sendJson(res, 429, { error: 'too many lookups from this address; retry in a minute' }); return; }
+        const size = store.logSize();
+        const want = u.searchParams.get('size');
+        const n = want === null ? size : Number(want);
+        if (!Number.isSafeInteger(n) || n < 0 || n > size) { sendJson(res, 400, { error: `size must be 0 to ${size}` }); return; }
+        const leaves = store.logLeaves(n);
+        const head = headOf(n, leaves);
+        if (pathname === LOG_PATH) { sendJson(res, 200, { head, proof: `${LOG_PATH}/proof?receipt=<id>`, consistency: `${LOG_PATH}/consistency?from=<size>` }); return; }
+        if (pathname === LOG_PATH + '/proof') {
+          const id = u.searchParams.get('receipt') ?? '';
+          const index = store.logIndexOf(id);
+          if (index === null) { sendJson(res, 404, { error: 'no receipt with that id in the log' }); return; }
+          if (index >= n) { sendJson(res, 400, { error: `that receipt is entry ${index}, after a tree of size ${n}` }); return; }
+          sendJson(res, 200, { receipt: id, index, size: n, leaf: b64(leaves[index]), proof: inclusionProof(index, leaves).map(b64), head });
+          return;
+        }
+        if (pathname === LOG_PATH + '/consistency') {
+          const from = Number(u.searchParams.get('from'));
+          if (!Number.isSafeInteger(from) || from < 0 || from > n) { sendJson(res, 400, { error: `from must be 0 to ${n}` }); return; }
+          sendJson(res, 200, { from, to: n, proof: consistencyProof(from, leaves).map(b64), head });
+          return;
+        }
+        sendJson(res, 404, { error: 'not found' });
+        return;
+      }
+
+      // -- 3.2: a seller's earnings, for the seller (signed request) ----------------------------
+      if (pathname === SELLER_STATS_PATH && method === 'GET') {
+        if (!lookupAllowed(clientIp(req))) { sendJson(res, 429, { error: 'too many lookups from this address; retry in a minute' }); return; }
+        const seller = u.searchParams.get('seller') ?? '', at = u.searchParams.get('at') ?? '', sig = u.searchParams.get('sig') ?? '';
+        const t = Date.parse(at);
+        if (!/^[A-Za-z0-9_-]{43}$/.test(seller) || !Number.isFinite(t) || Math.abs(Date.now() - t) > 10 * 60_000) { sendJson(res, 400, { error: 'ask with seller, a current at and sig (tab sell stats signs it)' }); return; }
+        if (!verifyBytes(seller, sellerStatsMessage(spec.realm, seller, at), sig)) { sendJson(res, 403, { error: 'signature does not verify for that seller' }); return; }
+        const days = Math.min(Math.max(Number(u.searchParams.get('days') ?? 30) || 30, 1), 90);
+        const e = store.earningsOf(seller, new Date(Date.now() - days * 86_400_000).toISOString());
+        const mine = spec.services.filter((sv) => sv.hosted?.seller === seller);
+        sendJson(res, 200, {
+          realm: spec.realm, seller, days, currency: spec.currency ?? 'USD',
+          total: microToUsd(e.total), calls: e.calls, first_sale: e.first,
+          balance: microToUsd(await rail.balance(seller).catch(() => 0)),
+          listings: mine.map((sv) => {
+            const rs = e.resources.filter((r) => r.resource.split(' ')[1]?.startsWith(sv.prefix + '/'));
+            return { slug: sv.hosted!.slug, name: sv.name, calls: rs.reduce((a, r) => a + r.calls, 0), earned: microToUsd(rs.reduce((a, r) => a + r.amount, 0)),
+              routes: sv.routes.map((r) => ({ method: r.method, path: r.path, price: r.price, ...(r.free_per_day ? { free_per_day: r.free_per_day } : {}), ...(statsOf(sv, r) ? { stats: statsOf(sv, r) } : {}) })) };
+          }),
+          resources: e.resources.map((r) => ({ resource: r.resource, calls: r.calls, earned: microToUsd(r.amount) })),
+          top_buyers: e.buyers.map((b) => ({ owner: b.owner.slice(0, 10), calls: b.calls, paid: microToUsd(b.amount) })),
+          by_day: e.days.map((d) => ({ day: d.day, calls: d.calls, earned: microToUsd(d.amount) })),
+          ...(referralsOn ? { referrals: (() => { const r = store.referralsBy(seller); return { buyers: r.buyers, earned: microToUsd(r.earned) }; })() } : {}),
+        });
+        return;
+      }
+
+      // -- 3.2: card top-ups -----------------------------------------------------------------------
+      if (pathname === TOPUP_PATH && method === 'POST') {
+        if (!topupsOn) { sendJson(res, 404, { error: 'this gateway takes no card top-ups' }); return; }
+        const ip = clientIp(req);
+        let doc: { wallet?: unknown; usd?: unknown } = {};
+        try { doc = JSON.parse((await readBody(req)).toString('utf8') || '{}'); } catch { /* checked below */ }
+        const wallet = String(doc.wallet ?? '');
+        const usd = Number(doc.usd);
+        if (!/^[A-Za-z0-9_-]{43}$/.test(wallet)) { sendJson(res, 400, { error: 'wallet must be a tab wallet id (your owner key, tab balance shows it)' }); return; }
+        if (!Number.isInteger(usd) || usd < TOPUP_LIMITS.minUsd || usd > TOPUP_LIMITS.maxUsd) { sendJson(res, 400, { error: `usd must be a whole number of dollars, ${TOPUP_LIMITS.minUsd} to ${TOPUP_LIMITS.maxUsd}` }); return; }
+        const now = new Date();
+        if (store.topupsFrom(ip, new Date(now.getTime() - 3_600_000).toISOString()) >= TOPUP_LIMITS.perIpPerHour) { sendJson(res, 429, { error: 'too many top-ups from this address this hour' }); return; }
+        const id = randomId();
+        store.putTopup({ id, wallet, amount: usd * 1_000_000, ip, created_at: now.toISOString() });
+        const origin = publicOrigin() || `https://${spec.realm}`;
+        try {
+          const co = await createCheckout(opts.stripe!, fetch, { topupId: id, wallet, cents: usd * 100, realm: spec.realm, origin });
+          log(`topup ${id} opened: ${usd} USD for ${wallet.slice(0, 8)} (${ip})`);
+          sendJson(res, 201, { id, wallet, usd: String(usd), pay: co.url, status: `${origin}${TOPUP_PATH}/${id}` });
+        } catch (err) {
+          sendJson(res, 502, { error: `the card processor did not open a payment: ${(err as Error).message}` });
+        }
+        return;
+      }
+      if (pathname === TOPUP_PATH + '/webhook' && method === 'POST') {
+        if (!topupsOn) { sendJson(res, 404, { error: 'this gateway takes no card top-ups' }); return; }
+        const raw = await readBody(req);
+        const ev = verifyWebhook(opts.stripe!.webhookSecret, String(req.headers['stripe-signature'] ?? ''), raw);
+        if (!ev) { sendJson(res, 400, { error: 'signature does not verify' }); return; }
+        if (ev.type === 'checkout.session.completed' || ev.type === 'checkout.session.async_payment_succeeded') {
+          const o = ev.data.object;
+          const id = String(o.client_reference_id ?? '');
+          if (o.payment_status === 'paid' && typeof o.amount_total === 'number' && o.currency === 'usd') {
+            const paid = store.payTopup(id, o.amount_total * 10_000, new Date().toISOString());
+            log(`topup ${id} ${paid ? `paid: credited ${microToUsd(o.amount_total * 10_000)}` : 'already credited or unknown'}`);
+          }
+        }
+        sendJson(res, 200, { received: true });
+        return;
+      }
+      const tm = /^\/\.well-known\/tab\/topup\/([A-Za-z0-9_-]{8,40})$/.exec(pathname);
+      if (tm && method === 'GET') {
+        const t = topupsOn ? store.topup(tm[1]) : undefined;
+        if (!t) { sendJson(res, 404, { error: 'no such top-up' }); return; }
+        const body = { id: t.id, wallet: t.wallet, usd: microToUsd(t.amount), state: t.state, ...(t.paid_at ? { paid_at: t.paid_at } : {}), ...(t.state === 'paid' ? { balance: microToUsd(store.balance(t.wallet)) } : {}) };
+        if (/text\/html/.test(String(req.headers.accept ?? ''))) {
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'" });
+          res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>tab top-up</title><body style="font:16px system-ui;background:#0b0b0c;color:#eee;display:grid;place-items:center;min-height:90vh;margin:0 16px"><div><h1 style="font-size:22px">${t.state === 'paid' ? `$${escHtml(microToUsd(t.amount))} added` : 'Waiting for the payment'}</h1><p>${t.state === 'paid' ? `Your wallet at ${escHtml(spec.realm)} now holds $${escHtml(microToUsd(store.balance(t.wallet)))}. You can close this page.` : 'This page shows the credit once the card payment completes. Refresh in a few seconds.'}</p></div></body>`);
+          return;
+        }
+        sendJson(res, 200, body);
+        return;
+      }
+
+      // -- 3.2: usage stats, for the operator ---------------------------------------------------------
+      if (pathname === STATS_PATH && method === 'GET') {
+        if (!opts.statsToken || !safeEqual(String(req.headers.authorization ?? ''), `Bearer ${opts.statsToken}`)) { sendJson(res, 404, { error: 'not found' }); return; }
+        const days = Math.min(Math.max(Number(u.searchParams.get('days') ?? 30) || 30, 1), 365);
+        sendJson(res, 200, usageStats(store, { days, houseIps: opts.houseIps ?? [], houseOwners: opts.houseOwners ?? [], realm: spec.realm, listings: spec.services.filter((sv) => sv.hosted).length }));
+        return;
+      }
+
       if (pathname === LISTING_PATH && method === 'GET') {
         if (!listingsOn) { sendJson(res, 404, { error: 'this gateway takes no hosted listings' }); return; }
         const origin = (opts.origin ?? `https://${spec.realm}`).replace(/\/$/, '');
@@ -1994,9 +2226,11 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           upstream = await forwardUpstream(req, forwardBody, match, u.search, hold);
         } catch (err) {
           await releaseHold(hold);
+          noteOutcome(match, false, started);
           await respondProblem(res, 'upstream-failed', `upstream unreachable: ${(err as Error).message}`, 502);
           return;
         }
+        noteOutcome(match, upstream.status < 500, started);
         if (upstream.status < 200 || upstream.status >= 300) {
           await releaseHold(hold);
           await relayResponse(res, upstream, { 'tab-void': hold.id });
@@ -2110,6 +2344,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
         } : undefined);
       } catch (err) {
         await releaseHold(hold);
+        noteOutcome(match, false, started);
         await respondProblem(res, 'upstream-failed', `upstream unreachable: ${(err as Error).message}`, 502);
         log(`${method} ${pathname} -> 502 upstream-failed (hold ${hold.id} released)`);
         return;
@@ -2168,6 +2403,41 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           log(`${method} ${pathname} -> ${upstream.status} escrow delivered at once ${fmt(priceMicro)} ${receipt?.ref ?? '(payout owed)'}`);
           return;
         }
+        noteOutcome(match, true, started);
+        // 3.2: one of the route's free calls, or a metered call that used less than the price
+        const freeCalls = match.route.free_per_day;
+        if (freeCalls && store.takeFreeCall([[`agent:${hold.payer}`, freeCalls], [`ip:${clientIp(req)}`, freeCalls * 3]], routeKey(match.service, match.route), new Date().toISOString().slice(0, 10))) {
+          await releaseHold(hold);
+          const receipt: Receipt = signReceipt(store.receiptKey, {
+            id: hold.id, realm: spec.realm, resource, amount: '0', currency: spec.currency ?? 'USD', rail: rail.name,
+            payer: hold.payer, owner: hold.owner, recipient: hold.recipient, ref: `free:${hold.id}`, at: new Date().toISOString(),
+            mandate: hold.mandate_id, challenge: hold.challenge_id, request: cred.request, credential: cred.sig,
+            response: { status: upstream.status, body_sha256: sha256b64url(delivered) }, authorized: String(priceMicro), free: true,
+          });
+          store.addReceipt(receipt);
+          await relayResponse(res, upstream, { 'tab-receipt': encodeReceiptHeader(receipt) }, delivered);
+          log(`${method} ${pathname} -> ${upstream.status} free call (${freeCalls} a day) ${Date.now() - started}ms`);
+          return;
+        }
+        let units: { n: number; unit: string } | undefined;
+        const meter = match.route.meter;
+        if (meter && meterPerCall) {
+          const n = meteredUnits(meter, upstream, delivered);
+          if (n !== null) {
+            units = { n, unit: meter.unit };
+            const charged = Math.min(priceMicro, Math.ceil(n * usdToMicro(meter.per_unit)));
+            if (charged < hold.amount) {
+              // the hold was the price; what it did not use goes back to the owner and the budget
+              const back = hold.amount - charged;
+              store.tx(() => {
+                store.credit(hold.owner, back);
+                refundChain(store, hold.mandate_id, hold.window_key, hold.chain, back);
+                store.setHoldAmount(hold.id, charged);
+              });
+              hold.amount = charged;
+            }
+          }
+        }
         let ref: string;
         try {
           ref = await rail.capture(hold);
@@ -2185,7 +2455,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           id: hold.id,
           realm: spec.realm,
           resource,
-          amount: String(priceMicro),
+          amount: String(hold.amount),
           currency: spec.currency ?? 'USD',
           rail: rail.name,
           payer: hold.payer,
@@ -2198,13 +2468,17 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           request: cred.request,
           credential: cred.sig,
           response: { status: upstream.status, body_sha256: sha256b64url(delivered) },
+          ...(hold.amount !== priceMicro ? { authorized: String(priceMicro) } : {}),
+          ...(units ? { units } : {}),
         });
         store.setHoldState(hold.id, 'captured', ref);
         store.addReceipt(receipt);
         await relayResponse(res, upstream, { 'tab-receipt': encodeReceiptHeader(receipt) }, delivered);
         void alertOnSpend(hold).catch(() => undefined);
-        log(`${method} ${pathname} -> ${upstream.status} paid ${fmt(priceMicro)} ${ref} ${Date.now() - started}ms`);
+        void afterSale(hold, match).catch(() => undefined);
+        log(`${method} ${pathname} -> ${upstream.status} paid ${fmt(hold.amount)}${units ? ` (${units.n} ${units.unit} of ${fmt(priceMicro)})` : ''} ${ref} ${Date.now() - started}ms`);
       } else {
+        if (upstream.status >= 500) noteOutcome(match, false, started);
         await releaseHold(hold);
         await relayResponse(res, upstream, { 'tab-void': hold.id });
         log(`${method} ${pathname} -> ${upstream.status} voided ${hold.id}`);
@@ -2235,7 +2509,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   sweeper.unref();
   const poller = opts.revocationPeers?.length ? setInterval(() => void pollPeers(), opts.revocationPollMs ?? 5_000) : null;
   poller?.unref();
-  const statements = alertsOn ? setInterval(() => void dailyStatements().catch(() => undefined), opts.statementCheckMs ?? 15 * 60_000) : null;
+  const statements = alertsOn || listingsOn ? setInterval(() => { void dailyStatements().catch(() => undefined); if (listingsOn) void sellerStatements().catch(() => undefined); }, opts.statementCheckMs ?? 15 * 60_000) : null;
   statements?.unref();
   server.on('close', () => { clearInterval(prune); clearInterval(sweeper); if (poller) clearInterval(poller); if (statements) clearInterval(statements); });
 

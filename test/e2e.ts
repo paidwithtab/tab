@@ -564,8 +564,8 @@ async function main(): Promise<void> {
   const init = await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'e2e', version: '0' } });
   check('mcp initialize', init.result?.serverInfo?.name === 'tab');
   const tools = await rpc('tools/list');
-  check('mcp lists the five 2.x tools first, then the 3.0 ones; tab_delegate only when turned on', tools.result?.tools?.length === 7
-    && tools.result.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,tab_escrow,tab_channel');
+  check('mcp lists the five 2.x tools first, then the 3.0 and 3.2 ones; tab_delegate only when turned on', tools.result?.tools?.length === 9
+    && tools.result.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,tab_escrow,tab_channel,tab_estimate,tab_cost');
   const limits = await rpc('tools/call', { name: 'tab_limits', arguments: {} });
   check('mcp tab_limits', JSON.parse(limits.result.content[0].text).budget_usd === '1.00');
   const search = await rpc('tools/call', { name: 'tab_search', arguments: { query: 'quote' } });

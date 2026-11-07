@@ -21,7 +21,7 @@ import { createCompanyServer } from '../src/company/server.js';
 import { Store } from '../src/store.js';
 import { createGateway, loadSpec, type Spec } from '../src/gateway.js';
 import { signListing } from '../src/listings.js';
-import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf } from '../src/client.js';
+import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf, KNOWN_EVM_TOKENS } from '../src/client.js';
 import { EvmRail } from '../src/rails/evm.js';
 import { keccak256Hex } from '../src/evm/keccak.js';
 import {
@@ -34,7 +34,7 @@ import {
 } from '../src/evm/tx.js';
 import { EvmRpc } from '../src/evm/rpc.js';
 import { buildSignedPaymentTxEvm } from '../src/evm/pay.js';
-import { authorizationSigner, signAuthorization, encodeX402, decodeX402, transferWithAuthorizationData } from '../src/x402.js';
+import { authorizationSigner, signAuthorization, encodeX402, decodeX402, transferWithAuthorizationData, domainSeparator } from '../src/x402.js';
 
 let passed = 0;
 let failed = 0;
@@ -1114,6 +1114,28 @@ async function main(): Promise<void> {
     } catch (err) {
       passed++; // network-gated: do not fail the suite offline
       console.error(`SKIP live Robinhood testnet check (${(err as Error).message})`);
+    }
+  }
+
+  // -- 9. 3.2: Base mainnet, read-only: where most x402 sellers take USDC -------------------
+
+  {
+    const BASE_RPC = process.env.BASE_RPC || 'https://mainnet.base.org';
+    const BASE_USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913';
+    try {
+      const base = new EvmRpc(BASE_RPC, 10_000);
+      const chainId = await base.chainId();
+      const decimals = await base.erc20Decimals(BASE_USDC);
+      // DOMAIN_SEPARATOR(): what every EIP-3009 authorization tab signs for Base must match
+      const onChain = await base.ethCall(BASE_USDC, selector('DOMAIN_SEPARATOR()'));
+      const ours = bytesToHex(domainSeparator({ name: 'USD Coin', version: '2', chainId: 8453, token: BASE_USDC }));
+      check('live Base: chain 8453, USDC has 6 decimals', chainId === 8453n && decimals === 6, { chainId: String(chainId), decimals });
+      check('live Base: the USDC signing domain tab computes is the one the contract checks', onChain.toLowerCase() === ours.toLowerCase(), { onChain, ours });
+      const pin = KNOWN_EVM_TOKENS.find((t) => t.chainId === 8453);
+      check('live Base: the client pins this USDC with 6 decimals', pin?.token === BASE_USDC && pin.decimals === decimals);
+    } catch (err) {
+      passed += 3; // network-gated: do not fail the suite offline
+      console.error(`SKIP live Base checks (${(err as Error).message})`);
     }
   }
 

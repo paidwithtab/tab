@@ -1,9 +1,11 @@
 // A Model Context Protocol server on stdio, implemented without an SDK.
 // Newline-delimited JSON-RPC 2.0. The tools of src/tools.ts: tab_limits, tab_search,
-// tab_discover, tab_fetch, tab_balance, and since 3.0 tab_escrow, tab_delegate,
-// tab_channel. Runs where Claude Code runs.
+// tab_discover, tab_fetch, tab_balance, since 3.0 tab_escrow, tab_delegate,
+// tab_channel, and since 3.2 tab_estimate and tab_cost. Runs where Claude Code runs.
 
 import { createInterface } from 'node:readline';
+import { execFileSync } from 'node:child_process';
+import { basename } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -29,8 +31,40 @@ export interface McpOptions {
 
 const PROTOCOL_VERSION = '2024-11-05';
 
+/**
+ * 3.2: what the agent is working on, for tab cost: TAB_TASK when set, else the git repository and
+ * branch of the folder the agent runs in ("tab@fix-login"), asked at most every 30 s. Null outside git.
+ */
+export function currentTask(cwd = process.cwd()): () => string | null {
+  let last: { at: number; task: string | null } | null = null;
+  return () => {
+    if (process.env.TAB_TASK) return process.env.TAB_TASK;
+    if (last && Date.now() - last.at < 30_000) return last.task;
+    let task: string | null = null;
+    try {
+      const git = (...a: string[]) => execFileSync('git', a, { cwd, stdio: ['ignore', 'pipe', 'ignore'], timeout: 2_000 }).toString().trim();
+      const top = git('rev-parse', '--show-toplevel');
+      const branch = git('rev-parse', '--abbrev-ref', 'HEAD');
+      task = `${basename(top)}@${branch}`;
+    } catch { /* not a git folder */ }
+    last = { at: Date.now(), task };
+    return task;
+  };
+}
+
+/** TAB_CACHE_TTL: seconds a paid result is reused, "off" or 0 for never; default 600. */
+export function cacheTtlFromEnv(v = process.env.TAB_CACHE_TTL): number | undefined {
+  if (v === undefined || v === '') return undefined;
+  if (v === 'off') return 0;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, 86_400) * 1000 : undefined;
+}
+
 export function runMcpServer(opts: McpOptions): void {
-  serveMcpStdio(createTabTools({ ...opts, channels: { file: opts.channelsFile }, proofDir: opts.proofDir, allowDelegate: process.env.TAB_ALLOW_DELEGATE === '1' }));
+  serveMcpStdio(createTabTools({
+    ...opts, channels: { file: opts.channelsFile }, proofDir: opts.proofDir, allowDelegate: process.env.TAB_ALLOW_DELEGATE === '1',
+    task: currentTask(), cacheTtlMs: cacheTtlFromEnv(),
+  }));
 }
 
 /** What an MCP server on stdio offers: a tool list and a way to call one. */

@@ -9,6 +9,7 @@ import type { Revocation } from './revoke.js';
 import type { Approval } from './approval.js';
 import type { ChannelState } from './channel.js';
 import { newKeyPair, type KeyPair } from './keys.js';
+import { receiptLeaf } from './log.js';
 
 export interface HoldRow {
   id: string;
@@ -192,6 +193,11 @@ export class Store {
       CREATE INDEX IF NOT EXISTS holds_owner_time ON holds (owner, created_at);
       CREATE TABLE IF NOT EXISTS alert_subs (owner TEXT PRIMARY KEY, doc TEXT NOT NULL, last_daily TEXT, failures INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS alerts_sent (mandate_id TEXT NOT NULL, window_key TEXT NOT NULL, pct INTEGER NOT NULL, at TEXT NOT NULL, PRIMARY KEY (mandate_id, window_key, pct));
+      CREATE TABLE IF NOT EXISTS receipt_log (seq INTEGER PRIMARY KEY, receipt_id TEXT NOT NULL UNIQUE, leaf BLOB NOT NULL, at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS free_calls (who TEXT NOT NULL, route TEXT NOT NULL, day TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (who, route, day));
+      CREATE TABLE IF NOT EXISTS route_stats (route TEXT NOT NULL, day TEXT NOT NULL, ok INTEGER NOT NULL DEFAULT 0, fail INTEGER NOT NULL DEFAULT 0, ms INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (route, day));
+      CREATE TABLE IF NOT EXISTS topups (id TEXT PRIMARY KEY, wallet TEXT NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT);
+      CREATE TABLE IF NOT EXISTS referrals (buyer TEXT PRIMARY KEY, referrer TEXT NOT NULL, counted INTEGER NOT NULL DEFAULT 0, earned INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
     `);
     try { this.db.exec('ALTER TABLE payouts ADD COLUMN cancels TEXT'); } catch { /* column already exists */ }
     // 3.0: revocations keep the mandate that authorizes them, so peers can check it too
@@ -405,6 +411,11 @@ export class Store {
     return { ...r, chain: typeof r.chain === 'string' ? JSON.parse(r.chain) : null };
   }
 
+  /** 3.2: a metered call charges less than it held; the hold keeps what was charged. */
+  setHoldAmount(id: string, amount: number): void {
+    this.db.prepare('UPDATE holds SET amount = ? WHERE id = ?').run(amount, id);
+  }
+
   setHoldState(id: string, state: HoldRow['state'], ref: string | null = null): void {
     this.db.prepare('UPDATE holds SET state = ?, ref = ? WHERE id = ?').run(state, ref, id);
   }
@@ -415,6 +426,8 @@ export class Store {
         'INSERT INTO receipts (id, realm, resource, amount, currency, rail, payer, owner, recipient, ref, at, doc) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
       )
       .run(r.id, r.realm, r.resource, Number(r.amount), r.currency ?? 'USD', r.rail, r.payer, r.owner, r.recipient, r.ref, r.at, r.sig ? JSON.stringify(r) : null);
+    // 3.2: every signed receipt goes into the public log, in the order it was issued
+    if (r.sig) this.logAppend(r.id, receiptLeaf(r), r.at);
   }
 
   receipts(limit: number, filter: { payer?: string; since?: string } = {}): Receipt[] {
@@ -803,6 +816,181 @@ export class Store {
     return { total: Number(sum.total), calls: Number(sum.calls), top: top.map((t) => ({ resource: String(t.resource), amount: Number(t.amount), calls: Number(t.calls) })) };
   }
 
+  // -- 3.2: receipt log -----------------------------------------------------------------
+
+  /** Append a leaf for a receipt; a receipt is logged once. Returns its 0-based index. */
+  logAppend(receiptId: string, leaf: Buffer, at: string): number {
+    this.db.prepare('INSERT OR IGNORE INTO receipt_log (receipt_id, leaf, at) VALUES (?, ?, ?)').run(receiptId, leaf, at);
+    return this.logIndexOf(receiptId)!;
+  }
+
+  logSize(): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM receipt_log').get() as { n: number }).n);
+  }
+
+  /** The first n leaves, in order. */
+  logLeaves(n: number): Buffer[] {
+    return (this.db.prepare('SELECT leaf FROM receipt_log ORDER BY seq LIMIT ?').all(n) as Array<{ leaf: Uint8Array }>).map((r) => Buffer.from(r.leaf));
+  }
+
+  logIndexOf(receiptId: string): number | null {
+    const r = this.db.prepare('SELECT seq FROM receipt_log WHERE receipt_id = ?').get(receiptId) as { seq: number } | undefined;
+    if (!r) return null;
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM receipt_log WHERE seq < ?').get(r.seq) as { n: number }).n);
+  }
+
+  /** Signed receipts not yet in the log, oldest first (receipts from before 3.2). */
+  unloggedReceipts(): Receipt[] {
+    return (this.db.prepare('SELECT doc FROM receipts WHERE doc IS NOT NULL AND id NOT IN (SELECT receipt_id FROM receipt_log) ORDER BY rowid').all() as Array<{ doc: string }>).map((r) => JSON.parse(r.doc) as Receipt);
+  }
+
+  receiptById(id: string): Receipt | undefined {
+    const r = this.db.prepare('SELECT doc FROM receipts WHERE id = ?').get(id) as { doc: string | null } | undefined;
+    return r?.doc ? (JSON.parse(r.doc) as Receipt) : undefined;
+  }
+
+  // -- 3.2: free calls --------------------------------------------------------------------
+
+  /** Take one free call of `route` today for every key in `who`, if each is under its limit. All or none. */
+  takeFreeCall(who: Array<[string, number]>, route: string, day: string): boolean {
+    return this.tx(() => {
+      for (const [w, limit] of who) {
+        const r = this.db.prepare('SELECT n FROM free_calls WHERE who = ? AND route = ? AND day = ?').get(w, route, day) as { n: number } | undefined;
+        if ((r?.n ?? 0) >= limit) return false;
+      }
+      for (const [w] of who) {
+        this.db.prepare('INSERT INTO free_calls (who, route, day, n) VALUES (?, ?, ?, 1) ON CONFLICT(who, route, day) DO UPDATE SET n = n + 1').run(w, route, day);
+      }
+      return true;
+    });
+  }
+
+  pruneFreeCalls(beforeDay: string): void {
+    this.db.prepare('DELETE FROM free_calls WHERE day < ?').run(beforeDay);
+  }
+
+  // -- 3.2: route reliability ---------------------------------------------------------------
+
+  routeOutcome(route: string, day: string, ok: boolean, ms: number): void {
+    this.db.prepare(`INSERT INTO route_stats (route, day, ok, fail, ms) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(route, day) DO UPDATE SET ok = ok + excluded.ok, fail = fail + excluded.fail, ms = ms + excluded.ms`).run(route, day, ok ? 1 : 0, ok ? 0 : 1, ok ? Math.max(0, Math.round(ms)) : 0);
+  }
+
+  /** Per route since a day: calls that worked, calls that failed, mean milliseconds of the ones that worked. */
+  routeStats(sinceDay: string): Map<string, { ok: number; fail: number; avg_ms: number | null }> {
+    const rows = this.db.prepare('SELECT route, SUM(ok) AS ok, SUM(fail) AS fail, SUM(ms) AS ms FROM route_stats WHERE day >= ? GROUP BY route').all(sinceDay) as Array<{ route: string; ok: number; fail: number; ms: number }>;
+    return new Map(rows.map((r) => [String(r.route), { ok: Number(r.ok), fail: Number(r.fail), avg_ms: Number(r.ok) ? Math.round(Number(r.ms) / Number(r.ok)) : null }]));
+  }
+
+  pruneRouteStats(beforeDay: string): void {
+    this.db.prepare('DELETE FROM route_stats WHERE day < ?').run(beforeDay);
+  }
+
+  // -- 3.2: seller stats --------------------------------------------------------------------
+
+  /** What a recipient earned here since a time: per resource, and the owners who paid most. */
+  earningsOf(recipient: string, sinceIso: string): { total: number; calls: number; first: string | null; resources: Array<{ resource: string; amount: number; calls: number }>; buyers: Array<{ owner: string; amount: number; calls: number }>; days: Array<{ day: string; amount: number; calls: number }> } {
+    const sum = this.db.prepare("SELECT COALESCE(SUM(amount), 0) AS total, COUNT(*) AS calls, MIN(created_at) AS first FROM holds WHERE recipient = ? AND state = 'captured' AND created_at >= ?").get(recipient, sinceIso) as { total: number; calls: number; first: string | null };
+    const by = (col: string, limit: number) => this.db.prepare(`SELECT ${col} AS k, SUM(amount) AS amount, COUNT(*) AS calls FROM holds WHERE recipient = ? AND state = 'captured' AND created_at >= ? GROUP BY k ORDER BY amount DESC, calls DESC LIMIT ${limit}`).all(recipient, sinceIso) as Array<{ k: string; amount: number; calls: number }>;
+    const days = this.db.prepare("SELECT substr(created_at, 1, 10) AS k, SUM(amount) AS amount, COUNT(*) AS calls FROM holds WHERE recipient = ? AND state = 'captured' AND created_at >= ? GROUP BY k ORDER BY k").all(recipient, sinceIso) as Array<{ k: string; amount: number; calls: number }>;
+    return {
+      total: Number(sum.total), calls: Number(sum.calls), first: sum.first ?? null,
+      resources: by('resource', 50).map((r) => ({ resource: String(r.k), amount: Number(r.amount), calls: Number(r.calls) })),
+      buyers: by('owner', 10).map((r) => ({ owner: String(r.k), amount: Number(r.amount), calls: Number(r.calls) })),
+      days: days.map((r) => ({ day: String(r.k), amount: Number(r.amount), calls: Number(r.calls) })),
+    };
+  }
+
+  /** Captured calls ever paid to a recipient (to spot the first sale). */
+  salesCount(recipient: string): number {
+    return Number((this.db.prepare("SELECT COUNT(*) AS n FROM holds WHERE recipient = ? AND state = 'captured'").get(recipient) as { n: number }).n);
+  }
+
+  // -- 3.2: card top-ups ----------------------------------------------------------------------
+
+  putTopup(t: { id: string; wallet: string; amount: number; ip: string; created_at: string }): void {
+    this.db.prepare("INSERT INTO topups (id, wallet, amount, state, ip, created_at) VALUES (?, ?, ?, 'open', ?, ?)").run(t.id, t.wallet, t.amount, t.ip, t.created_at);
+  }
+
+  topup(id: string): { id: string; wallet: string; amount: number; state: string; created_at: string; paid_at: string | null } | undefined {
+    return this.db.prepare('SELECT id, wallet, amount, state, created_at, paid_at FROM topups WHERE id = ?').get(id) as { id: string; wallet: string; amount: number; state: string; created_at: string; paid_at: string | null } | undefined;
+  }
+
+  /** Mark a top-up paid and credit its wallet, once: false when it was already paid or is unknown. */
+  payTopup(id: string, amount: number, at: string): boolean {
+    return this.tx(() => {
+      const r = this.db.prepare("UPDATE topups SET state = 'paid', paid_at = ? WHERE id = ? AND state = 'open' AND amount = ?").run(at, id, amount);
+      if (Number(r.changes) === 0) return false;
+      const t = this.topup(id)!;
+      this.credit(t.wallet, t.amount);
+      return true;
+    });
+  }
+
+  topupsFrom(ip: string, sinceIso: string): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM topups WHERE ip = ? AND created_at >= ?').get(ip, sinceIso) as { n: number }).n);
+  }
+
+  /** Card money a wallet has put in, in micro units. */
+  toppedUp(wallet: string): number {
+    return Number((this.db.prepare("SELECT COALESCE(SUM(amount), 0) AS n FROM topups WHERE wallet = ? AND state = 'paid'").get(wallet) as { n: number }).n);
+  }
+
+  // -- 3.2: referrals -----------------------------------------------------------------------------
+
+  /** Name who referred a buyer; the first referrer stays. */
+  setReferral(buyer: string, referrer: string, at: string): boolean {
+    const r = this.db.prepare('INSERT OR IGNORE INTO referrals (buyer, referrer, created_at) VALUES (?, ?, ?)').run(buyer, referrer, at);
+    return Number(r.changes) > 0;
+  }
+
+  referralOf(buyer: string): { buyer: string; referrer: string; counted: number; earned: number } | undefined {
+    return this.db.prepare('SELECT buyer, referrer, counted, earned FROM referrals WHERE buyer = ?').get(buyer) as { buyer: string; referrer: string; counted: number; earned: number } | undefined;
+  }
+
+  /**
+   * Count `spend` by a referred buyer: up to `capMicro` of their spend, and never more than the
+   * card money they put in, earns the referrer `pct` percent, credited here. Returns what was earned.
+   */
+  rewardReferral(buyer: string, spend: number, capMicro: number, pct: number): { referrer: string; earned: number } | null {
+    return this.tx(() => {
+      const r = this.referralOf(buyer);
+      if (!r) return null;
+      const room = Math.min(capMicro, this.toppedUp(buyer)) - r.counted;
+      const counted = Math.max(0, Math.min(room, spend));
+      if (counted <= 0) return null;
+      const earned = Math.floor((counted * pct) / 100);
+      this.db.prepare('UPDATE referrals SET counted = counted + ?, earned = earned + ? WHERE buyer = ?').run(counted, earned, buyer);
+      if (earned > 0) this.credit(r.referrer, earned);
+      return { referrer: r.referrer, earned };
+    });
+  }
+
+  referralsBy(referrer: string): { buyers: number; earned: number } {
+    const r = this.db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(earned), 0) AS e FROM referrals WHERE referrer = ?').get(referrer) as { n: number; e: number };
+    return { buyers: Number(r.n), earned: Number(r.e) };
+  }
+
+  // -- 3.2: usage stats ---------------------------------------------------------------------------
+
+  /** Owners whose starter credits were claimed from one of these addresses (the house's own). */
+  ownersClaimedFrom(ips: string[]): Set<string> {
+    if (!ips.length) return new Set();
+    const rows = this.db.prepare(`SELECT wallet FROM faucet_claims WHERE ip IN (${ips.map(() => '?').join(',')})`).all(...ips) as Array<{ wallet: string }>;
+    return new Set(rows.map((r) => String(r.wallet)));
+  }
+
+  /** Paid calls since a time, per owner, with spend; for usage stats. */
+  usageSince(sinceIso: string): Array<{ owner: string; calls: number; amount: number; first: string; last: string }> {
+    return (this.db.prepare("SELECT owner, COUNT(*) AS calls, SUM(amount) AS amount, MIN(created_at) AS first, MAX(created_at) AS last FROM holds WHERE state = 'captured' AND created_at >= ? GROUP BY owner").all(sinceIso) as Array<{ owner: string; calls: number; amount: number; first: string; last: string }>)
+      .map((r) => ({ owner: String(r.owner), calls: Number(r.calls), amount: Number(r.amount), first: String(r.first), last: String(r.last) }));
+  }
+
+  /** Faucet claims since a time, with the address they came from. */
+  claimsSince(sinceIso: string): Array<{ wallet: string; ip: string; at: string }> {
+    return (this.db.prepare('SELECT wallet, ip, at FROM faucet_claims WHERE at >= ?').all(sinceIso) as Array<{ wallet: string; ip: string; at: string }>).map((r) => ({ wallet: String(r.wallet), ip: String(r.ip), at: String(r.at) }));
+  }
+
   close(): void {
     this.db.close();
   }
@@ -890,6 +1078,45 @@ export class CatalogStore {
 
   count(): number {
     return Number((this.db.prepare('SELECT COUNT(*) AS n FROM gateways').get() as { n: number }).n);
+  }
+
+  // -- 3.2: x402 sellers the catalog lists beside tab gateways ---------------------------------
+
+  private x402Ready = false;
+  private x402Table(): void {
+    if (this.x402Ready) return;
+    this.db.exec('CREATE TABLE IF NOT EXISTS x402_routes (url TEXT NOT NULL, method TEXT NOT NULL, source TEXT NOT NULL, doc TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (url, method))');
+    this.x402Ready = true;
+  }
+  private x402Cached: Array<{ url: string; method: string; source: string; doc: unknown }> | null = null;
+
+  /** Replace every x402 route from one source with these. */
+  replaceX402(source: string, rows: Array<{ url: string; method: string; doc: unknown }>, at: string): void {
+    this.x402Table();
+    this.x402Cached = null;
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      this.db.prepare('DELETE FROM x402_routes WHERE source = ?').run(source);
+      const ins = this.db.prepare('INSERT INTO x402_routes (url, method, source, doc, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(url, method) DO UPDATE SET source = excluded.source, doc = excluded.doc, updated_at = excluded.updated_at');
+      for (const r of rows) ins.run(r.url, r.method, source, JSON.stringify(r.doc), at);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
+  }
+
+  x402All(): Array<{ url: string; method: string; source: string; doc: unknown }> {
+    this.x402Table();
+    if (this.x402Cached) return this.x402Cached;
+    this.x402Cached = (this.db.prepare('SELECT url, method, source, doc FROM x402_routes').all() as Array<{ url: string; method: string; source: string; doc: string }>)
+      .map((r) => ({ url: String(r.url), method: String(r.method), source: String(r.source), doc: JSON.parse(String(r.doc)) }));
+    return this.x402Cached;
+  }
+
+  x402Sources(): string[] {
+    this.x402Table();
+    return (this.db.prepare('SELECT DISTINCT source FROM x402_routes').all() as Array<{ source: string }>).map((r) => String(r.source));
   }
 
   close(): void {

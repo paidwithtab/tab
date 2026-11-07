@@ -18,7 +18,7 @@ import { normalizeUsd, usdToMicro, verifyReceipt } from '../src/protocol.js';
 import { Store } from '../src/store.js';
 import { createGateway, type Spec } from '../src/gateway.js';
 import { TabClient, receiptOf } from '../src/client.js';
-import { issueMandate, type Mandate } from '../src/mandate.js';
+import { issueMandate, verifyMandate, type Mandate } from '../src/mandate.js';
 import { CompanyStore } from '../src/company/store.js';
 import { Engine } from '../src/company/engine.js';
 import { guardedFetch } from '../src/net.js';
@@ -397,6 +397,21 @@ async function main(): Promise<void> {
     && (await view()).board.some((b: any) => b.action === 'configure' && b.verified)
     && (await api('POST', `/api/companies/${cid}/agents/${beeId}/configure`, { model: 'gpt-4' })).status === 400);
   await api('POST', `/api/companies/${cid}/agents/${beeId}/configure`, { model: '', budget_per_run: '0.05', max_per_call: '' });
+  // 3.2: spending rules on an agent go into the mandate of every run it makes
+  const antId = store.agentByName(cid, 'ant')!.id;
+  const rules = await api('POST', `/api/companies/${cid}/agents/${antId}/configure`, { paths: '/quotes/*, GET /fx*', hours: 'mon-sun 0-24' });
+  const antCfg = store.agent(antId)!.config;
+  check('3.2: configure keeps an agent\'s route patterns and hours', rules.status === 200 && JSON.stringify(antCfg.paths) === JSON.stringify(['/quotes/*', 'GET /fx*']) && JSON.stringify(antCfg.hours) === JSON.stringify({ days: [0, 1, 2, 3, 4, 5, 6], from: 0, to: 24 }), antCfg);
+  check('3.2: hours that do not parse are refused', (await api('POST', `/api/companies/${cid}/agents/${antId}/configure`, { hours: 'someday' })).status === 400);
+  await api('POST', `/api/companies/${cid}/tickets`, { title: 'ruled run', assignee: 'ant' });
+  await runAll();
+  const antRuns = (await view()).runs.filter((r: any) => r.agent === 'ant' && r.mandate);
+  const lastAnt = antRuns[0];
+  const signed = lastAnt ? store.run(lastAnt.id)?.mandate : undefined;
+  check('3.2: the run\'s mandate carries the agent\'s rules, signed', JSON.stringify(signed?.paths) === JSON.stringify(['/quotes/*', 'GET /fx*']) && signed?.hours?.to === 24 && !!signed && verifyMandate(signed).ok, signed);
+  check('3.2: tab OS shows the rules on the run', JSON.stringify(lastAnt?.mandate?.paths) === JSON.stringify(['/quotes/*', 'GET /fx*']) && /00:00 to 24:00 UTC/.test(lastAnt?.mandate?.hours ?? ''), lastAnt?.mandate);
+  await api('POST', `/api/companies/${cid}/agents/${antId}/configure`, { paths: '', hours: '' });
+  check('3.2: clearing the fields removes the rules', store.agent(antId)!.config.paths === undefined && store.agent(antId)!.config.hours === undefined);
   check('every run sees the company books', lastPacket?.books && typeof lastPacket.books.spent_tab === 'string' && /Company books so far/.test(lastPacket.prompt));
   const renamed = await api('POST', `/api/companies/${cid}/charter`, { name: 'Acme Two', mission: 'A new mission.' });
   v = await view();
@@ -501,7 +516,7 @@ async function main(): Promise<void> {
   check('tab_fetch checked the receipt before the model saw it', toolReceiptVerified === true);
   check('model usage is priced into the run', usdToMicro(run.model_cost) === priceUsage('claude-sonnet-5-5', { input_tokens: 3000, output_tokens: 300 }) && usdToMicro(run.model_cost) === 9_000);
   check('the request carried the company key, the tab tools and finish, and the packet as the user turn', first.headers['x-api-key'] === GOOD_KEY && first.headers['anthropic-version'] === '2023-06-01'
-    && first.body.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,tab_escrow,tab_channel,finish' && /You are owl/.test(first.body.messages[0].content) && /call finish/.test(first.body.system));
+    && first.body.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,tab_escrow,tab_channel,tab_estimate,tab_cost,finish' && /You are owl/.test(first.body.messages[0].content) && /call finish/.test(first.body.system));
   const second = antCalls.filter((c) => c.status === 200)[1];
   check('the mandate was capped by the agent budget and tab_limits told the agent its per-call cap', run.mandate.budget === '0.05'
     && /"client_max_per_call_usd": "0\.02"/.test(String(second.body.messages[2].content[0].content)) && /"budget_usd": "0\.05"/.test(String(second.body.messages[2].content[0].content)));

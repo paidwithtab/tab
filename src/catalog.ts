@@ -14,6 +14,7 @@ import { TabClient, PaymentRefused, receiptOf } from './client.js';
 import type { CatalogStore, GatewayRow } from './store.js';
 import { renderDocsPage, DOC_GROUPS } from './markdown.js';
 import { guardedFetch, isPublicAddress } from './net.js';
+import { importBazaar, importWellKnown, reliabilityOf, type X402Route } from './x402-catalog.js';
 
 // the package version, for /v1/health; src/ and dist/src/ sit at different depths
 const VERSION_PKG = (() => {
@@ -42,6 +43,12 @@ export interface CatalogOptions {
   maxOrigins?: number;
   /** Announces (and refresh requests) per minute per client address; default 10. */
   announcesPerMinute?: number;
+  /** 3.2: x402 discovery lists (Bazaar format) read into the catalog, so search finds x402 sellers too. */
+  x402Lists?: string[];
+  /** 3.2: how often the x402 lists are read again; default 6 hours. */
+  x402RefreshMs?: number;
+  /** 3.2: most x402 routes kept per list; default 40,000. */
+  x402Max?: number;
   log?: (msg: string) => void;
 }
 
@@ -91,6 +98,16 @@ interface CatalogRoute {
   price_micro: number;
   currency: string; // "USD", or the token the gateway charges in
   description: string;
+  /** 3.2: "tab" for a tab gateway's route, "x402" for an x402 seller the agent pays from its own address. */
+  kind: 'tab' | 'x402';
+  network?: string; // x402: where it is paid, "eip155:8453" is Base
+  stats?: { calls_7d: number; ok_rate: number; avg_ms?: number }; // tab: the gateway's 7-day record
+  free_per_day?: number;
+  meter?: { unit: string; per_unit: string };
+  calls_30d?: number; // x402: paid calls in the last 30 days, from the discovery list
+  payers_30d?: number;
+  last_called?: string;
+  reliability: number; // 0 to 1, see reliabilityOf
 }
 
 const CORS = {
@@ -198,15 +215,85 @@ function routesOf(row: GatewayRow): CatalogRoute[] {
         price_micro: priceMicro,
         currency,
         description: String(r.description ?? ''),
+        kind: 'tab',
+        ...(r.stats && typeof r.stats === 'object' && Number.isFinite(Number(r.stats.calls_7d)) ? { stats: { calls_7d: Number(r.stats.calls_7d), ok_rate: Number(r.stats.ok_rate), ...(Number.isFinite(Number(r.stats.avg_ms)) ? { avg_ms: Number(r.stats.avg_ms) } : {}) } } : {}),
+        ...(Number.isInteger(r.free_per_day) && r.free_per_day > 0 ? { free_per_day: r.free_per_day } : {}),
+        ...(r.meter && typeof r.meter.unit === 'string' && typeof r.meter.per_unit === 'string' ? { meter: { unit: String(r.meter.unit).slice(0, 20), per_unit: String(r.meter.per_unit) } } : {}),
+        reliability: 0,
       });
+      out[out.length - 1].reliability = reliabilityOf(out[out.length - 1]);
     }
   }
   return out;
 }
 
+/** The catalog's x402 routes as search results. */
+function x402RoutesOf(rows: Array<{ url: string; method: string; doc: unknown }>): CatalogRoute[] {
+  const now = Date.now();
+  return rows.map(({ doc }) => {
+    const x = doc as X402Route;
+    const u = new URL(x.url);
+    const route: CatalogRoute = {
+      origin: u.origin, realm: u.host, rail: 'x402', service: x.service, service_description: (x.tags ?? []).join(' '),
+      method: x.method, path: u.pathname, url: x.url, price: microToUsd(x.price_micro), price_micro: x.price_micro, currency: 'USD',
+      description: x.description, kind: 'x402', network: x.network,
+      ...(x.calls_30d !== undefined ? { calls_30d: x.calls_30d } : {}), ...(x.payers_30d !== undefined ? { payers_30d: x.payers_30d } : {}), ...(x.last_called ? { last_called: x.last_called } : {}),
+      reliability: 0,
+    };
+    route.reliability = reliabilityOf(route, now);
+    return route;
+  });
+}
+
+/** Words that say what a route does, for finding others that do the same; remembered per route, since alternatives compare every route. */
+const topicMemo = new Map<string, Set<string>>();
+function topicWords(r: CatalogRoute): Set<string> {
+  const key = `${r.method} ${r.url}`;
+  const known = topicMemo.get(key);
+  if (known) return known;
+  if (topicMemo.size > 200_000) topicMemo.clear();
+  const words = topicWordsOf(r);
+  topicMemo.set(key, words);
+  return words;
+}
+function topicWordsOf(r: CatalogRoute): Set<string> {
+  const STOP = new Set(['with', 'from', 'that', 'this', 'your', 'returns', 'return', 'list', 'data', 'json', 'api', 'call', 'example', 'https', 'http', 'query', 'value', 'values', 'about', 'into', 'over', 'each', 'when', 'what', 'which', 'only', 'more', 'than', 'they', 'them', 'the', 'and', 'for', 'get', 'post']);
+  const text = `${r.path.replace(/[/_.:-]+/g, ' ')} ${r.description}`.toLowerCase();
+  return new Set(text.split(/[^a-z0-9]+/).filter((w) => w.length > 3 && !STOP.has(w) && !/^\d+$/.test(w)));
+}
+
 export function createCatalog(opts: CatalogOptions): Server {
   const { store } = opts;
   const log = opts.log ?? (() => {});
+  // 3.2: x402 sellers, refreshed from the lists the operator names
+  let x402Cache: { at: number; routes: CatalogRoute[] } | null = null;
+  const x402Routes = (): CatalogRoute[] => {
+    if (!x402Cache || Date.now() - x402Cache.at > 60_000) x402Cache = { at: Date.now(), routes: x402RoutesOf(store.x402All()) };
+    return x402Cache.routes;
+  };
+  async function importX402Lists(): Promise<void> {
+    for (const list of opts.x402Lists ?? []) {
+      try {
+        const routes = await importBazaar(list, egress(64_000_000, 60_000), opts.x402Max ?? 40_000);
+        store.replaceX402(`list:${list}`, routes.map((r) => ({ url: r.url, method: r.method, doc: r })), new Date().toISOString());
+        x402Cache = null;
+        log(`x402 list ${new URL(list).host}: ${routes.length} payable routes`);
+      } catch (err) {
+        log(`x402 list ${list}: ${(err as Error).message}`);
+      }
+    }
+  }
+  if (opts.x402Lists?.length) {
+    const first = setTimeout(() => void importX402Lists(), 2_000);
+    first.unref();
+    const again = setInterval(() => void importX402Lists(), opts.x402RefreshMs ?? 6 * 3_600_000);
+    again.unref();
+  }
+  /** Every route the catalog lists: tab gateways', then x402 sellers'. */
+  const allRoutes = (kinds: Set<string>): CatalogRoute[] => [
+    ...(kinds.has('tab') ? store.all().flatMap((row) => routesOf(row)) : []),
+    ...(kinds.has('x402') ? x402Routes() : []),
+  ];
   const uiPath = findUi();
   // every fetch to an announced origin: public addresses only, checked at connect time, no redirects
   const egress = (maxBytes: number, timeoutMs: number): typeof fetch =>
@@ -384,7 +471,7 @@ export function createCatalog(opts: CatalogOptions): Server {
         }));
         const routes = gateways.reduce((n, g) => n + g.routes, 0);
         const ok = routes > 0 && gateways.every((g) => g.ok);
-        sendJson(res, ok ? 200 : 503, { ok, version: VERSION_PKG, routes, gateways });
+        sendJson(res, ok ? 200 : 503, { ok, version: VERSION_PKG, routes, x402_routes: x402Routes().length, gateways });
         return;
       }
 
@@ -428,8 +515,12 @@ export function createCatalog(opts: CatalogOptions): Server {
         const limit = Math.min(Math.max(Number(u.searchParams.get('limit') ?? 100) || 100, 1), 1000);
         const offset = Math.max(Number(u.searchParams.get('offset') ?? 0) || 0, 0);
         const results: Array<CatalogRoute & { score: number }> = [];
-        for (const row of store.all()) {
-          for (const route of routesOf(row)) {
+        // 3.2: x402 sellers are in by default; kinds=tab keeps to tab gateways
+        const kinds = new Set((u.searchParams.get('kinds') || 'tab,x402').split(',').map((k) => k.trim()));
+        const sort = u.searchParams.get('sort') ?? 'relevance';
+        if (!['relevance', 'cheapest', 'reliable'].includes(sort)) { sendJson(res, 400, { error: 'sort must be relevance, cheapest or reliable' }); return; }
+        {
+          for (const route of allRoutes(kinds)) {
             if (maxMicro !== null && (route.currency !== currency || route.price_micro > maxMicro)) continue;
             const routeText = `${route.method} ${route.path} ${route.description}`.toLowerCase();
             const serviceText = `${route.service} ${route.service_description} ${route.realm}`.toLowerCase();
@@ -447,12 +538,61 @@ export function createCatalog(opts: CatalogOptions): Server {
             if (score > 0) results.push({ ...route, score });
           }
         }
-        results.sort((a, b) => b.score - a.score || a.price_micro - b.price_micro);
+        // a route that keeps failing sinks below the ones that work; then the order the caller asked for
+        // working (a good record), unknown, failing (a bad record)
+        const works = (r: CatalogRoute) => (r.reliability >= 0.8 ? 2 : r.reliability >= 0.6 ? 1 : 0);
+        if (sort === 'cheapest') results.sort((a, b) => works(b) - works(a) || a.price_micro - b.price_micro || b.score - a.score);
+        else if (sort === 'reliable') results.sort((a, b) => b.reliability - a.reliability || a.price_micro - b.price_micro || b.score - a.score);
+        else results.sort((a, b) => b.score - a.score || works(b) - works(a) || a.price_micro - b.price_micro);
         sendJson(res, 200, {
           total: results.length,
           offset,
           results: results.slice(offset, offset + limit).map(({ score, ...r }) => r),
         });
+        return;
+      }
+
+      // 3.2: routes that do what this one does, working and cheap first: where to go when a call fails
+      if (method === 'GET' && path === '/v1/alternatives') {
+        const target = u.searchParams.get('url') ?? '';
+        const m = (u.searchParams.get('method') ?? 'GET').toUpperCase();
+        const all = allRoutes(new Set(['tab', 'x402']));
+        const self = all.find((r) => r.method === m && (r.url === target || urlMatchesRoute(target, r.url)));
+        if (!self) { sendJson(res, 404, { error: 'that URL is not a route in the catalog' }); return; }
+        const words = topicWords(self);
+        const tier = (r: CatalogRoute) => (r.reliability >= 0.8 ? 2 : r.reliability >= 0.6 ? 1 : 0);
+        const limit = Math.min(Math.max(Number(u.searchParams.get('limit') ?? 5) || 5, 1), 20);
+        const scored = all
+          .filter((r) => r !== self && r.currency === self.currency && !(r.origin === self.origin && r.path === self.path))
+          .map((r) => { let n = 0; for (const w of topicWords(r)) if (words.has(w)) n++; return { r, n }; })
+          .filter((x) => x.n >= Math.min(2, words.size))
+          .sort((a, b) => b.n - a.n || tier(b.r) - tier(a.r) || a.r.price_micro - b.r.price_micro)
+          .slice(0, limit);
+        sendJson(res, 200, { for: { url: self.url, method: self.method, description: self.description }, alternatives: scored.map((x) => x.r) });
+        return;
+      }
+
+      // 3.2: an x402 seller adds itself: the catalog reads its /.well-known/x402 and asks each resource for its price
+      if (method === 'POST' && path === '/v1/x402/announce') {
+        if (!allowed(req)) { sendJson(res, 429, { error: 'too many announces; retry in a minute' }); return; }
+        let origin = '';
+        try { origin = String((await readJson(req))?.origin ?? ''); } catch { /* checked below */ }
+        let base: string;
+        try { base = new URL(origin).origin; } catch { sendJson(res, 400, { error: 'post {"origin": "https://your-api.example"}' }); return; }
+        if (!/^https:\/\//.test(base) && !opts.allowPrivateOrigins) { sendJson(res, 400, { error: 'origin must be https' }); return; }
+        if (!opts.allowPrivateOrigins) {
+          const pub = await originIsPublic(base);
+          if (!pub.ok) { sendJson(res, 400, { error: `refused: ${pub.reason}` }); return; }
+        }
+        try {
+          const routes = await importWellKnown(base, egress(1_000_000, 10_000), 50, opts.allowPrivateOrigins === true);
+          store.replaceX402(`wellknown:${base}`, routes.map((r) => ({ url: r.url, method: r.method, doc: r })), new Date().toISOString());
+          x402Cache = null;
+          log(`x402 announce ${base}: ${routes.length} routes`);
+          sendJson(res, 200, { origin: base, routes: routes.length, listed: routes.map((r) => ({ url: r.url, price: microToUsd(r.price_micro), network: r.network })) });
+        } catch (err) {
+          sendJson(res, 502, { error: `could not read ${base}/.well-known/x402: ${(err as Error).message}` });
+        }
         return;
       }
 

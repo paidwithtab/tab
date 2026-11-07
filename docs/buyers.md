@@ -149,6 +149,66 @@ npx paidwithtab alerts set --ntfy --at 50,90,100 --daily
 
 The gateway posts when one of your agents reaches 50, 90 and 100 percent of its budget in a window, and once a day a statement of what your agents paid there. `--ntfy` makes a private ntfy.sh topic: install the ntfy app, subscribe to the topic it prints, and the alerts land on your phone with no account anywhere. Or give `--url` any https webhook and get JSON. `tab alerts off` stops them.
 
+## Spend less, and see where it went (3.2)
+
+**The cache.** The same GET inside ten minutes is answered from the proof of the first purchase, for nothing, and that proof still verifies. A seller's `Cache-Control: max-age` sets a different window and `no-store` turns it off for that route. Other methods are reused only when the seller marks the answer with `max-age`, since a repeated POST may be meant to act twice. Pass `fresh: true` to `tab_fetch` to pay for a new answer, or set `TAB_CACHE_TTL` (seconds, or `off`).
+
+**Cost per task.** Each paid call is tagged with what the agent was working on: `TAB_TASK` if you set it, a `task` argument to `tab_fetch`, or else the git repository and branch the agent runs in (`tab@fix-login`).
+
+```sh
+npx paidwithtab cost --by task          # or day, realm, route; --since 2026-11-01
+```
+
+```
+task                 calls       spent  cached       saved
+tab@fix-login           41      $0.087      12      $0.031
+TICKET-42                6      $0.018       0       $0.00
+total                   47      $0.105      12      $0.031
+```
+
+The agent can ask the same with `tab_cost`, and price a plan before running it with `tab_estimate` (it asks each URL its price without paying).
+
+**The cheapest seller that works.** `tab_search` ranks routes that have been working first, then by price (`sort: "cheapest"` or `"reliable"` to choose). When a seller fails, nothing is charged and `tab_fetch` answers with `alternatives` that do the same job.
+
+**x402 sellers.** Search also returns x402 APIs (`kind: "x402"`), about 33,000 routes from 3,200 sellers that take USDC on Base. The agent pays them from its own address within the same mandate: fund it with a few dollars of USDC on Base.
+
+```sh
+npx paidwithtab evm address ~/.tab/agent.json        # the agent's 0x address, the same on every chain
+```
+
+Send USDC on Base to that address (from an exchange or a wallet). The mandate's budget, per-call cap and rules still bound every payment, counted by the client.
+
+## Rules in the mandate (3.2)
+
+A mandate can say which routes the agent may pay for and when:
+
+```sh
+npx paidwithtab mandate issue --owner owner.json --agent agent.json --budget 1.00 --window day \
+  --paths "/search*" --paths "GET /wikipedia/*" --hours "mon-fri 9-17" --out mandate.json
+```
+
+A path glob that starts with `/` matches the route's path; with a method in front it matches that method only. Hours are UTC. The rules are signed into the mandate, so gateways enforce them, and the client refuses before signing, x402 sites included. A sub-mandate can only narrow them. Gateways older than 3.2 refuse a mandate with rules rather than ignore them.
+
+## Check that nothing was rewritten (3.2)
+
+Every receipt a 3.2 gateway signs goes into its public log, a Merkle tree whose head it signs. `tab verify` (with no folder it checks your latest purchase) now also confirms the receipt is in that log, and:
+
+```sh
+npx paidwithtab log check --gateway https://pay.paidwithtab.com
+```
+
+keeps the head it saw and, next time, proves the log only grew: nothing already logged was dropped or changed. Run it from cron if you want a watchman.
+
+## Add credit by card (3.2)
+
+On a gateway that takes card top-ups:
+
+```sh
+npx paidwithtab topup 5
+```
+
+prints a Stripe payment page and waits; when the payment completes, the owner wallet holds the credit. No card data reaches tab.
+
 ## Paying in a gateway's own token
 
 Some gateways charge in a token instead of dollars. The discovery document, every 402 and every receipt say so in `currency`, and the catalog shows such prices as `0.001 TTT` rather than `$0.001`. tab's own reference deployment runs one at `token-testnet.paidwithtab.com`: the same routes as the testnet gateway, priced in TTT, an open-mint test token with 18 decimals on Robinhood Chain testnet (`0x8f6fe411e76b79d6eb6521872340c37c3210ee47`).

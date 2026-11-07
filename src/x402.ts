@@ -107,9 +107,14 @@ export interface TokenDomain {
   token: string; // verifyingContract
 }
 
+/** A token's EIP-712 domain separator, as its DOMAIN_SEPARATOR() returns it on chain. */
+export function domainSeparator(d: TokenDomain): Uint8Array {
+  return keccak256(cat(DOMAIN_TYPEHASH, keccak256(utf8.encode(d.name)), keccak256(utf8.encode(d.version)), word(BigInt(d.chainId)), word(d.token)));
+}
+
 /** The digest an EIP-3009 authorization signs. */
 export function authorizationDigest(d: TokenDomain, a: X402Authorization): Uint8Array {
-  const domain = keccak256(cat(DOMAIN_TYPEHASH, keccak256(utf8.encode(d.name)), keccak256(utf8.encode(d.version)), word(BigInt(d.chainId)), word(d.token)));
+  const domain = domainSeparator(d);
   const struct = keccak256(cat(TWA_TYPEHASH, word(a.from), word(a.to), word(a.value), word(a.validAfter), word(a.validBefore), hexToBytes(a.nonce)));
   return keccak256(cat(Uint8Array.of(0x19, 0x01), domain, struct));
 }

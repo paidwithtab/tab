@@ -308,6 +308,10 @@ export interface Receipt {
   // 3.0, present only on such payments
   escrow?: EscrowInfo; // paid on delivery: held, then released to the seller
   channel?: ChannelInfo; // paid by voucher from a channel, or the channel's deposit or settlement
+  // 3.2, present only when the charge was less than the price the agent signed for
+  authorized?: string; // micro units the agent's credential authorized
+  units?: { n: number; unit: string }; // a metered call: what it used
+  free?: boolean; // one of the route's free calls: nothing was charged
   sig?: string; // gateway signature over the canonical receipt minus sig
 }
 

@@ -10,11 +10,13 @@ import { join, dirname, basename } from 'node:path';
 import { bodyDigest, credentialMessage, verifyReceipt, type Receipt, type Challenge } from './protocol.js';
 import { verifyMandate, type Mandate } from './mandate.js';
 import { verifyBytes } from './keys.js';
+import { receiptLeaf, verifyInclusion, verifyTreeHead, unb64, type TreeHead } from './log.js';
 
 export interface ProofRequest {
   url: string;
   method: string;
   body?: string; // the request body as sent, when it was text
+  task?: string; // 3.2: what the agent was working on (TAB_TASK, a tool argument, or the git branch)
 }
 
 export interface SavedProof {
@@ -30,13 +32,16 @@ export function saveProof(root: string, req: ProofRequest, res: { status: number
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(join(dir, 'body'), body);
     writeFileSync(join(dir, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
-    writeFileSync(join(dir, 'request.json'), JSON.stringify({ url: req.url, method: req.method, status: res.status, content_type: res.contentType, ...(req.body != null ? { body: req.body } : {}) }, null, 2) + '\n');
+    writeFileSync(join(dir, 'request.json'), JSON.stringify({ url: req.url, method: req.method, status: res.status, content_type: res.contentType, ...(req.body != null ? { body: req.body } : {}), ...(req.task ? { task: req.task } : {}) }, null, 2) + '\n');
     writeFileSync(join(dir, 'mandate.json'), JSON.stringify(mandate, null, 2) + '\n');
     return { dir, receipt };
   } catch {
     return null;
   }
 }
+
+/** A gateway's answer to /.well-known/tab/log/proof. */
+export interface LogProof { receipt: string; index: number; size: number; leaf: string; proof: string[]; head: TreeHead }
 
 export interface ProofCheck {
   name: string;
@@ -68,7 +73,7 @@ export function listProofs(root: string): string[] {
  */
 export async function verifyProof(
   path: string,
-  o: { bodyPath?: string; key?: string; publishedKey?: (realm: string) => Promise<string | null> } = {},
+  o: { bodyPath?: string; key?: string; publishedKey?: (realm: string) => Promise<string | null>; logProof?: (origin: string, receiptId: string) => Promise<LogProof | null> } = {},
 ): Promise<ProofReport> {
   const dir = path.endsWith('.json') ? dirname(path) : path;
   const receiptFile = path.endsWith('.json') ? path : join(dir, 'receipt.json');
@@ -114,7 +119,7 @@ export async function verifyProof(
   if (receipt.channel || receipt.mandate === 'x402' || !receipt.request || !receipt.challenge || !receipt.credential) {
     add('agent authorization', null, receipt.channel ? 'paid by channel voucher' : receipt.mandate === 'x402' ? 'paid by x402 authorization (on chain)' : 'receipt carries no credential');
   } else {
-    const chal = { id: receipt.challenge, amount: receipt.amount, realm: receipt.realm, recipient: receipt.recipient, resource: receipt.resource } as Challenge;
+    const chal = { id: receipt.challenge, amount: receipt.authorized ?? receipt.amount, realm: receipt.realm, recipient: receipt.recipient, resource: receipt.resource } as Challenge;
     const msg = credentialMessage(receipt.payer, chal, receipt.mandate!, receipt.request, receipt.escrow ? true : undefined);
     const ok = verifyBytes(receipt.payer, msg, receipt.credential);
     add('agent authorization', ok, ok ? `signed by agent ${receipt.payer}` : 'the credential is not the agent\'s signature over this payment');
@@ -128,6 +133,18 @@ export async function verifyProof(
     add('mandate', mv.ok && matches, !mv.ok ? `mandate: ${mv.error}` : !matches ? 'saved mandate is not the one the receipt names' : `owner ${mandate.owner} signed it for this agent`);
   }
 
+  // 6. 3.2: the receipt is in the gateway's public log, under a tree head signed by the same key
+  if (o.logProof) {
+    const origin = request ? new URL(request.url).origin : `https://${receipt.realm}`;
+    const lp = await o.logProof(origin, receipt.id).catch(() => null);
+    if (!lp) add('public log', null, `${receipt.realm} has no log entry for it (a gateway before 3.2, or offline)`);
+    else {
+      const headOk = verifyTreeHead(lp.head, receipt.gateway);
+      const inOk = headOk && lp.size === lp.head.size && verifyInclusion(receiptLeaf(receipt), lp.index, lp.size, lp.proof.map(unb64), unb64(lp.head.root));
+      add('public log', inOk, inOk ? `entry ${lp.index} of ${lp.size}, in a tree head signed ${lp.head.at}` : !headOk ? 'the tree head is not signed by the receipt key' : 'the inclusion proof does not lead to the signed root');
+    }
+  }
+
   const ok = checks.every((c) => c.ok !== false) && checks.find((c) => c.name === 'gateway signature')?.ok === true;
   return {
     ok,
@@ -135,4 +152,68 @@ export async function verifyProof(
     summary: { realm: receipt.realm, resource: receipt.resource, amount: receipt.amount, currency: receipt.currency, at: receipt.at, ref: receipt.ref, status: receipt.response?.status, body_bytes: bodyBytes?.length },
     checks,
   };
+}
+
+// -- 3.2: what an agent spent, per task, day, realm or route, from its proof folders ---------------
+
+export type CostBy = 'task' | 'day' | 'realm' | 'route';
+
+export interface CostRow {
+  key: string;
+  calls: number;
+  spent: number; // micro units
+  free: number; // calls a route gave free
+  cached: number; // calls answered from the cache
+  saved: number; // micro units the cache saved
+}
+
+export interface CostReport {
+  by: CostBy;
+  currency: string;
+  since: string | null;
+  rows: CostRow[];
+  total: CostRow;
+}
+
+/** Sum the proof folders under `root` (and the cache's hit log) by task, day, realm or route. */
+export function costReport(root: string, o: { by?: CostBy; since?: string; task?: string; currency?: string } = {}): CostReport {
+  const by = o.by ?? 'task';
+  const currency = o.currency ?? 'USD';
+  const rows = new Map<string, CostRow>();
+  const row = (key: string) => { let r = rows.get(key); if (!r) { r = { key, calls: 0, spent: 0, free: 0, cached: 0, saved: 0 }; rows.set(key, r); } return r; };
+  const keyOf = (rec: { at: string; realm?: string; resource?: string }, task: string | undefined) =>
+    by === 'task' ? task ?? '(no task)' : by === 'day' ? rec.at.slice(0, 10) : by === 'realm' ? rec.realm ?? '(unknown)' : `${rec.realm ?? ''} ${rec.resource ?? ''}`.trim();
+  const since = o.since ? Date.parse(o.since) : null;
+  for (const dir of listProofs(root)) {
+    try {
+      const rec = JSON.parse(readFileSync(join(dir, 'receipt.json'), 'utf8')) as Receipt;
+      if ((rec.currency ?? 'USD') !== currency) continue;
+      if (since !== null && Date.parse(rec.at) < since) continue;
+      const req = existsSync(join(dir, 'request.json')) ? (JSON.parse(readFileSync(join(dir, 'request.json'), 'utf8')) as ProofRequest) : null;
+      if (o.task && req?.task !== o.task) continue;
+      const r = row(keyOf(rec, req?.task));
+      r.calls++;
+      r.spent += Number(rec.amount) || 0;
+      if (rec.free) r.free++;
+    } catch { /* a folder that does not parse is skipped */ }
+  }
+  // cache hits: the proof they came from says where; the hit says when and under which task
+  const hitsFile = join(root, '.cache-hits.jsonl');
+  if (existsSync(hitsFile)) {
+    for (const line of readFileSync(hitsFile, 'utf8').split('\n')) {
+      if (!line) continue;
+      try {
+        const h = JSON.parse(line) as { at: string; dir: string; saved: string; currency: string; task?: string };
+        if (h.currency !== currency || (since !== null && Date.parse(h.at) < since) || (o.task && h.task !== o.task)) continue;
+        let rec: Partial<Receipt> = {};
+        try { rec = JSON.parse(readFileSync(join(h.dir, 'receipt.json'), 'utf8')); } catch { /* the proof was removed; the hit still counts */ }
+        const r = row(keyOf({ at: h.at, realm: rec.realm, resource: rec.resource }, h.task));
+        r.cached++;
+        r.saved += Number(h.saved) || 0;
+      } catch { /* skip */ }
+    }
+  }
+  const list = [...rows.values()].sort((a, b) => b.spent - a.spent || b.calls - a.calls);
+  const total = list.reduce((t, r) => ({ key: 'total', calls: t.calls + r.calls, spent: t.spent + r.spent, free: t.free + r.free, cached: t.cached + r.cached, saved: t.saved + r.saved }), { key: 'total', calls: 0, spent: 0, free: 0, cached: 0, saved: 0 });
+  return { by, currency, since: o.since ?? null, rows: list, total };
 }

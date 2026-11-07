@@ -45,6 +45,25 @@ claude mcp add example -- npx -y paidwithtab mcp connect https://pay.paidwithtab
 
 Running your own gateway, below, gives you everything else: your own domain as the realm, any price, x402, pay on delivery and channels.
 
+### Free calls, sale notices, stats (3.2)
+
+```sh
+npx paidwithtab sell https://api.example.com --price 0.01 --route "GET /forecast" --free 3 --notify-ntfy
+npx paidwithtab sell stats
+```
+
+`--free 3` gives each buyer three calls a day per route before they pay, counted per agent key and per address; a free call's receipt says `free: true`. `--notify-ntfy` (or `--notify https://your-webhook`) tells you of your first sale and sends each day's earnings. `tab sell stats` signs a request with your seller key and shows earnings per listing and route, each route's reliability this week, and your top buyers, shortened.
+
+### Already selling over x402? (3.2)
+
+The tab catalog lists x402 sellers too, so tab agents find and pay you as you are. If your API is in the public x402 discovery list it is already there; otherwise:
+
+```sh
+npx paidwithtab catalog add-x402 https://api.example.com
+```
+
+reads your `/.well-known/x402` and asks each resource for its price.
+
 ## What you are setting up
 
 ```
@@ -145,6 +164,12 @@ npx paidwithtab serve --spec spec.json --origin https://pay.example.com --x402-s
 ```
 
 Every 402 then carries x402 requirements next to the tab challenge. The money still goes straight from the buyer to your payout address; the settler only pays gas, about 0.00001 ETH a call on Robinhood Chain. Calls are settled after your API answered, and a payment that does not settle withholds the response, exactly as for tab buyers. SPEC section 5.3 has the details.
+
+## Priced by size, and reliability (3.2)
+
+A route can charge by the response size: `"meter": {"unit": "kb", "per_unit": "0.0005"}` with `price` as the ceiling. The gateway counts the bytes it relays; on the ledger rail per-call buyers pay what the call used, and the receipt names the units and the price they authorized. Any other unit is what your upstream reports in a `Tab-Units` header.
+
+Your gateway counts each route's outcomes and time for seven days and publishes them in discovery (`stats: {calls_7d, ok_rate, avg_ms}`). The catalog ranks routes that work above routes that fail, so a reliable API wins buyers even at the same price.
 
 ## Pay on delivery, metered routes and channels (3.0)
 

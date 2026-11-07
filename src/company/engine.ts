@@ -7,7 +7,15 @@
 import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { microToUsd, normalizeUsd, randomId, usdToMicro, verifyReceipt, type Receipt } from '../protocol.js';
-import { issueMandate, delegateMandate, mandateExpired, type Mandate } from '../mandate.js';
+import { issueMandate, delegateMandate, mandateExpired, type Mandate, type MandateHours } from '../mandate.js';
+
+/** 3.2: an agent's spending rules from its config, for the mandates it runs on. */
+function rulesOf(config: Record<string, unknown>): { paths?: string[]; hours?: MandateHours } {
+  return {
+    ...(Array.isArray(config.paths) && config.paths.length ? { paths: config.paths.map(String) } : {}),
+    ...(config.hours && typeof config.hours === 'object' ? { hours: config.hours as MandateHours } : {}),
+  };
+}
 import type { ApprovalRequest } from '../approval.js';
 import type { HeldChannel, EscrowTicket } from '../client.js';
 import type { TabHooks } from '../tools.js';
@@ -233,6 +241,7 @@ export class Engine {
           window: 'total',
           maxPerCallUsd: cfgUsd(agent.config.max_per_call),
           approveAboveUsd: cfgUsd(agent.config.approve_above),
+          ...rulesOf(agent.config),
           allow: company.realms,
           expiresInMs: this.runTimeoutMs + 60_000,
           evmOwner: addressFromSeed(new Uint8Array(Buffer.from(owner.privateKey, 'base64url'))),
@@ -354,7 +363,7 @@ export class Engine {
       if (budget <= 0) return null;
       const m = issueMandate(owner, {
         agent: manager.agent_pub, budgetUsd: microToUsd(budget), window: 'total',
-        maxPerCallUsd: cfgUsd(manager.config.max_per_call), approveAboveUsd: cfgUsd(manager.config.approve_above),
+        maxPerCallUsd: cfgUsd(manager.config.max_per_call), approveAboveUsd: cfgUsd(manager.config.approve_above), ...rulesOf(manager.config),
         allow: company.realms, expiresInMs: 86_400_000, evmOwner: addressFromSeed(new Uint8Array(Buffer.from(owner.privateKey, 'base64url'))), now,
       });
       d = { ticket_id: parent.id, company_id: company.id, agent_id: manager.id, mandate: m, created_at: now.toISOString() };
@@ -371,6 +380,7 @@ export class Engine {
       const child = delegateMandate({ publicKey: manager.agent_pub, privateKey: manager.agent_priv }, d.mandate, {
         agent: agent.agent_pub, budgetUsd: microToUsd(Math.min(ceiling, Number(d.mandate.budget))),
         maxPerCallUsd: cap === null ? undefined : microToUsd(cap), approveAboveUsd: gate === null ? undefined : microToUsd(gate),
+        ...rulesOf(agent.config),
         expiresInMs: this.runTimeoutMs + 60_000, now,
       });
       return { mandate: child, manager };

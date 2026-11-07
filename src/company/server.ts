@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { microToUsd, usdToMicro, normalizeUsd, isCurrency, microToBaseUnits, baseUnitsToMicro, type Receipt } from '../protocol.js';
 import { newKeyPair, type KeyPair } from '../keys.js';
-import { issueMandate, mandateChain, approvalThreshold, type Mandate } from '../mandate.js';
+import { issueMandate, mandateChain, approvalThreshold, parseHours, describeHours, type Mandate, type MandateHours } from '../mandate.js';
 import { signRevocation, type Revocation } from '../revoke.js';
 import { signApproval, approvalRequestValid, type ApprovalRequest } from '../approval.js';
 import { TabClient } from '../client.js';
@@ -355,6 +355,9 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       delegated_by: m.parent ? (byPub.get(m.parent.agent) ?? m.parent.agent) : null,
       chain: chain.slice(1).map((x) => ({ id: x.id, agent: byPub.get(x.agent) ?? x.agent, budget: microToUsd(Number(x.budget)) })),
       revoked: chain.some((x) => revoked.has(x.id)),
+      // 3.2: the routes and hours it pays for, when the agent has rules
+      ...(m.paths ? { paths: m.paths } : {}),
+      ...(m.hours ? { hours: describeHours(m.hours) } : {}),
     };
   }
 
@@ -468,10 +471,21 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
           if (!v) delete config.approve_above;
           else { try { config.approve_above = microToUsd(usdToMicro(normalizeUsd(v))); } catch { throw new HttpError(400, 'approve above must be an amount like 0.25'); } }
         }
-        if (p.model !== undefined || p.max_per_call !== undefined || p.approve_above !== undefined) patch.config = config;
+        // 3.2: spending rules carried into every mandate this agent runs on: routes it may pay for, and when (UTC)
+        if (p.paths !== undefined) {
+          const list = str(p.paths, 2000).split(/[\n,]+/).map((x) => x.trim()).filter(Boolean);
+          if (list.length > 20 || list.some((x) => x.length > 120)) throw new HttpError(400, 'at most 20 route patterns like /search* or GET /weather/*');
+          if (list.length) config.paths = list; else delete config.paths;
+        }
+        if (p.hours !== undefined) {
+          const v = str(p.hours, 80).trim();
+          if (!v) delete config.hours;
+          else { try { config.hours = parseHours(v); } catch (err) { throw new HttpError(400, (err as Error).message.replace(/^hours: /, 'hours: ') + ' (write it like mon-fri 9-17)'); } }
+        }
+        if (p.model !== undefined || p.max_per_call !== undefined || p.approve_above !== undefined || p.paths !== undefined || p.hours !== undefined) patch.config = config;
         if (!Object.keys(patch).length) throw new HttpError(400, 'nothing to change');
         store.updateAgent(agent.id, patch);
-        ev('configure', { agent_id: agent.id, name: agent.name, ...(p.model !== undefined ? { model: config.model ?? 'default' } : {}), ...(patch.budget_per_run !== undefined ? { budget_per_run: microToUsd(patch.budget_per_run) } : {}), ...(p.max_per_call !== undefined ? { max_per_call: config.max_per_call ?? null } : {}), ...(p.approve_above !== undefined ? { approve_above: config.approve_above ?? null } : {}), ...(patch.instructions !== undefined ? { instructions: true } : {}) });
+        ev('configure', { agent_id: agent.id, name: agent.name, ...(p.paths !== undefined ? { paths: config.paths ?? null } : {}), ...(p.hours !== undefined ? { hours: config.hours ? describeHours(config.hours as MandateHours) : null } : {}), ...(p.model !== undefined ? { model: config.model ?? 'default' } : {}), ...(patch.budget_per_run !== undefined ? { budget_per_run: microToUsd(patch.budget_per_run) } : {}), ...(p.max_per_call !== undefined ? { max_per_call: config.max_per_call ?? null } : {}), ...(p.approve_above !== undefined ? { approve_above: config.approve_above ?? null } : {}), ...(patch.instructions !== undefined ? { instructions: true } : {}) });
         return publicAgent(store.agent(agent.id)!);
       }
       case 'budget': {
@@ -1031,7 +1045,7 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
       const cfm = /^agents\/([A-Za-z0-9_-]+)\/configure$/.exec(sub);
       if (cfm) {
         const pick: Record<string, unknown> = { agent_id: cfm[1] };
-        for (const k of ['model', 'budget_per_run', 'max_per_call', 'approve_above', 'instructions', 'heartbeat_s']) if (body[k] !== undefined) pick[k] = body[k];
+        for (const k of ['model', 'budget_per_run', 'max_per_call', 'approve_above', 'instructions', 'heartbeat_s', 'paths', 'hours']) if (body[k] !== undefined) pick[k] = body[k];
         sendJson(res, 200, boardAct(c, 'configure', pick) as object);
         return;
       }

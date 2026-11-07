@@ -33,18 +33,32 @@ export interface Mandate {
    * parent.agent instead of the owner and must sit inside every parent limit.
    */
   parent?: Mandate;
+  /**
+   * 3.2: which routes the agent may pay for, as globs over the path ("/search*") or over
+   * method and path ("GET /wikipedia/*"). Absent means any route the realm allow list permits.
+   */
+  paths?: string[];
+  /** 3.2: when the agent may pay, in UTC: days of the week (0 is Sunday) and hours [from, to). */
+  hours?: MandateHours;
   sig: string; // owner signature over the canonical body (the parent's agent for a sub-mandate)
 }
 
 /** How many delegations deep a chain may go: owner -> agent -> sub -> sub -> sub. */
 export const MAX_DELEGATION_DEPTH = 3;
 
+export interface MandateHours {
+  days?: number[]; // 0 (Sunday) to 6; absent means every day
+  from?: number; // hour 0 to 23, default 0
+  to?: number; // hour 1 to 24, default 24
+}
+
 type MandateBody = Omit<Mandate, 'id' | 'sig'>;
 
 function bodyOf(m: Mandate | MandateBody): MandateBody {
-  const { ver, owner, agent, budget, window, max_per_call, allow, issued_at, expires_at, evm_owner, approve_above, parent } =
+  const { ver, owner, agent, budget, window, max_per_call, allow, issued_at, expires_at, evm_owner, approve_above, parent, paths, hours } =
     m as Mandate;
-  return { ver, owner, agent, budget, window, max_per_call, allow, issued_at, expires_at, evm_owner, approve_above, parent };
+  // paths and hours (3.2) join the signed body only when set, so every older mandate keeps its id
+  return { ver, owner, agent, budget, window, max_per_call, allow, issued_at, expires_at, evm_owner, approve_above, parent, ...(paths !== undefined ? { paths } : {}), ...(hours !== undefined ? { hours } : {}) };
 }
 
 export interface IssueOptions {
@@ -57,6 +71,8 @@ export interface IssueOptions {
   expiresInMs?: number; // overrides days: a mandate for one run lives as long as the run may
   evmOwner?: string; // the owner's 0x address, for the evm rail
   approveAboveUsd?: string; // payments above this need a fresh owner approval
+  paths?: string[]; // 3.2: route globs the agent may pay for
+  hours?: MandateHours; // 3.2: when, in UTC
   now?: Date;
 }
 
@@ -75,6 +91,8 @@ export function issueMandate(owner: KeyPair, opts: IssueOptions): Mandate {
     expires_at: new Date(now.getTime() + (opts.expiresInMs ?? days * 86_400_000)).toISOString(),
     evm_owner: opts.evmOwner ? opts.evmOwner.toLowerCase() : undefined,
     approve_above: opts.approveAboveUsd != null ? String(usdToMicro(opts.approveAboveUsd)) : undefined,
+    ...(opts.paths && opts.paths.length ? { paths: opts.paths } : {}),
+    ...(opts.hours ? { hours: opts.hours } : {}),
   };
   const canonical = canonicalJson(body);
   return { ...body, id: sha256b64url(canonical), sig: signBytes(owner, Buffer.from(canonical)) };
@@ -105,6 +123,8 @@ export function delegateMandate(parentAgent: KeyPair, parent: Mandate, opts: Par
     evm_owner: parent.evm_owner,
     approve_above: opts.approveAboveUsd != null ? String(usdToMicro(opts.approveAboveUsd)) : parent.approve_above,
     parent,
+    ...((opts.paths && opts.paths.length) || parent.paths ? { paths: opts.paths && opts.paths.length ? opts.paths : parent.paths } : {}),
+    ...(opts.hours || parent.hours ? { hours: opts.hours ?? parent.hours } : {}),
   };
   const narrower = withinParent(body, parent);
   if (narrower) throw new Error(`sub-mandate ${narrower}`);
@@ -165,6 +185,14 @@ export function withinParent(child: MandateBody, parent: Mandate): string | null
   const ce = Date.parse(child.expires_at), pe = Date.parse(parent.expires_at);
   if (!Number.isFinite(ce) || ce > pe) return 'outlives its parent';
   if (child.window !== parent.window && child.window !== 'total') return 'resets daily under a parent that does not';
+  if (parent.paths) {
+    if (!child.paths || !child.paths.every((g) => parent.paths!.some((p) => typeof p === 'string' && globMatch(p, g)))) return 'allows a route its parent does not';
+  }
+  if (parent.hours) {
+    if (!child.hours) return 'pays at hours its parent does not';
+    const pd = parent.hours.days ?? [0, 1, 2, 3, 4, 5, 6], cd = child.hours.days ?? [0, 1, 2, 3, 4, 5, 6];
+    if (!cd.every((d) => pd.includes(d)) || (child.hours.from ?? 0) < (parent.hours.from ?? 0) || (child.hours.to ?? 24) > (parent.hours.to ?? 24)) return 'pays at hours its parent does not';
+  }
   return null;
 }
 
@@ -194,6 +222,10 @@ export function verifyMandate(m: Mandate, depth = 0): { ok: boolean; error?: str
   if (m.approve_above !== undefined && !/^\d+$/.test(String(m.approve_above))) {
     return { ok: false, error: 'bad approve_above' };
   }
+  if (m.paths !== undefined && (!Array.isArray(m.paths) || !m.paths.length || m.paths.length > 50 || !m.paths.every((p) => typeof p === 'string' && p.length > 0 && p.length <= 200))) {
+    return { ok: false, error: 'bad paths' };
+  }
+  if (m.hours !== undefined && hoursProblem(m.hours)) return { ok: false, error: `bad hours: ${hoursProblem(m.hours)}` };
   const canonical = canonicalJson(bodyOf(m));
   if (m.id !== sha256b64url(canonical)) return { ok: false, error: 'id does not match body' };
   if (m.parent !== undefined) {
@@ -216,6 +248,64 @@ export function verifyMandate(m: Mandate, depth = 0): { ok: boolean; error?: str
 export function mandateExpired(m: Mandate, now = new Date()): boolean {
   const t = Date.parse(m.expires_at);
   return !Number.isFinite(t) || t <= now.getTime();
+}
+
+function hoursProblem(h: unknown): string | null {
+  if (!h || typeof h !== 'object' || Array.isArray(h)) return 'not an object';
+  const { days, from, to } = h as MandateHours;
+  if (days !== undefined && (!Array.isArray(days) || !days.length || !days.every((d) => Number.isInteger(d) && d >= 0 && d <= 6))) return 'days are 0 to 6';
+  if (from !== undefined && !(Number.isInteger(from) && from >= 0 && from <= 23)) return 'from is an hour 0 to 23';
+  if (to !== undefined && !(Number.isInteger(to) && to >= 1 && to <= 24)) return 'to is an hour 1 to 24';
+  if ((from ?? 0) >= (to ?? 24)) return 'from must be before to';
+  return null;
+}
+
+/**
+ * 3.2: why this mandate chain may not pay for `resource` ("GET /path") at `now`, or null.
+ * Every level's paths and hours apply.
+ */
+export function ruleProblem(m: Mandate, resource: string, now = new Date()): string | null {
+  const sp = resource.indexOf(' ');
+  const path = sp >= 0 ? resource.slice(sp + 1) : resource;
+  for (const x of mandateChain(m)) {
+    if (x.paths && !x.paths.some((g) => typeof g === 'string' && (g.startsWith('/') ? globMatch(g, path) : globMatch(g, resource)))) {
+      return `route ${resource} is not in the mandate's paths (${x.paths.join(', ')})`;
+    }
+    if (x.hours) {
+      const day = now.getUTCDay(), hour = now.getUTCHours();
+      if ((x.hours.days && !x.hours.days.includes(day)) || hour < (x.hours.from ?? 0) || hour >= (x.hours.to ?? 24)) {
+        return `the mandate pays only ${describeHours(x.hours)}`;
+      }
+    }
+  }
+  return null;
+}
+
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+export function describeHours(h: MandateHours): string {
+  const days = h.days ? h.days.map((d) => DAY_NAMES[d]).join(',') : 'every day';
+  return `${days} ${String(h.from ?? 0).padStart(2, '0')}:00 to ${String(h.to ?? 24).padStart(2, '0')}:00 UTC`;
+}
+
+/** "mon-fri 9-17" or "sat,sun" or "8-20" to MandateHours (UTC). */
+export function parseHours(s: string): MandateHours {
+  const out: MandateHours = {};
+  for (const part of s.trim().toLowerCase().split(/\s+/)) {
+    const hr = /^(\d{1,2})-(\d{1,2})$/.exec(part);
+    if (hr) { out.from = Number(hr[1]); out.to = Number(hr[2]); continue; }
+    const days: number[] = [];
+    for (const seg of part.split(',')) {
+      const r = /^([a-z]{3})(?:-([a-z]{3}))?$/.exec(seg);
+      const a = r ? DAY_NAMES.findIndex((d) => d.toLowerCase() === r[1]) : -1;
+      const b = r?.[2] ? DAY_NAMES.findIndex((d) => d.toLowerCase() === r[2]) : a;
+      if (a < 0 || b < 0) throw new Error(`hours: ${JSON.stringify(seg)} is not a day (mon, tue, ...) or a range like 9-17`);
+      for (let d = a; ; d = (d + 1) % 7) { days.push(d); if (d === b) break; }
+    }
+    out.days = [...new Set([...(out.days ?? []), ...days])].sort();
+  }
+  const bad = hoursProblem(out);
+  if (bad) throw new Error(`hours: ${bad}`);
+  return out;
 }
 
 /** Glob over realms: *, *.example.com, quotes.local. */

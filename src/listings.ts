@@ -24,6 +24,8 @@ export interface ListingRoute {
   mcp_tool?: string;
   /** The tool's JSON Schema for its arguments, shown to buyers. */
   input_schema?: Record<string, unknown>;
+  /** 3.2: calls each buyer gets free per day before paying (counted per agent and per address). */
+  free_per_day?: number;
 }
 
 export interface Listing {
@@ -38,6 +40,7 @@ export interface Listing {
   mcp?: boolean; // the upstream is an MCP server (JSON-RPC over HTTP); routes name its tools
   routes: ListingRoute[];
   evm_payout?: string; // 0x address paid on an evm gateway
+  notify?: string; // 3.2: an https webhook (an ntfy.sh topic works) told of the first sale and each day's earnings
   remove?: boolean; // a signed request to take the listing down
   at: string; // ISO time; must be recent, and newer than the listing it replaces
   sig: string;
@@ -52,6 +55,7 @@ export const LISTING_LIMITS = {
   total: 2000,
   skewMs: 10 * 60_000,
   ratePerMinute: 300, // per listing, through this gateway: 5 a second sustained, bursts of 5
+  maxFreePerDay: 100, // 3.2: free calls a route may give each buyer a day
 };
 
 export function listingMessage(l: Omit<Listing, 'sig'> | Listing): Uint8Array {
@@ -100,6 +104,10 @@ export function listingProblem(l: Listing, o: { realm: string; rail: 'ledger' | 
   if (l.description !== undefined && (typeof l.description !== 'string' || l.description.length > 300)) return 'description must be at most 300 characters';
   const up = o.allowPrivate ? (/^https?:\/\/[^/]+/.test(String(l.upstream ?? '')) ? null : 'upstream is not a URL') : upstreamProblem(String(l.upstream ?? ''), o.realm);
   if (up) return up;
+  if (l.notify !== undefined) {
+    const np = o.allowPrivate ? (/^https?:\/\/[^/]+/.test(String(l.notify)) ? null : 'notify is not a URL') : upstreamProblem(String(l.notify).replace(/\?.*$/, ''), o.realm);
+    if (np) return np.replace('upstream', 'notify');
+  }
   if (o.rail === 'evm' && !(typeof l.evm_payout === 'string' && /^0x[0-9a-fA-F]{40}$/.test(l.evm_payout))) return 'this gateway pays on chain: evm_payout must be your 0x address';
   if (!Array.isArray(l.routes) || l.routes.length === 0) return 'a listing needs at least one route';
   if (l.routes.length > LISTING_LIMITS.maxRoutes) return `at most ${LISTING_LIMITS.maxRoutes} routes`;
@@ -115,6 +123,7 @@ export function listingProblem(l: Listing, o: { realm: string; rail: 'ledger' | 
     try { micro = usdToMicro(String(r.price)); } catch { return `route ${r.path}: price is not an amount`; }
     if (micro < min || micro > max) return `route ${r.path}: price must be between ${LISTING_LIMITS.minPrice} and ${LISTING_LIMITS.maxPrice}`;
     if (r.description !== undefined && (typeof r.description !== 'string' || r.description.length > 500)) return `route ${r.path}: description must be at most 500 characters`;
+    if (r.free_per_day !== undefined && !(Number.isInteger(r.free_per_day) && r.free_per_day >= 1 && r.free_per_day <= LISTING_LIMITS.maxFreePerDay)) return `route ${r.path}: free_per_day must be 1 to ${LISTING_LIMITS.maxFreePerDay}`;
     if (l.mcp) {
       if (method !== 'POST' || typeof r.mcp_tool !== 'string' || !TOOL.test(r.mcp_tool)) return 'an MCP listing has one POST route per tool, each naming its mcp_tool';
       if (r.input_schema !== undefined && (typeof r.input_schema !== 'object' || r.input_schema === null || JSON.stringify(r.input_schema).length > 8000)) return `tool ${r.mcp_tool}: input_schema must be a JSON object under 8 KB`;

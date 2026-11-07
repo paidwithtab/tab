@@ -119,14 +119,15 @@ npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 90 passed, 0 failed on the dev box
 npm run test:v3             # 109 passed, 0 failed: revoke (and gateways sharing it), sub-mandates, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools
 npm run test:v31            # 69 passed, 0 failed: MCP self setup, proofs and tab verify, hosted listings, MCP selling, spend alerts
+npm run test:v32            # 127 passed, 0 failed: mandate rules, free calls, size pricing, reliability, the receipt log, seller stats, card top-ups, referrals, usage stats, the cache, cost per task, x402 sellers in the catalog, tab setup
 npm run test:adversarial    # 68 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts, voucher floods, sibling sub-mandates racing one budget
-npm run test:evm            # 96 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, escrow and channels through an escrow address, live testnet reads
-npm run test:company        # 139 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests (with model and per call cap), signed board log, sealed model keys, the claude adapter against a fake Messages API, payment approvals, revoke, delegated budgets, orders, channels
+npm run test:evm            # 99 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, escrow and channels through an escrow address, live testnet and Base reads
+npm run test:company        # 144 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests (with model and per call cap), signed board log, sealed model keys, the claude adapter against a fake Messages API, payment approvals, revoke, delegated budgets, orders, channels, agents' route and hour rules
 npm run test:dashboard      # 40 passed, 0 failed: tab OS in headless Chromium end to end, including a payment approved at phone width, a revoked run, a channel opened and settled, an order released (npx playwright install chromium first); --live also loads the public site and app
 GANACHE=/path/to/ganache/dist/node/cli.js npm run test:contract   # 20 passed, 0 failed: TabChannel.sol on a real EVM (npm i ganache@7.9.2 outside the repo)
 ```
 
-These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes two read-only calls to the public Robinhood testnet RPC and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
+These suites run everything in one process on random ports with a temp SQLite file, so they are safe to run on a box that already has a gateway up (`test:evm` additionally makes read-only calls to the public Robinhood testnet and Base RPCs and silently skips them offline). The adversarial suite is the one that proves the money invariants (e.g. 150 concurrent calls against a $1.00 budget settle at exactly 100 paid); run it after any change to the payment path.
 
 Two ways to run the code:
 
@@ -184,6 +185,11 @@ One gateway can front many upstreams; one catalog can list many gateways; you ca
 | `TAB_HOME` | `tab init`, `tab fetch`, `tab mcp` | where the buyer's keys live; default `~/.tab` |
 | `TAB_MAX_PER_CALL` | `tab mcp` | client-side per-call ceiling in USD, independent of the mandate |
 | `TAB_CATALOG` | `tab mcp` | catalog origin for `tab_search`, `tab_discover`, `tab_balance`; default `https://paidwithtab.com` |
+| `TAB_CACHE_TTL` | `tab mcp` | 3.2: seconds a paid result is reused for the same request (default 600), `off` for never |
+| `TAB_TASK` | `tab mcp`, `tab fetch` | 3.2: what the agent works on, recorded with each paid call for `tab cost`; default the git repository and branch |
+| `TAB_STATS_TOKEN` | `tab serve`, `tab stats --gateway` | 3.2: bearer token for `GET /.well-known/tab/stats`; unset means the endpoint answers 404 |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | `tab serve --stripe` | 3.2: card top-ups through Stripe Checkout (section 9.2) |
+| `BASE_RPC` | `test/evm.ts` | 3.2: Base JSON-RPC for the live reads; default `https://mainnet.base.org` |
 | `SCRATCH` | tests | where temp DBs go; default OS tmpdir |
 | `CLAUDE_BIN` | `tab company serve --local-claude` | the Claude Code binary claude-code agents run; default `claude` on `PATH` |
 | `ANTHROPIC_API_KEY` | `tab company serve --host-model-key` | the key companies without their own run on; not set on the hosted deployment |
@@ -543,6 +549,27 @@ Discovery then has an `x402` member, every 402 carries a `PAYMENT-REQUIRED` head
 
 **A faucet for testers.** On a testnet, `tab serve --faucet 100 --faucet-key keys/faucet.json [--faucet-gas 0.001]` gives any wallet that asks (`POST /.well-known/tab/faucet {"wallet": "0x..."}`) 100 of the gateway's token once, and enough of the chain's coin for its own payment transactions. With an open-mint test token the faucet mints; with any other token it transfers from its own balance, so pre-fund it. The faucet key pays the gas for both, so keep testnet ETH on it. Claims are once per wallet and 20 per IP address a day. It refuses to start on a mainnet chain id. The gateway's home page shows a claim form for people, and tab OS's Claim starter credits button uses it with the owner's 0x address.
 
+### 9.1 Base (3.2)
+
+Most x402 sellers take USDC on Base, and the evm rail is not tied to one chain. `examples/spec-base.json` is the mainnet spec moved to Base: `chain_id` 8453, USDC at `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (6 decimals, EIP-712 domain `USD Coin` version `2`, which also makes x402 work), the same priced routes, explorer basescan.org. A tab key has the same 0x address on every chain, so the owner, recipient and settler keys carry over.
+
+1. Fund the x402 settler with a little ETH on Base for gas (`tab evm address keys/x402-settler.json`).
+2. `cp examples/tab-gateway-base.service ~/.config/systemd/user/ && systemctl --user enable --now tab-gateway-base` (port 1410, `base.db`).
+3. Route `base.paidwithtab.com` to `127.0.0.1:1410` in the tunnel and restart it. The reference deployment's `deploy-base.sh` does all three after checking the settler's gas.
+
+Buyers need no change: the client already pins Base USDC, and an owner approves the agent on Base with `tab evm approve ... --token 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913 --rpc https://mainnet.base.org`. An agent paying x402 sellers on Base directly holds USDC at its own address instead (`tab evm fund ... --rpc https://mainnet.base.org`).
+
+### 9.2 Card top-ups (3.2)
+
+A ledger gateway can sell its credit for card payments through Stripe Checkout. In the Stripe dashboard, create a webhook endpoint at `https://<your gateway>/.well-known/tab/topup/webhook` for `checkout.session.completed` and `checkout.session.async_payment_succeeded`, and put the keys in the gateway's environment:
+
+```sh
+STRIPE_SECRET_KEY=sk_live_...
+STRIPE_WEBHOOK_SECRET=whsec_...
+```
+
+Then add `--stripe` to `tab serve`. Discovery lists `topup`; `tab topup 5` (or `POST /.well-known/tab/topup {"wallet", "usd"}`) answers with Stripe's payment page, and the wallet is credited once, for the amount the top-up named, when the signed event arrives. Whole dollars from 1 to 100, 10 top-ups per address an hour. The gateway never sees card data. Credit sold this way is real money held for the buyer: the operator owes it to sellers when spent and to buyers if refunded, so keep the books (`topups` table) and pay sellers out of the processor's balance. `--referrals` pays a referrer 10% of a referred wallet's spend out of that card money (never out of starter credits), on up to $5 of it.
+
 ---
 
 ## 10. The catalog service
@@ -560,15 +587,19 @@ Discovery then has an `x402` member, every 402 carries a `PAYMENT-REQUIRED` head
 | `GET /earth-day.jpg`, `/earth-night.jpg`, `/earth-water.png` | the maps the landing page globe is drawn from |
 | `GET /inter.woff2`, `/instrument-serif-italic.woff2`, `/geist-mono.woff2` | the site's fonts, as `font/woff2` |
 | `GET /v1/catalog.json` | every known gateway with services and routes |
-| `GET /v1/search?q=&max_price=` | route search, route-level text matches outrank service-level, cheapest first; results carry the full URL to call |
+| `GET /v1/search?q=&max_price=&sort=&kinds=` | route search, route-level text matches outrank service-level; working sellers before unknown before failing, then cheapest. `sort=cheapest` or `reliable`; `kinds=tab`, `x402` or both (default). Each result has `kind`, `reliability` (0 to 1) and, for tab routes, the gateway's 7-day `stats`; x402 results have `network` and 30-day use |
+| `GET /v1/alternatives?url=&method=` | 3.2: other routes that do the same job, working and cheap first |
+| `POST /v1/x402/announce {origin}` | 3.2: read an x402 seller's `/.well-known/x402` and list each resource at the price it answers with |
 | `POST /v1/announce {origin}` | fetch and verify `<origin>/.well-known/tab`, store it |
 | `POST /v1/refresh` | re-fetch every stored gateway now (also runs every 60 s) |
-| `GET /v1/health` | `{ok, version, routes, gateways}`; 503 when search would be empty or any gateway is failing. Point an uptime monitor at it |
+| `GET /v1/health` | `{ok, version, routes, x402_routes, gateways}`; 503 when search would be empty or any gateway is failing. Point an uptime monitor at it |
 | `POST /v1/mandate/verify {mandate, realm}` | check a mandate's signature, expiry and realm, return it decoded |
 | `GET /v1/wallet?origin=&wallet=` | proxy a balance lookup to a gateway |
 | `GET /v1/receipts?limit=` | receipts aggregated from every gateway with `public_receipts` |
 | `GET /v1/try` | is the try-it agent configured, and its limits |
 | `POST /v1/try {url, method, body}` | pay for a catalogued route with the try-it agent, return status, receipt and body |
+
+**x402 sellers (3.2).** `--x402-list bazaar` (or any URL in the same format) reads the public x402 discovery list two seconds after start and every six hours: about 33,000 routes from 3,200 sellers today. Only routes a tab client can pay are kept (`exact` EIP-3009 in a known dollar token on a main network, at most $1 a call); test networks are left out. They live in the catalog database's `x402_routes` table, apart from the gateways.
 
 The front end is static files under `web/` with no build step and no external scripts or fonts: the landing page at `/` (about 1360 lines, self-contained; most of it is the WebGL2 globe fixed behind the page, which the scroll carries from the hero's horizon round the sections to the closer, and which takes over from `hero.jpg` once its three maps have loaded), four pages at `/product`, `/developers`, `/providers` and `/docs` that share `web/site.css`, and the catalog app at `/catalog` (265 lines). The catalog app links `evm:` receipts to the gateway's own explorer (`rail_info.explorer`, defaulting to `explorer.testnet.chain.robinhood.com`); that is the only outbound URL in either file. Serve them from the catalog process or copy them anywhere static and point the app at the catalog with a reverse proxy on the same origin (it fetches relative `/v1/...` paths).
 
@@ -581,12 +612,18 @@ The front end is static files under `web/` with no build step and no external sc
 | `GET /.well-known/tab` | discovery: version, realm, rail, rail_info, recipient, services, routes, and `faucet` when starter credits are on |
 | `GET /.well-known/tab/wallet/<id>` | available balance of a wallet on this rail |
 | `GET /.well-known/tab/receipts?limit=` | last receipts, only if `public_receipts` |
-| `POST /.well-known/tab/faucet {wallet}` | starter credits, only with `--faucet`: credits the wallet once, 429 past the per-address limit |
+| `POST /.well-known/tab/faucet {wallet, ref?}` | starter credits, only with `--faucet`: credits the wallet once, 429 past the per-address limit; with `--referrals`, `ref` names who referred it |
 | `GET /.well-known/tab/receipts?payer=&since=` | the same, filtered to one payer wallet and/or receipts at or after an ISO time |
 | `GET /.well-known/tab/mandate/<id>/spent` | what one mandate has spent here, total and per window; a mandate id is the hash of a document only its owner and agent hold |
 | `POST /.well-known/tab/revocations` | 3.0: one signed revocation or a list of up to 100; kept if the signature verifies, pushed to `--peer` gateways when new |
 | `GET`/`POST /.well-known/tab/listings` | 3.1, with `--listings`: the hosted listings, and a seller's signed listing (or removal) |
 | `POST /.well-known/tab/alerts` | 3.1, with `--alerts`: an owner's signed alert subscription (or `off`); answers with whether the test message arrived |
+| `GET /.well-known/tab/log` | 3.2: the signed tree head of the public receipt log (`?size=n` for an earlier one) |
+| `GET /.well-known/tab/log/proof?receipt=<id>` | 3.2: a receipt's inclusion proof and the head it leads to |
+| `GET /.well-known/tab/log/consistency?from=<m>` | 3.2: proof that the log of size m is a prefix of the current one |
+| `GET /.well-known/tab/seller/stats?seller=&at=&sig=` | 3.2: a seller's earnings, routes and top buyers, signed by the seller key within 10 minutes (`tab sell stats`) |
+| `POST /.well-known/tab/topup {wallet, usd}` | 3.2, with `--stripe`: opens a Stripe Checkout Session; `GET …/topup/<id>` its state (a page for a person); `POST …/topup/webhook` Stripe's signed event |
+| `GET /.well-known/tab/stats?days=` | 3.2, with `TAB_STATS_TOKEN`: outside use with the house left out (`Authorization: Bearer …`) |
 | `GET /.well-known/tab/revocations?since=` | 3.0: revocations in the order received, for peers that poll |
 | `GET /.well-known/tab/revocations/<mandate id>` | 3.0: what is held against one mandate |
 | `POST /.well-known/tab/approvals {request, approval}` | 3.0: the owner's approval for one payment above a threshold, for the agent's retry to find |
@@ -605,6 +642,8 @@ Every 402 body is an RFC 9457 problem with `type: urn:tab:problem:<code>` and a 
 **3.0 in a spec.** A route takes pay on delivery with `"escrow": true` (or `{"timeout_s": 600}`), and is metered for channel buyers with `"meter": {"unit": "token", "per_unit": "0.000002"}` (its `price` stays the per-call price and the most one channel call can cost). The gateway takes channels with a top-level `"channels": {}` (optional `"min_deposit": "0.05"`, `"max_ttl_s": 604800`). Both need `--origin` (the gateway refuses to start without it, because the seller's delivery URL and the escrow tokens derive from it, never from a request's Host header). On the evm rail both also need `--escrow-key`: a key whose address holds escrowed payments and channel deposits and pays the gas to pay them out; give it a little ETH and nothing else. Every payout out of held money is written to the `payouts` table before it is sent and retried under the same key (on chain: the same signed transaction) with backoff; after 12 tries it is marked `stuck` and logged as STUCK. To retry one after fixing the cause (an escrow address out of gas, say): `sqlite3 tab.db "UPDATE payouts SET state = CASE WHEN raw IS NULL THEN 'pending' ELSE 'sent' END, attempts = 0, next_try_at = '' WHERE state = 'stuck'"`. Never clear a row's `raw`, `hash`, `nonce` or `cancels` by hand: the gateway signs a payout again only when the chain shows one of those transactions reverted or was replaced by a cancel of its own, and a cleared row could be paid twice. A stuck row also keeps its nonce: no new payout is given it. Give every gateway database its own escrow key; two databases sharing one escrow address cannot tell their holds' transactions apart. A buyer's transfer into escrow that does not confirm within a minute fails the call; the hold is watched (`state = 'lockwatch'`) and refunded if it lands later. A hold is marked `locking`, with its transaction hash, before that transfer is broadcast, and the order or channel is created in the same database transaction that marks it escrowed; a gateway that starts after being killed mid-flight watches every `locking` hold (refunding money that landed), releases ledger holds left `reserved`, and watches evm ones to see whether they were paid.
 
 Payouts are never signed again on a spent nonce alone (a lagging node looks the same): such a payout is marked stuck at once, and the sweeper checks stuck payouts every minute and books any that landed. A payout the node keeps refusing frees its nonce with a zero-value cancel to the escrow address itself, so later payouts are not stalled behind it.
+
+**3.2 in a spec.** `"free_per_day": 3` on a route gives each buyer three successful calls a day for nothing (per agent key, and three times that per client address). `"meter": {"unit": "kb", "per_unit": "0.0005"}` charges by the response size the gateway counts; on the ledger rail per-call buyers now pay what a metered call used. Route outcomes (`route_stats`) and the receipt log (`receipt_log`) are kept in the gateway database with no flag; receipts from before 3.2 join the log in order at the first start. `--house-ip` and `--house-owner` name the operator's own for the stats; wallets that claimed starter credits from them, or from loopback, count as the house.
 
 **Revocations** are taken only when a mandate authorizes them (sent with the revocation, or one the gateway was paid under), 60 posts per minute per client address, and listed for peers by sequence number. `tab mandate revoke --mandate file` sends the mandate along, so any gateway can check it. On the evm rail a revocation binds gateways, not the chain: add `--token <0x> --evm-agent <key.json|0x>` to zero the agent's allowance in the same step. `tab mcp` offers `tab_delegate` only with `TAB_ALLOW_DELEGATE=1`. An upstream that takes long jobs answers 202 and later POSTs the result to the `Tab-Deliver` URL it was sent, with the `Tab-Delivery-Token` header; a metered upstream reports its usage in a `Tab-Units` response header. A body that breaks a route's `body_allow` or `body_fixed` rule (section 8.3) is 400 `bad-request` before any challenge. Upstream unreachable is 502 `upstream-failed`, nothing charged. Upstream non-2xx is passed through with a `Tab-Void` header and the hold released.
 

@@ -1,0 +1,18 @@
+# User-level systemd unit for the Base gateway at base.paidwithtab.com (evm rail, USDC on Base).
+# Install: cp examples/tab-gateway-base.service ~/.config/systemd/user/ && systemctl --user daemon-reload && systemctl --user enable --now tab-gateway-base
+# The x402 settler pays gas on Base: fund its address with a little ETH on Base first (tab evm address keys/x402-settler.json).
+[Unit]
+Description=tab Base gateway (base.paidwithtab.com, evm rail, USDC on Base)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+UMask=0077
+WorkingDirectory=%h/tab
+EnvironmentFile=-%h/tab/.env
+ExecStart=/usr/bin/node --no-warnings=ExperimentalWarning %h/tab/dist/src/cli.js serve --listen 127.0.0.1 --listings --alerts --spec %h/tab/examples/spec-base.json --db %h/tab/base.db --port 1410 --announce http://127.0.0.1:1403 --origin https://base.paidwithtab.com --x402-settler %h/tab/keys/x402-settler.json --peer http://127.0.0.1:1402 --peer http://127.0.0.1:1405
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -16,7 +16,7 @@ import {
   type Challenge,
   type Receipt,
 } from './protocol.js';
-import { mandateExpired, realmAllowed, perCallCap, approvalThreshold, mandateChain, type Mandate } from './mandate.js';
+import { mandateExpired, realmAllowed, perCallCap, approvalThreshold, mandateChain, ruleProblem, type Mandate } from './mandate.js';
 import type { Approval, ApprovalRequest } from './approval.js';
 import {
   CHANNEL_PATH, encodeVoucherHeader, nextVoucherAmount, signClose, signVoucher, type ChannelState,
@@ -243,6 +243,8 @@ export class TabClient {
         chal,
       );
     }
+    const rule = chal.resource !== `POST ${CHANNEL_PATH}` ? ruleProblem(m, chal.resource) : null;
+    if (rule) throw new PaymentRefused(rule, chal);
     if (pay.escrow && !chal.escrow) throw new PaymentRefused(`${chal.resource} does not take pay on delivery`, chal);
     if (this.opts.onChallenge && !(await this.opts.onChallenge(chal, request))) {
       throw new PaymentRefused('refused by onChallenge', chal);
@@ -372,6 +374,8 @@ export class TabClient {
     if (!Number.isSafeInteger(micro) || micro <= 0) return refuse('x402 amount is out of range');
     if (mandateExpired(m)) return refuse('mandate has expired');
     if (!realmAllowed(m, host)) return refuse(`${host} is not in the mandate's allow list`);
+    const rule = ruleProblem(m, `${(init.method ?? 'GET').toUpperCase()} ${new URL(url).pathname}`);
+    if (rule) return refuse(rule);
     const cap = perCallCap(m);
     if (cap !== null && micro > cap) return refuse(`price ${formatAmount(micro, this.accepts)} exceeds the mandate's per-call cap ${formatAmount(cap, this.accepts)}`);
     if (this.maxPerCallMicro !== null && micro > this.maxPerCallMicro) return refuse(`price ${microToUsd(micro)} exceeds the client cap ${microToUsd(this.maxPerCallMicro)}`);
@@ -594,13 +598,13 @@ export function receiptOf(res: Response): Receipt | null {
   return parseReceiptHeader(res.headers.get('tab-receipt'));
 }
 
-interface X402Offer {
+export interface X402Offer {
   version: 1 | 2;
   required: X402PaymentRequired;
 }
 
 /** The x402 requirements in a 402: the PAYMENT-REQUIRED header (version 2), or a version 1 body. */
-async function x402Offer(res: Response): Promise<X402Offer | null> {
+export async function x402Offer(res: Response): Promise<X402Offer | null> {
   const v2 = decodeX402<X402PaymentRequired>(res.headers.get('payment-required'));
   if (v2 && Array.isArray(v2.accepts)) return { version: 2, required: v2 };
   try {
