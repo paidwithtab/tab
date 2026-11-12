@@ -6,11 +6,11 @@ tab is an MCP server, so any tool that speaks MCP can use it. One command writes
 
 | Tool | Command | What it changes |
 | --- | --- | --- |
-| Claude Code | `claude mcp add --scope user tab -- npx -y paidwithtab mcp` | Claude Code's user config |
-| Cursor | `npx -y paidwithtab setup cursor` | `~/.cursor/mcp.json` |
-| Windsurf | `npx -y paidwithtab setup windsurf` | `~/.codeium/windsurf/mcp_config.json` |
-| VS Code | `npx -y paidwithtab setup vscode` | your user `mcp.json` (`servers.tab`, stdio) |
-| Codex | `npx -y paidwithtab setup codex` | `~/.codex/config.toml` (`[mcp_servers.tab]`) |
+| Claude Code | `claude mcp add --scope user tab -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp` | Claude Code's user config |
+| Cursor | `npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz setup cursor` | `~/.cursor/mcp.json` |
+| Windsurf | `npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz setup windsurf` | `~/.codeium/windsurf/mcp_config.json` |
+| VS Code | `npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz setup vscode` | your user `mcp.json` (`servers.tab`, stdio) |
+| Codex | `npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz setup codex` | `~/.codex/config.toml` (`[mcp_servers.tab]`) |
 
 `tab setup <tool> --print` shows the file it would write and changes nothing. An existing config keeps every other server; the old file is saved next to it as `.before-tab`. A JSON config with comments is left alone, and the command tells you to add the entry by hand. `--github` runs the server from the GitHub repository instead of npm.
 
@@ -76,8 +76,9 @@ tools = await client.get_tools()
 Each tool shares the keys in `~/.tab` unless you point it elsewhere with `TAB_AGENT` and `TAB_MANDATE`. To give a tool its own budget, its own routes or its own hours, issue it a mandate:
 
 ```sh
-npx paidwithtab key new --out ~/.tab/cursor-agent.json
-npx paidwithtab mandate issue --owner ~/.tab/owner.json --agent ~/.tab/cursor-agent.json \
+npm i -g https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz   # once; the command is tab
+tab key new --out ~/.tab/cursor-agent.json
+tab mandate issue --owner ~/.tab/owner.json --agent ~/.tab/cursor-agent.json \
   --budget 0.50 --window day --paths "/search*" --paths "/wikipedia/*" --hours "mon-fri 9-18" --out ~/.tab/cursor-mandate.json
 ```
 

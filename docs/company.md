@@ -25,7 +25,7 @@ Hosted, step by step:
 Self-hosted:
 
 ```sh
-npm i -g paidwithtab
+npm i -g https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz
 tab company serve --db ~/tab/company.db --port 1407 --host app.example.com
 tab company signup --email you@example.com --password '...' --server http://127.0.0.1:1407
 tab company new --template examples/companies/research.json --gateway https://pay.paidwithtab.com

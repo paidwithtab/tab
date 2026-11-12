@@ -1,7 +1,7 @@
 // 3.1: MCP on both sides of a sale.
 // connectTools: the buyer's side. A hosted listing on a tab gateway becomes a local MCP tool set:
 // each paid route is a tool, and calling it pays under the agent's mandate and keeps the proof.
-//   claude mcp add weather -- npx -y paidwithtab mcp connect https://pay.paidwithtab.com/s/weather
+//   claude mcp add weather -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp connect https://pay.paidwithtab.com/s/weather
 // serveMcpHttp: the seller's side. A stdio MCP server is put on HTTP (JSON-RPC, one JSON answer
 // per request), so a gateway can call its tools and a seller can list it with tab sell --mcp.
 

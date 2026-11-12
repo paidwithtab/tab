@@ -1,6 +1,8 @@
 // The page a person sees at a gateway's root: what it is, what it takes, what it sells, how to pay.
 // Agents and API clients get the same facts as JSON from /.well-known/tab; this is only for browsers.
 
+import { RELEASE_TGZ } from './setup.js';
+
 interface HomeRoute { method: string; path: string; price: string; description?: string }
 interface HomeService { name: string; prefix: string; description?: string; routes: HomeRoute[] }
 interface HomeDoc {
@@ -90,7 +92,8 @@ export function homePage(doc: HomeDoc, origin: string): string {
   ${faucetPage ? '' : `<section>
     <h2>How to pay</h2>
     <p class="dim">Any agent with a tab wallet and a mandate from its owner:</p>
-<pre>npx paidwithtab fetch ${esc(sample ? `${sample.method !== 'GET' ? `-X ${sample.method} ` : ''}${origin}${sample.path.replace(/:([a-z_]+)/gi, '<$1>')}` : origin)}</pre>
+<pre>npm i -g ${RELEASE_TGZ}
+tab fetch ${esc(sample ? `${sample.method !== 'GET' ? `-X ${sample.method} ` : ''}${origin}${sample.path.replace(/:([a-z_]+)/gi, '<$1>')}` : origin)}</pre>
     <p class="dim" style="margin-top:14px">Machine-readable terms: <a href="/.well-known/tab">/.well-known/tab</a>${explorer ? `. Settlements are public on the <a href="${esc(explorer)}">explorer</a>` : ''}. Run your own gateway: <a href="https://paidwithtab.com">paidwithtab.com</a></p>
   </section>`}
 </div>${faucetPage ? FAUCET_STYLE : ''}</body></html>`;
@@ -127,23 +130,24 @@ function faucetSections(doc: HomeDoc, amount: string, token: string, explorer: s
     <h2>Make a paid call in four steps</h2>
     <ol class="steps">
       <li><b>Make two keys.</b> The owner holds the tokens and signs the limits. The agent spends. <span class="dim">Needs Node.js 22.13 or newer.</span>
-${cmd(`npx paidwithtab key new --out owner.json
-npx paidwithtab key new --out agent.json
-npx paidwithtab evm address owner.json
-npx paidwithtab evm address agent.json`)}</li>
+${cmd(`npm i -g ${RELEASE_TGZ}
+tab key new --out owner.json
+tab key new --out agent.json
+tab evm address owner.json
+tab evm address agent.json`)}</li>
       <li><b>Claim for both addresses</b> with the form above. The owner gets ${amount} to spend, and both get gas: the owner signs one approval, and the agent sends its own payments.</li>
       <li><b>Let the agent spend.</b> The owner approves an allowance on chain and signs a mandate: at most 10 ${cur} a day, 0.05 per call, only at this gateway.
-${cmd(`npx paidwithtab evm approve --owner owner.json --agent agent.json --amount 10 \\
+${cmd(`tab evm approve --owner owner.json --agent agent.json --amount 10 \\
   --token ${esc(token)}
-npx paidwithtab mandate issue --owner owner.json --agent agent.json --budget 10 --window day \\
+tab mandate issue --owner owner.json --agent agent.json --budget 10 --window day \\
   --max-per-call 0.05 --allow ${realm} --days 30 --out mandate.json`)}</li>
       <li><b>Make a paid call.</b> The gateway answers 402 with a price, the agent pays it on chain, and the response comes back with a signed receipt.
-${cmd(`npx paidwithtab fetch --agent agent.json --mandate mandate.json --currency ${cur} \\
+${cmd(`tab fetch --agent agent.json --mandate mandate.json --currency ${cur} \\
   ${esc(sampleUrl)}`)}
 <pre class="out">paid 0.001 ${cur} (evm:0x2732…f9d2), receipt verified
 {"type":"standard","title":"List of HTTP status codes", ...}</pre></li>
     </ol>
-    <p class="dim" style="margin-top:22px">To let Claude Code spend it instead: <code>claude mcp add tab -e TAB_AGENT=$PWD/agent.json -e TAB_MANDATE=$PWD/mandate.json -e TAB_CURRENCY=${cur} -- npx -y paidwithtab mcp</code></p>
+    <p class="dim" style="margin-top:22px">To let Claude Code spend it instead: <code>claude mcp add tab -e TAB_AGENT=$PWD/agent.json -e TAB_MANDATE=$PWD/mandate.json -e TAB_CURRENCY=${cur} -- npx -y ${RELEASE_TGZ} mcp</code></p>
   </section>
   <section>
     <h2>Network</h2>

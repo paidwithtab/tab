@@ -201,6 +201,7 @@ Any `${UPPER_CASE_NAME}` inside a spec file is replaced from the environment whe
 ## 7. CLI reference
 
 ```
+npm i -g https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz   # once; the command is tab
 tab init  [--dir ~/.tab] [--budget 1.00] [--max-per-call 0.05] [--days 90]
           [--gateway https://pay.paidwithtab.com] [--catalog https://paidwithtab.com]
 tab key new [--out file]
@@ -676,7 +677,7 @@ The gateway prunes redeemed challenge ids older than one hour every ten minutes.
 The short way, for a buyer who ran `tab init` (keys and mandate in `~/.tab`, catalog defaulting to `https://paidwithtab.com`):
 
 ```sh
-claude mcp add --scope user tab -- npx -y paidwithtab mcp
+claude mcp add --scope user tab -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp
 ```
 
 Register it for one project with explicit files by keeping `.mcp.json` next to the code:

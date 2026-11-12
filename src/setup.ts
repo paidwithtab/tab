@@ -10,9 +10,13 @@ import { execFileSync } from 'node:child_process';
 export const CLIENTS = ['claude', 'cursor', 'windsurf', 'vscode', 'codex'] as const;
 export type Client = (typeof CLIENTS)[number];
 
-/** The command an agent tool runs to start tab: the npm package, or the GitHub repository. */
-export function serverCommand(source: 'npm' | 'github' = 'npm'): { command: string; args: string[] } {
-  return { command: 'npx', args: ['-y', source === 'github' ? 'github:paidwithtab/tab' : 'paidwithtab', 'mcp'] };
+/** The newest built package, attached to every GitHub release under the same name. */
+export const RELEASE_TGZ = 'https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz';
+export type Source = 'release' | 'npm' | 'github';
+
+/** The command an agent tool runs to start tab: the latest release, the npm package, or the GitHub repository. */
+export function serverCommand(source: Source = 'release'): { command: string; args: string[] } {
+  return { command: 'npx', args: ['-y', source === 'github' ? 'github:paidwithtab/tab' : source === 'npm' ? 'paidwithtab' : RELEASE_TGZ, 'mcp'] };
 }
 
 /** Where each tool keeps its user-wide MCP config. */
@@ -29,7 +33,7 @@ export function configPath(client: Exclude<Client, 'claude'>, home = homedir(), 
 }
 
 /** The config file with tab added (or replaced), from what it held before. */
-export function withTab(client: Exclude<Client, 'claude'>, before: string | null, env: Record<string, string> = {}, source: 'npm' | 'github' = 'npm'): string {
+export function withTab(client: Exclude<Client, 'claude'>, before: string | null, env: Record<string, string> = {}, source: Source = 'release'): string {
   const { command, args } = serverCommand(source);
   if (client === 'codex') {
     // TOML: replace our table if it is there, else append it
@@ -51,8 +55,8 @@ export function withTab(client: Exclude<Client, 'claude'>, before: string | null
 export async function setupCommand(rest: string[], io: { log: (m: string) => void; die: (m: string) => never }): Promise<void> {
   const client = rest[0] as Client;
   const print = rest.includes('--print');
-  const source = rest.includes('--github') ? 'github' : 'npm';
-  if (!CLIENTS.includes(client)) io.die(`usage: tab setup <${CLIENTS.join('|')}> [--print] [--github]\n  writes the tab MCP server into that tool's config (Claude Code: runs claude mcp add)`);
+  const source: Source = rest.includes('--github') ? 'github' : rest.includes('--npm') ? 'npm' : 'release';
+  if (!CLIENTS.includes(client)) io.die(`usage: tab setup <${CLIENTS.join('|')}> [--print] [--npm|--github]\n  writes the tab MCP server into that tool's config (Claude Code: runs claude mcp add)`);
   const { command, args } = serverCommand(source);
   if (client === 'claude') {
     const line = ['claude', 'mcp', 'add', '--scope', 'user', 'tab', '--', command, ...args];

@@ -166,7 +166,7 @@ Five upgrades that make tab useful in the first minute, for buyers, sellers and 
 
 | Upgrade | What it does | From the CLI |
 | --- | --- | --- |
-| One line to start | The MCP server sets itself up on first launch: keys, a $1.00 a day mandate and $1.00 of starter credits. No `init`, no signup. | `claude mcp add --scope user tab -- npx -y paidwithtab mcp` |
+| One line to start | The MCP server sets itself up on first launch: keys, a $1.00 a day mandate and $1.00 of starter credits. No `init`, no signup. | `claude mcp add --scope user tab -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp` |
 | Proof of purchase | Every paid response is kept as a folder: the body, the gateway's signed receipt, the request and the mandate. One command checks the gateway's signature and published key, the body hash, the request, the agent's own signature on the payment, and the owner's signature on the mandate. | `tab verify ~/.tab/receipts/<folder>`, `tab receipts` |
 | Sell without a server | Sign a listing for your API and post it to a hosted gateway. It is served under `/s/<name>/`, shows in the catalog, and every call pays your own wallet (your 0x address on a chain gateway). | `tab sell https://api.example.com --price 0.01 --route "GET /forecast"` |
 | Charge for an MCP server | List an MCP server and each tool becomes a paid route; the gateway makes the tool call, and a tool that fails is not charged. Buyers add it to Claude Code as tools of their own. A stdio server goes on HTTP with one command. | `tab sell https://mcp.example.com/mcp --mcp --price 0.005`, `tab mcp connect <listing url>`, `tab mcp http -- <command>` |
@@ -216,17 +216,18 @@ The receipt is signed by a key the gateway publishes, and it binds the whole pur
 Give Claude Code a tab in one line:
 
 ```sh
-claude mcp add --scope user tab -- npx -y paidwithtab mcp
+claude mcp add --scope user tab -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp
 ```
 
-On its first launch it creates an owner key and an agent key in `~/.tab`, signs a mandate ($1.00 per day, $0.05 per call, 90 days), and claims $1.00 of starter credits on the public gateway at `pay.paidwithtab.com`. Nothing to fund, no chain, no API keys. Then ask Claude for something it needs to pay for, for example "find the weather in Lisbon through tab". From a shell, `npx paidwithtab init` does the same setup and prints what it made.
+On its first launch it creates an owner key and an agent key in `~/.tab`, signs a mandate ($1.00 per day, $0.05 per call, 90 days), and claims $1.00 of starter credits on the public gateway at `pay.paidwithtab.com`. Nothing to fund, no chain, no API keys. Then ask Claude for something it needs to pay for, for example "find the weather in Lisbon through tab". From a shell, `tab init` does the same setup and prints what it made.
 
 Those credits buy real things: 8,638 routes across 484 services, from web search, translation and speech to text to block explorers for 42 chains, market data from 20 exchanges, Wikipedia in 48 languages, SEC filings, US Treasury data, genomes, proteins and chemistry, package registries, RDAP and DNS, weather and space weather, between $0.001 and $0.02 a call. The full list with prices is in the [quickstart](docs/quickstart.md#what-the-starter-credits-buy).
 
 **1. Pay for something from the shell.**
 
 ```sh
-npx paidwithtab fetch "https://pay.paidwithtab.com/wikipedia/api/rest_v1/page/summary/Lisbon"
+npm i -g https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz   # once; the command is tab
+tab fetch "https://pay.paidwithtab.com/wikipedia/api/rest_v1/page/summary/Lisbon"
 ```
 
 ```
@@ -237,8 +238,8 @@ paid 0.001 (ledger:cpKKYHocOLKlDW8n)
 **2. Prove what it bought.**
 
 ```sh
-npx paidwithtab receipts
-npx paidwithtab verify ~/.tab/receipts/<folder>
+tab receipts
+tab verify ~/.tab/receipts/<folder>
 ```
 
 Every paid call is kept with its signed receipt. `verify` checks the gateway's signature against the key it publishes, that the body is the one it signed for, and that the agent itself signed the payment under the owner's mandate. Change one byte and it fails.
@@ -295,8 +296,8 @@ The gateway handles payment negotiation, authorization, settlement, receipts, an
 **No server to run?** List your API on the hosted gateway instead. It is paid to your own wallet, and it shows in the catalog:
 
 ```sh
-npx paidwithtab sell https://api.example.com --price 0.01 --route "GET /forecast" --route "GET /cities/:id"
-npx paidwithtab sell https://mcp.example.com/mcp --mcp --price 0.005     # an MCP server: one paid route per tool
+tab sell https://api.example.com --price 0.01 --route "GET /forecast" --route "GET /cities/:id"
+tab sell https://mcp.example.com/mcp --mcp --price 0.005     # an MCP server: one paid route per tool
 ```
 
 **[Read the seller documentation](docs/sellers.md)**
@@ -341,7 +342,7 @@ console.log(receiptOf(res)?.ref);
 console.log(await client.verify(url, res, body)); // { ok: true }
 ```
 
-Or skip the key handling: `npx paidwithtab init` does all three steps and claims starter credits on the public gateway.
+Or skip the key handling: `tab init` does all three steps and claims starter credits on the public gateway.
 
 tab also exposes five MCP tools, so compatible agents can discover and purchase services without ever receiving the owner's private key:
 

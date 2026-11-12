@@ -3,23 +3,24 @@
 ## The one-minute version
 
 ```sh
-claude mcp add --scope user tab -- npx -y paidwithtab mcp
+claude mcp add --scope user tab -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp
 ```
 
-That is the whole setup for Claude Code: on its first launch the MCP server does what `init` does below. Cursor, Windsurf, VS Code and Codex take one command too, `npx -y paidwithtab setup cursor` (or `windsurf`, `vscode`, `codex`); docs/integrations.md has them all, and the agent frameworks. From a shell:
+That is the whole setup for Claude Code: on its first launch the MCP server does what `init` does below. Cursor, Windsurf, VS Code and Codex take one command too, `npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz setup cursor` (or `windsurf`, `vscode`, `codex`); docs/integrations.md has them all, and the agent frameworks. From a shell:
 
 ```sh
-npx paidwithtab init
+npm i -g https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz   # once; the command is tab
+tab init
 ```
 
 That writes an owner key, an agent key and a signed mandate to `~/.tab` ($1.00 per day, $0.05 per call) and claims $1.00 of starter credits on the public gateway, `pay.paidwithtab.com`, which fronts real APIs: web search, translation, speech to text, web page reading, Wikipedia, weather, exchange rates. Then:
 
 ```sh
-npx paidwithtab fetch "https://pay.paidwithtab.com/weather/forecast?latitude=38.72&longitude=-9.14&current=temperature_2m"
-claude mcp add --scope user tab -- npx -y paidwithtab mcp
+tab fetch "https://pay.paidwithtab.com/weather/forecast?latitude=38.72&longitude=-9.14&current=temperature_2m"
+claude mcp add --scope user tab -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp
 ```
 
-The second line gives Claude Code the tab tools. Ask it to look something up and it will search [paidwithtab.com/catalog](https://paidwithtab.com/catalog), pay, and show you the receipt. Running `init` again is safe: it keeps your keys and tells you the credits were already claimed. Every paid call is kept in `~/.tab/receipts/`; `npx paidwithtab verify` proves what was bought (the latest purchase, or any folder you name), `npx paidwithtab cost` shows what each task or branch spent, and the same request again within ten minutes is answered from the cache for nothing.
+The second line gives Claude Code the tab tools. Ask it to look something up and it will search [paidwithtab.com/catalog](https://paidwithtab.com/catalog), pay, and show you the receipt. Running `init` again is safe: it keeps your keys and tells you the credits were already claimed. Every paid call is kept in `~/.tab/receipts/`; `tab verify` proves what was bought (the latest purchase, or any folder you name), `tab cost` shows what each task or branch spent, and the same request again within ten minutes is answered from the cache for nothing.
 
 ## What the starter credits buy
 
@@ -42,9 +43,9 @@ Every route was called once with a real sample before it was listed. Services wh
 Three paid calls, as pasted:
 
 ```sh
-npx paidwithtab fetch -X POST -d '{"query":"HTTP 402 payment required","max_results":3}' https://pay.paidwithtab.com/search
-npx paidwithtab fetch -X POST -d '{"text":["Let agents pay for what they use."],"target_lang":"JA"}' https://pay.paidwithtab.com/translate
-npx paidwithtab fetch -X POST -d '{"url":"https://dpgr.am/spacewalk.wav"}' "https://pay.paidwithtab.com/speech/listen?model=nova-3&smart_format=true"
+tab fetch -X POST -d '{"query":"HTTP 402 payment required","max_results":3}' https://pay.paidwithtab.com/search
+tab fetch -X POST -d '{"text":["Let agents pay for what they use."],"target_lang":"JA"}' https://pay.paidwithtab.com/translate
+tab fetch -X POST -d '{"url":"https://dpgr.am/spacewalk.wav"}' "https://pay.paidwithtab.com/speech/listen?model=nova-3&smart_format=true"
 ```
 
 ## The whole stack on your machine

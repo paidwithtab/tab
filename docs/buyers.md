@@ -5,10 +5,10 @@ This guide takes you from nothing to an agent that can discover APIs, pay for th
 ## The fast path
 
 ```sh
-claude mcp add --scope user tab -- npx -y paidwithtab mcp
+claude mcp add --scope user tab -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp
 ```
 
-That is all Claude Code needs: on first launch the MCP server sets itself up. From a shell, `npx paidwithtab init` does the same and prints what it made. Either way, one command creates the keys below, signs a mandate, and claims $1.00 of starter credits on the public gateway. Those credits are sandbox money that only spends on `pay.paidwithtab.com`. The rest of this guide is the real-money path: USDG on Robinhood Chain, where the same keys and the same mandate work unchanged.
+That is all Claude Code needs: on first launch the MCP server sets itself up. From a shell, `tab init` does the same and prints what it made. Either way, one command creates the keys below, signs a mandate, and claims $1.00 of starter credits on the public gateway. Those credits are sandbox money that only spends on `pay.paidwithtab.com`. The rest of this guide is the real-money path: USDG on Robinhood Chain, where the same keys and the same mandate work unchanged.
 
 ## The three keys, and who holds what
 
@@ -23,11 +23,12 @@ The agent never touches the owner key. If an agent key leaks, the damage ceiling
 ## 1. Keys
 
 ```sh
-npx paidwithtab key new --out owner.json
-npx paidwithtab key new --out agent.json
+npm i -g https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz   # once; the command is tab
+tab key new --out owner.json
+tab key new --out agent.json
 ```
 
-One key file carries two identities: the wallet id used by the protocol, and an address on Robinhood Chain (`npx paidwithtab evm address owner.json`).
+One key file carries two identities: the wallet id used by the protocol, and an address on Robinhood Chain (`tab evm address owner.json`).
 
 ## 2. Fund the owner
 
@@ -38,7 +39,7 @@ One key file carries two identities: the wallet id used by the protocol, and an 
 3. Give the agent a little gas. The agent's account sends the payment transactions, so it needs a sliver of ETH:
 
 ```sh
-npx paidwithtab evm fund --from owner.json --to agent.json --eth 0.002
+tab evm fund --from owner.json --to agent.json --eth 0.002
 ```
 
 **Mainnet, when you mean it.** Chain id 4663. The dollar is USDG at `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`, explorer at robinhoodchain.blockscout.com. Send a little ETH for gas and the USDG you intend to spend to the owner address from the Robinhood app, choosing Robinhood Chain as the network, or bridge from Ethereum through the canonical Arbitrum bridge. Add `--rpc https://rpc.mainnet.chain.robinhood.com` to every `evm` command below and use the USDG address as the token. Once real money is at the owner address, keep that key off any server.
@@ -48,7 +49,7 @@ No testnet funds yet? Everything below also works on the free `ledger` rail; run
 ## 3. The mandate: sign the rules once
 
 ```sh
-npx paidwithtab mandate issue --owner owner.json --agent agent.json \
+tab mandate issue --owner owner.json --agent agent.json \
   --budget 5.00 --window day --max-per-call 0.05 \
   --allow 'testnet.paidwithtab.com' --allow 'mainnet.paidwithtab.com' \
   --days 90 --out mandate.json
@@ -59,14 +60,14 @@ Read that back as a sentence: *this agent may spend up to $5.00 per UTC day, at 
 Then the on-chain half, an ERC-20 allowance matching what you are comfortable with:
 
 ```sh
-npx paidwithtab evm approve --owner owner.json --agent agent.json \
+tab evm approve --owner owner.json --agent agent.json \
   --amount 5.00 --token 0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5
 ```
 
 Two ceilings now protect you: the gateway enforces the mandate, the chain enforces the allowance. Ending it all takes one command:
 
 ```sh
-npx paidwithtab evm revoke --owner owner.json --agent agent.json --token 0x5B6C...26f5
+tab evm revoke --owner owner.json --agent agent.json --token 0x5B6C...26f5
 ```
 
 ## 4. Spend
@@ -74,7 +75,7 @@ npx paidwithtab evm revoke --owner owner.json --agent agent.json --token 0x5B6C.
 **From the command line:**
 
 ```sh
-npx paidwithtab fetch --agent agent.json --mandate mandate.json \
+tab fetch --agent agent.json --mandate mandate.json \
   https://testnet.paidwithtab.com/wikipedia/api/rest_v1/page/summary/HTTP_402
 ```
 
@@ -86,7 +87,7 @@ Exit codes: 0 paid and served, 1 the API answered non-2xx (you were not charged)
 claude mcp add tab \
   -e TAB_AGENT=$PWD/agent.json -e TAB_MANDATE=$PWD/mandate.json \
   -e TAB_MAX_PER_CALL=0.05 -e TAB_CATALOG=https://paidwithtab.com \
-  -- npx -y paidwithtab mcp
+  -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp
 ```
 
 Claude gets `tab_search` (find routes by keyword and max price), `tab_discover`, `tab_fetch`, `tab_balance`, and `tab_limits`. `TAB_MAX_PER_CALL` is a second, client-side cap on top of the mandate; the model cannot raise either one. The same server works in Cursor, Codex, Windsurf and Claude Desktop; [agents.md](agents.md) has the JSON for each, plus framework tools and Python.
@@ -112,7 +113,7 @@ On a 402 the client checks the price, signs a credential binding that exact requ
 Every paid response carries a receipt: amount, resource, payer, and a ref like `evm:0x...` that is the settlement transaction on the Robinhood Chain explorer ([testnet](https://explorer.testnet.chain.robinhood.com), [mainnet](https://robinhoodchain.blockscout.com)). The first mainnet payment through tab is [here](https://robinhoodchain.blockscout.com/tx/0xed2380386cdb99d1597ad544d2cee0798e247ef0d48784b60e78bfc5e2db733d). Check balances any time:
 
 ```sh
-npx paidwithtab evm balance --wallet owner.json \
+tab evm balance --wallet owner.json \
   --token 0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5 --agent agent.json
 ```
 
@@ -123,8 +124,8 @@ That prints your dollars, your ETH, and exactly how much allowance the agent has
 `tab fetch` and the MCP server keep every paid response in `~/.tab/receipts/` (set `TAB_PROOFS` to another folder, or `off`). Each folder holds the body, the signed receipt, the request and the mandate, and anyone can check it:
 
 ```sh
-npx paidwithtab receipts
-npx paidwithtab verify ~/.tab/receipts/2026-11-06T13-33-32-516Z-QZt2SKGkEUN9
+tab receipts
+tab verify ~/.tab/receipts/2026-11-06T13-33-32-516Z-QZt2SKGkEUN9
 ```
 
 ```
@@ -144,7 +145,7 @@ Change one byte of the body, the receipt or the request and it fails. What it ca
 ### Hear about spending (3.1)
 
 ```sh
-npx paidwithtab alerts set --ntfy --at 50,90,100 --daily
+tab alerts set --ntfy --at 50,90,100 --daily
 ```
 
 The gateway posts when one of your agents reaches 50, 90 and 100 percent of its budget in a window, and once a day a statement of what your agents paid there. `--ntfy` makes a private ntfy.sh topic: install the ntfy app, subscribe to the topic it prints, and the alerts land on your phone with no account anywhere. Or give `--url` any https webhook and get JSON. `tab alerts off` stops them.
@@ -156,7 +157,7 @@ The gateway posts when one of your agents reaches 50, 90 and 100 percent of its 
 **Cost per task.** Each paid call is tagged with what the agent was working on: `TAB_TASK` if you set it, a `task` argument to `tab_fetch`, or else the git repository and branch the agent runs in (`tab@fix-login`).
 
 ```sh
-npx paidwithtab cost --by task          # or day, realm, route; --since 2026-11-01
+tab cost --by task          # or day, realm, route; --since 2026-11-01
 ```
 
 ```
@@ -173,7 +174,7 @@ The agent can ask the same with `tab_cost`, and price a plan before running it w
 **x402 sellers.** Search also returns x402 APIs (`kind: "x402"`), about 33,000 routes from 3,200 sellers that take USDC on Base. The agent pays them from its own address within the same mandate: fund it with a few dollars of USDC on Base.
 
 ```sh
-npx paidwithtab evm address ~/.tab/agent.json        # the agent's 0x address, the same on every chain
+tab evm address ~/.tab/agent.json        # the agent's 0x address, the same on every chain
 ```
 
 Send USDC on Base to that address (from an exchange or a wallet). The mandate's budget, per-call cap and rules still bound every payment, counted by the client.
@@ -183,7 +184,7 @@ Send USDC on Base to that address (from an exchange or a wallet). The mandate's 
 A mandate can say which routes the agent may pay for and when:
 
 ```sh
-npx paidwithtab mandate issue --owner owner.json --agent agent.json --budget 1.00 --window day \
+tab mandate issue --owner owner.json --agent agent.json --budget 1.00 --window day \
   --paths "/search*" --paths "GET /wikipedia/*" --hours "mon-fri 9-17" --out mandate.json
 ```
 
@@ -194,7 +195,7 @@ A path glob that starts with `/` matches the route's path; with a method in fron
 Every receipt a 3.2 gateway signs goes into its public log, a Merkle tree whose head it signs. `tab verify` (with no folder it checks your latest purchase) now also confirms the receipt is in that log, and:
 
 ```sh
-npx paidwithtab log check --gateway https://pay.paidwithtab.com
+tab log check --gateway https://pay.paidwithtab.com
 ```
 
 keeps the head it saw and, next time, proves the log only grew: nothing already logged was dropped or changed. Run it from cron if you want a watchman.
@@ -204,7 +205,7 @@ keeps the head it saw and, next time, proves the log only grew: nothing already 
 On a gateway that takes card top-ups:
 
 ```sh
-npx paidwithtab topup 5
+tab topup 5
 ```
 
 prints a Stripe payment page and waits; when the payment completes, the owner wallet holds the credit. No card data reaches tab.
@@ -217,20 +218,20 @@ The flow is the dollar flow with three differences. Mint or buy the token instea
 
 ```sh
 npx tsx scripts/evm-mint.ts owner.json 0x8f6fe411e76b79d6eb6521872340c37c3210ee47 5.00
-npx paidwithtab evm approve --owner owner.json --agent agent.json --amount 2.00 --token 0x8f6fe411e76b79d6eb6521872340c37c3210ee47
+tab evm approve --owner owner.json --agent agent.json --amount 2.00 --token 0x8f6fe411e76b79d6eb6521872340c37c3210ee47
 ```
 
 Issue that agent a mandate of its own, because a mandate's budget and cap are amounts of whatever the gateway charges in: `--budget 2.00` means two tokens on this realm and two dollars on a dollar realm. Keep the two apart with `--allow`:
 
 ```sh
-npx paidwithtab mandate issue --owner owner.json --agent agent.json \
+tab mandate issue --owner owner.json --agent agent.json \
   --budget 2.00 --window day --max-per-call 0.05 --allow token-testnet.paidwithtab.com --days 30 --out mandate-ttt.json
 ```
 
 And tell the client which currency it may pay in. By default it pays in USD and refuses anything else before signing, so a stray token-priced route can never spend a dollar mandate:
 
 ```sh
-npx paidwithtab fetch --agent agent.json --mandate mandate-ttt.json --currency TTT \
+tab fetch --agent agent.json --mandate mandate-ttt.json --currency TTT \
   https://token-testnet.paidwithtab.com/wikipedia/api/rest_v1/page/summary/HTTP_402
 ```
 
@@ -257,22 +258,22 @@ Budgets are per mandate, so one agent exhausting its tab never touches another's
 **Revoke it.** A mandate you no longer trust dies at every gateway that hears about it, along with every sub-mandate under it:
 
 ```sh
-npx paidwithtab mandate revoke --key owner.json --mandate mandate.json --reason "laptop lost" \
+tab mandate revoke --key owner.json --mandate mandate.json --reason "laptop lost" \
   --gateway https://pay.paidwithtab.com --gateway https://mainnet.paidwithtab.com
-npx paidwithtab mandate status --mandate mandate.json --gateway https://pay.paidwithtab.com
+tab mandate status --mandate mandate.json --gateway https://pay.paidwithtab.com
 ```
 
 Gateways started with `--peer` pass revocations on and poll each other every few seconds, so naming one of them is enough. On the evm rail a revocation binds gateways, not the chain: the agent's ERC-20 allowance is the hard cap, and an agent key with an allowance can move money without any gateway. Zero it in the same step:
 
 ```sh
-npx paidwithtab mandate revoke --key owner.json --mandate mandate.json --gateway https://mainnet.paidwithtab.com \
+tab mandate revoke --key owner.json --mandate mandate.json --gateway https://mainnet.paidwithtab.com \
   --token 0x5fc5360d0400a0fd4f2af552add042d716f1d168 --evm-agent agent.json
 ```
 
 **Let an agent hire help.** An agent with a mandate can sign a narrower one for another agent key. Every limit stays inside its own (budget, per call cap, allowed sellers, expiry, approval threshold), and whatever the helper spends counts against the parent too, so two helpers together can never spend more than the parent allows:
 
 ```sh
-npx paidwithtab mandate delegate --agent-key agent.json --mandate mandate.json --to helper.json --budget 0.25 --out helper-mandate.json
+tab mandate delegate --agent-key agent.json --mandate mandate.json --to helper.json --budget 0.25 --out helper-mandate.json
 ```
 
 Chains stop three delegations below you. Revoking the parent kills the helper's mandate with it.
@@ -280,7 +281,7 @@ Chains stop three delegations below you. Revoking the parent kills the helper's 
 **Approve the big ones.** Issue the mandate with `--approve-above 0.50` and any payment over fifty cents waits for you. The agent's `tab fetch` stops with exit code 3 and writes the request it needs approved; you sign it and hand it to the gateway, and the agent's retry of the same call pays, once:
 
 ```sh
-npx paidwithtab mandate approve --owner owner.json --request ~/.tab/approval-request-XXXX.json --gateway https://pay.paidwithtab.com
+tab mandate approve --owner owner.json --request ~/.tab/approval-request-XXXX.json --gateway https://pay.paidwithtab.com
 ```
 
 `tab fetch --wait-approval 300` waits for you instead of stopping. An approval covers exactly one call (the same route, query, body and amount) for at most an hour.
@@ -288,7 +289,7 @@ npx paidwithtab mandate approve --owner owner.json --request ~/.tab/approval-req
 **Pay on delivery.** Routes that offer it (discovery marks them `escrow`) hold your payment until the seller delivers, and give it back if it does not by the deadline:
 
 ```sh
-npx paidwithtab fetch --escrow --wait 300 -X POST -d '{"topic":"Lisbon"}' https://seller.example.com/jobs/essay
+tab fetch --escrow --wait 300 -X POST -d '{"topic":"Lisbon"}' https://seller.example.com/jobs/essay
 ```
 
 The result comes with a delivery receipt that binds your request to what was delivered. Without `--wait`, the command prints how to follow the order (`tab escrow status <url> --token <token>`).
@@ -296,10 +297,10 @@ The result comes with a delivery receipt that binds your request to what was del
 **Open a tab at one gateway.** For many small calls at one gateway, open a payment channel: one deposit, then every call is a signed voucher with no transaction, settled once when you close it. Metered routes charge per unit (tokens, seconds), so a call can cost a fraction of a cent:
 
 ```sh
-npx paidwithtab channel open --gateway https://pay.example.com --deposit 1.00
-npx paidwithtab fetch --channel https://pay.example.com/model/complete?tokens=1200
-npx paidwithtab channel list
-npx paidwithtab channel close --gateway https://pay.example.com
+tab channel open --gateway https://pay.example.com --deposit 1.00
+tab fetch --channel https://pay.example.com/model/complete?tokens=1200
+tab channel list
+tab channel close --gateway https://pay.example.com
 ```
 
 The deposit counts against the mandate while the channel is open; closing it gives back what was not spent.

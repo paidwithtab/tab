@@ -5,14 +5,15 @@ Pointing an agent at tab is two decisions. What the agent may spend, which is th
 ## The limits live in the mandate, not in the agent
 
 ```sh
-npx paidwithtab init --budget 5.00 --max-per-call 0.02 --days 30
+npm i -g https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz   # once; the command is tab
+tab init --budget 5.00 --max-per-call 0.02 --days 30
 ```
 
 `init` writes three files to `~/.tab`: an owner key, an agent key, and a mandate signed by the owner. The flags set the mandate's numbers. For an allow list, or for a second agent, sign a mandate by hand:
 
 ```sh
-npx paidwithtab key new --out ~/.tab/agent-research.json
-npx paidwithtab mandate issue --owner ~/.tab/owner.json --agent ~/.tab/agent-research.json \
+tab key new --out ~/.tab/agent-research.json
+tab mandate issue --owner ~/.tab/owner.json --agent ~/.tab/agent-research.json \
   --budget 5.00 --window day --max-per-call 0.02 \
   --allow pay.paidwithtab.com --allow api.someseller.com \
   --days 30 --out ~/.tab/mandate-research.json
@@ -43,7 +44,7 @@ Budgets are per mandate, so one agent exhausting its tab never touches another's
 The package ships an MCP server. With the files `init` wrote in `~/.tab`, there is nothing to configure:
 
 ```sh
-claude mcp add --scope user tab -- npx -y paidwithtab mcp
+claude mcp add --scope user tab -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp
 ```
 
 To use other keys, or to add a tighter client-side cap on top of the mandate, set environment variables:
@@ -54,7 +55,7 @@ claude mcp add --scope user tab \
   -e TAB_MANDATE=$HOME/.tab/mandate-research.json \
   -e TAB_MAX_PER_CALL=0.01 \
   -e TAB_CATALOG=https://paidwithtab.com \
-  -- npx -y paidwithtab mcp
+  -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp
 ```
 
 | Variable | Default | What it does |
@@ -203,8 +204,8 @@ Many paid APIs speak [x402](https://github.com/coinbase/x402) instead of tab: th
 The difference is where the money sits. x402 has the payer sign the transfer, so the agent pays from its **own** address, not the owner's allowance. Fund it with what you are prepared to see spent:
 
 ```sh
-npx paidwithtab evm address ~/.tab/agent.json        # the agent's 0x address
-npx paidwithtab evm fund --from ~/.tab/owner.json --to ~/.tab/agent.json \
+tab evm address ~/.tab/agent.json        # the agent's 0x address
+tab evm fund --from ~/.tab/owner.json --to ~/.tab/agent.json \
   --amount 5.00 --token 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168 \
   --rpc https://rpc.mainnet.chain.robinhood.com      # 5 USDG on Robinhood Chain
 ```
@@ -222,13 +223,13 @@ The client keeps what it has signed to x402 sites in `x402-spent.json` next to t
 The mandate is not a secret, but it grants spending, so treat the file with respect. If an agent key leaks, the damage ceiling is the mandate's remaining budget, and on chain at most the token allowance. Rotate by issuing a new agent key and mandate and, on chain, revoking the old allowance:
 
 ```sh
-npx paidwithtab evm revoke --owner owner.json --agent old-agent.json --token <0x token>
+tab evm revoke --owner owner.json --agent old-agent.json --token <0x token>
 ```
 
 ## Checking what an agent can do
 
 ```sh
-npx paidwithtab fetch --max-per-call 0.0001 "https://pay.paidwithtab.com/weather/forecast?latitude=35.68&longitude=139.69&current=temperature_2m"
+tab fetch --max-per-call 0.0001 "https://pay.paidwithtab.com/weather/forecast?latitude=35.68&longitude=139.69&current=temperature_2m"
 ```
 
 ```

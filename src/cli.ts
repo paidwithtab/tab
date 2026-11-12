@@ -27,7 +27,7 @@ import { usageStats, sellerStatsMessage, type UsageReport } from './usage.js';
 import { signBytes } from './keys.js';
 import { BAZAAR_URL } from './x402-catalog.js';
 import { currentTask } from './mcp.js';
-import { setupCommand } from './setup.js';
+import { setupCommand, RELEASE_TGZ } from './setup.js';
 import { addressFromSeed, checksumAddress } from './evm/secp256k1.js';
 import { EvmRpc } from './evm/rpc.js';
 import { evmSend } from './evm/send.js';
@@ -975,7 +975,7 @@ agent wallet  ${agent.publicKey}
 
 Claude Code (once, for every project; it sets itself up from here, even without init):
 
-  claude mcp add --scope user tab -- npx -y paidwithtab mcp
+  claude mcp add --scope user tab -- npx -y ${RELEASE_TGZ} mcp
 
 Then ask Claude to find and buy something, for example "look up the weather in Lisbon through tab".
 It gets tab_search, tab_fetch, tab_limits, tab_discover and tab_balance, and can never exceed the mandate.
@@ -1288,7 +1288,7 @@ async function sellCommand(rest: string[]): Promise<void> {
   console.log(`
 Any agent with tab can buy it now:
   tab fetch ${values.mcp ? '-d \'{...tool arguments}\' ' : ''}${out.routes[0].url}
-${values.mcp ? '  claude mcp add ' + slug + ' -- npx -y paidwithtab mcp connect ' + out.url + '\n' : ''}It shows in the catalog (paidwithtab.com/catalog) within a minute. Earnings: tab sell stats, and ${disc.rail === 'evm' ? 'your 0x address on chain' : `${gateway}/.well-known/tab/wallet/${seller.publicKey}`}.${values.free ? `\nEach buyer gets ${values.free} free calls a day per route.` : ''}${notify ? `\nSales notices go to ${notify}${new URL(notify).hostname === 'ntfy.sh' ? ` (subscribe to ${new URL(notify).pathname.slice(1)} in the ntfy app)` : ''}.` : ''}`);
+${values.mcp ? '  claude mcp add ' + slug + ' -- npx -y ' + RELEASE_TGZ + ' mcp connect ' + out.url + '\n' : ''}It shows in the catalog (paidwithtab.com/catalog) within a minute. Earnings: tab sell stats, and ${disc.rail === 'evm' ? 'your 0x address on chain' : `${gateway}/.well-known/tab/wallet/${seller.publicKey}`}.${values.free ? `\nEach buyer gets ${values.free} free calls a day per route.` : ''}${notify ? `\nSales notices go to ${notify}${new URL(notify).hostname === 'ntfy.sh' ? ` (subscribe to ${new URL(notify).pathname.slice(1)} in the ntfy app)` : ''}.` : ''}`);
 }
 
 // ---------------------------------------------------------------------------

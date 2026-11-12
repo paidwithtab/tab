@@ -7,7 +7,8 @@ You have an HTTP API. tab puts a price tag on it and collects per request, in US
 List your API on a hosted gateway. One signed command; you are paid to your own wallet, and it shows in the catalog within a minute.
 
 ```sh
-npx paidwithtab sell https://api.example.com --price 0.01 \
+npm i -g https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz   # once; the command is tab
+tab sell https://api.example.com --price 0.01 \
   --route "GET /forecast" --route "GET /cities/:id 0.02" --name "Example Weather"
 ```
 
@@ -28,19 +29,19 @@ listed at https://pay.paidwithtab.com/s/example-weather, paid to <your wallet id
 Every tool becomes a paid route. The gateway makes the tool call for the buyer, and a tool that reports an error is not charged.
 
 ```sh
-npx paidwithtab sell https://mcp.example.com/mcp --mcp --price 0.005 --tool-price deep_search=0.02
+tab sell https://mcp.example.com/mcp --mcp --price 0.005 --tool-price deep_search=0.02
 ```
 
 A server that only speaks stdio goes on HTTP first, then behind a public https address (a tunnel or a reverse proxy):
 
 ```sh
-npx paidwithtab mcp http --port 8808 -- npx -y @example/my-mcp-server
+tab mcp http --port 8808 -- npx -y @example/my-mcp-server
 ```
 
 Buyers add your tools to Claude Code as their own, paid from their mandate:
 
 ```sh
-claude mcp add example -- npx -y paidwithtab mcp connect https://pay.paidwithtab.com/s/example
+claude mcp add example -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp connect https://pay.paidwithtab.com/s/example
 ```
 
 Running your own gateway, below, gives you everything else: your own domain as the realm, any price, x402, pay on delivery and channels.
@@ -48,8 +49,8 @@ Running your own gateway, below, gives you everything else: your own domain as t
 ### Free calls, sale notices, stats (3.2)
 
 ```sh
-npx paidwithtab sell https://api.example.com --price 0.01 --route "GET /forecast" --free 3 --notify-ntfy
-npx paidwithtab sell stats
+tab sell https://api.example.com --price 0.01 --route "GET /forecast" --free 3 --notify-ntfy
+tab sell stats
 ```
 
 `--free 3` gives each buyer three calls a day per route before they pay, counted per agent key and per address; a free call's receipt says `free: true`. `--notify-ntfy` (or `--notify https://your-webhook`) tells you of your first sale and sends each day's earnings. `tab sell stats` signs a request with your seller key and shows earnings per listing and route, each route's reliability this week, and your top buyers, shortened.
@@ -59,7 +60,7 @@ npx paidwithtab sell stats
 The tab catalog lists x402 sellers too, so tab agents find and pay you as you are. If your API is in the public x402 discovery list it is already there; otherwise:
 
 ```sh
-npx paidwithtab catalog add-x402 https://api.example.com
+tab catalog add-x402 https://api.example.com
 ```
 
 reads your `/.well-known/x402` and asks each resource for its price.
@@ -78,8 +79,8 @@ The gateway is a reverse proxy you run next to your API. It answers 402 with a s
 ## 1. Keys and addresses
 
 ```sh
-npx paidwithtab key new --out seller.json     # your wallet id (keep the file safe)
-npx paidwithtab evm address seller.json       # your 0x payout address on Robinhood Chain
+tab key new --out seller.json     # your wallet id (keep the file safe)
+tab evm address seller.json       # your 0x payout address on Robinhood Chain
 ```
 
 The gateway itself holds neither file. Only the public wallet id and the payout address go in the spec.
@@ -132,7 +133,7 @@ The rules that matter:
 ## 3. Serve
 
 ```sh
-npx paidwithtab serve --spec spec.json \
+tab serve --spec spec.json \
   --announce https://paidwithtab.com \
   --origin https://api.example.com
 ```
@@ -144,7 +145,7 @@ npx paidwithtab serve --spec spec.json \
 ```sh
 curl -s https://api.example.com/.well-known/tab | jq .routes   # your price list, machine readable
 curl -si https://api.example.com/v1/things/42 | head -3        # 402 + challenge
-npx paidwithtab evm balance --wallet seller.json \
+tab evm balance --wallet seller.json \
   --token 0x5B6C7cAF7F99f99154fD8375ec935Fcf03F326f5           # USDC arriving per call
 ```
 
@@ -159,8 +160,8 @@ On the evm rail with a token that implements EIP-3009 (USDG on Robinhood Chain d
 ```
 
 ```sh
-npx paidwithtab key new --out settler.json      # fund its 0x address with about 0.0004 ETH
-npx paidwithtab serve --spec spec.json --origin https://pay.example.com --x402-settler settler.json
+tab key new --out settler.json      # fund its 0x address with about 0.0004 ETH
+tab serve --spec spec.json --origin https://pay.example.com --x402-settler settler.json
 ```
 
 Every 402 then carries x402 requirements next to the tab challenge. The money still goes straight from the buyer to your payout address; the settler only pays gas, about 0.00001 ETH a call on Robinhood Chain. Calls are settled after your API answered, and a payment that does not settle withholds the response, exactly as for tab buyers. SPEC section 5.3 has the details.

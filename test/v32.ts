@@ -27,7 +27,7 @@ import { treeHash, inclusionProof, consistencyProof, verifyInclusion, verifyCons
 import { signWebhook, verifyWebhook } from '../src/stripe.js';
 import { sellerStatsMessage } from '../src/usage.js';
 import { routeOfBazaarItem, reliabilityOf } from '../src/x402-catalog.js';
-import { withTab, serverCommand } from '../src/setup.js';
+import { withTab, serverCommand, RELEASE_TGZ } from '../src/setup.js';
 import { encodeX402 } from '../src/x402.js';
 import { ttlOf } from '../src/cache.js';
 
@@ -542,7 +542,7 @@ async function main(): Promise<void> {
   {
     const cursor = withTab('cursor', JSON.stringify({ mcpServers: { other: { command: 'x' } } }));
     const cj = JSON.parse(cursor);
-    check('3: setup adds tab to Cursor and keeps the other servers', cj.mcpServers.other.command === 'x' && cj.mcpServers.tab.command === 'npx' && cj.mcpServers.tab.args.join(' ') === '-y paidwithtab mcp');
+    check('3: setup adds tab to Cursor and keeps the other servers', cj.mcpServers.other.command === 'x' && cj.mcpServers.tab.command === 'npx' && cj.mcpServers.tab.args.join(' ') === `-y ${RELEASE_TGZ} mcp`);
     const vs = JSON.parse(withTab('vscode', null));
     check('3: VS Code gets a stdio entry under servers', vs.servers.tab.type === 'stdio');
     const codex1 = withTab('codex', 'model = "o4"\n');
@@ -552,13 +552,14 @@ async function main(): Promise<void> {
     try { withTab('cursor', '{ // a comment\n}'); } catch { threw = true; }
     check('3: a config that is not plain JSON is left alone', threw);
     check('3: the GitHub source runs the repository', serverCommand('github').args[1] === 'github:paidwithtab/tab');
+    check('3: --npm still names the npm package', serverCommand('npm').args[1] === 'paidwithtab');
     const home = join(scratch, 'setuphome');
     const pr = await cli(['setup', 'cursor', '--print'], { HOME: home });
     check('3: tab setup --print shows the file it would write', pr.code === 0 && /\.cursor\/mcp\.json/.test(pr.out) && /"tab"/.test(pr.out), pr);
     const wr = await cli(['setup', 'windsurf'], { HOME: home });
     check('3: tab setup writes the config', wr.code === 0 && existsSync(join(home, '.codeium', 'windsurf', 'mcp_config.json')), wr);
     const cl = await cli(['setup', 'claude', '--print'], { HOME: home });
-    check('3: tab setup claude prints the claude mcp add line', cl.out === 'claude mcp add --scope user tab -- npx -y paidwithtab mcp', cl.out);
+    check('3: tab setup claude prints the claude mcp add line', cl.out === `claude mcp add --scope user tab -- npx -y ${RELEASE_TGZ} mcp`, cl.out);
   }
 
   // mandate rules from the CLI
