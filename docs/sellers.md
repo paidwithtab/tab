@@ -44,6 +44,26 @@ Buyers add your tools to Claude Code as their own, paid from their mandate:
 claude mcp add example -- npx -y https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab.tgz mcp connect https://pay.paidwithtab.com/s/example
 ```
 
+#### What a failed tool call costs: nothing
+
+Say your server has a tool that reports a failure the MCP way, with `isError: true` in its result:
+
+```json
+{ "jsonrpc": "2.0", "id": 7, "result": { "content": [{ "type": "text", "text": "nope" }], "isError": true } }
+```
+
+The gateway passes that result to the buyer as an HTTP `422`, and a non-2xx answer is never settled. The buyer's hold is released, no receipt is issued and your balance does not move. In Claude Code, the buyer sees the tool's own text and the status:
+
+```
+nope
+
+(422; not charged)
+```
+
+A successful call to the same listing reads `(200; paid $0.006, receipt verified)` instead. The same holds when your server answers a JSON-RPC `error` or a non-2xx HTTP status, or cannot be reached: the buyer gets a `502` and pays nothing. So report failures as failures. A tool that returns an error message with `isError` unset is treated as a success and charged.
+
+[test/v31.ts](../test/v31.ts) checks this on every release: it sells a stdio server with a `shout` tool and a `fail` tool, calls both, and asserts the seller's balance grew for `shout` and stayed the same for `fail`.
+
 Running your own gateway, below, gives you everything else: your own domain as the realm, any price, x402, pay on delivery and channels.
 
 ### Free calls, sale notices, stats (3.2)
