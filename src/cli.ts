@@ -1297,6 +1297,7 @@ async function sellCommand(rest: string[]): Promise<void> {
     notify: { type: 'string' },
     'notify-ntfy': { type: 'boolean', default: false },
     days: { type: 'string', default: '30' },
+    'dry-run': { type: 'boolean', default: false },
   }, true);
   const gateway = (values.gateway as string).replace(/\/$/, '');
   if (sub === 'stats') {
@@ -1371,6 +1372,11 @@ async function sellCommand(rest: string[]): Promise<void> {
   if (!notify && values['notify-ntfy']) notify = `https://ntfy.sh/tab-sales-${randomBytes(9).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '')}`;
   name ??= new URL(upstream).hostname.replace(/^(api|www|mcp)\./, '');
   const slug = (values.slug as string) || slugOf(name);
+  if (values['dry-run']) {
+    // 3.3: what would be listed and what buyers would see, before anything is sent
+    console.log(sellPreview({ realm: disc.realm, gateway, slug, name, upstream, routes, mcp: !!values.mcp, description: values.description as string | undefined, rail: String(disc.rail ?? 'ledger'), paidTo: evmPayout ?? seller.publicKey }));
+    return;
+  }
   const listing = signListing(seller, {
     realm: disc.realm, slug, name, upstream, routes,
     ...(values.description ? { description: values.description as string } : {}),
@@ -1385,6 +1391,32 @@ async function sellCommand(rest: string[]): Promise<void> {
 Any agent with tab can buy it now:
   tab fetch ${values.mcp ? '-d \'{...tool arguments}\' ' : ''}${out.routes[0].url}
 ${values.mcp ? '  claude mcp add ' + slug + ' -- npx -y ' + RELEASE_TGZ + ' mcp connect ' + out.url + '\n' : ''}It shows in the catalog (paidwithtab.com/catalog) within a minute. Earnings: tab sell stats, and ${disc.rail === 'evm' ? 'your 0x address on chain' : `${gateway}/.well-known/tab/wallet/${seller.publicKey}`}.${values.free ? `\nEach buyer gets ${values.free} free calls a day per route.` : ''}${notify ? `\nSales notices go to ${notify}${new URL(notify).hostname === 'ntfy.sh' ? ` (subscribe to ${new URL(notify).pathname.slice(1)} in the ntfy app)` : ''}.` : ''}`);
+}
+
+/** 3.3: `tab sell --dry-run`: the listing as buyers would find it, what it earns, and the rules it is paid under. */
+export function sellPreview(o: { realm: string; gateway: string; slug: string; name: string; upstream: string; routes: ListingRoute[]; mcp: boolean; description?: string; rail: string; paidTo: string }): string {
+  const base = `${o.gateway}/s/${o.slug}`;
+  const lines = [
+    `dry run: nothing was listed. This is what ${o.realm} would publish.`,
+    '',
+    `  ${o.name}${o.description ? `: ${o.description}` : ''}`,
+    `  ${base}   upstream ${o.upstream}${o.mcp ? ' (MCP server)' : ''}`,
+    `  paid to ${o.paidTo}${o.rail === 'evm' ? ' (USDG on chain, per call)' : ' (credits that spend on this gateway; list with --gateway https://mainnet.paidwithtab.com to be paid USDG on chain)'}`,
+    '',
+    '  route                                    price   per 1,000 calls',
+  ];
+  for (const r of o.routes) {
+    const per1000 = (Number(r.price) * 1000).toFixed(2);
+    lines.push(`  ${`${r.method} ${r.path}`.slice(0, 40).padEnd(40)} ${String(r.price).padStart(6)}   $${per1000}${r.free_per_day ? `  (${r.free_per_day} free a day per buyer)` : ''}`);
+    if (r.description) lines.push(`      ${r.description.replace(/\s+/g, ' ').slice(0, 100)}`);
+  }
+  lines.push(
+    '',
+    '  Buyers find it in tab_search and paidwithtab.com/catalog by the words in its name and descriptions.',
+    `  You keep the whole price. A call is charged only when ${o.mcp ? 'the tool succeeds: a result with isError: true comes back as a 422 and' : 'your API answers 2xx: any other status'} costs the buyer nothing.`,
+    '  Run it again without --dry-run to list it.',
+  );
+  return lines.join('\n');
 }
 
 // ---------------------------------------------------------------------------

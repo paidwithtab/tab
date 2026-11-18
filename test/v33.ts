@@ -106,7 +106,7 @@ async function main(): Promise<void> {
   };
   const store = new Store(join(scratch, 'gw.db'));
   const STATS_TOKEN = 'stats-token-for-tests';
-  const gw = await gatewayAt(spec, { store, faucetUsd: '1.00', allowPrivateEgress: true, egressFetch: fetch, statsToken: STATS_TOKEN, houseIps: ['198.51.100.9'] });
+  const gw = await gatewayAt(spec, { store, faucetUsd: '1.00', allowPrivateEgress: true, egressFetch: fetch, statsToken: STATS_TOKEN, houseIps: ['198.51.100.9'], listings: true });
   const GW = gw.url;
 
   // ======================================================================================
@@ -261,6 +261,19 @@ async function main(): Promise<void> {
 
     // the MCP server tells the model how to use it
     check('3: MCP instructions say search, then fetch', /tab_search/.test(MCP_INSTRUCTIONS) && /tab_fetch/.test(MCP_INSTRUCTIONS) && MCP_INSTRUCTIONS.length < 1200);
+  }
+
+  // ======================================================================================
+  // 4. sellers: a dry run shows the listing and lists nothing
+  {
+    const home = join(scratch, 'seller');
+    const before = (await getJson(`${GW}/.well-known/tab/listings`)).doc;
+    const dry = await cli(['sell', 'https://api.example.com', '--price', '0.004', '--route', 'GET /forecast', '--route', 'GET /history 0.02', '--name', 'Weather', '--description', 'forecasts by city', '--free', '2', '--dry-run', '--gateway', GW], { TAB_HOME: home });
+    check('4: --dry-run prints the listing', dry.code === 0 && /dry run: nothing was listed/.test(dry.out) && /Weather: forecasts by city/.test(dry.out), dry);
+    check('4: with each route, its price and what 1,000 calls earn', /GET \/forecast\s+0\.004\s+\$4\.00\s+\(2 free a day per buyer\)/.test(dry.out) && /GET \/history\s+0\.02\s+\$20\.00/.test(dry.out), dry.out);
+    check('4: and the not-charged rule', /charged only when your API answers 2xx/.test(dry.out), dry.out);
+    const after = (await getJson(`${GW}/.well-known/tab/listings`)).doc;
+    check('4: nothing was listed', JSON.stringify(before) === JSON.stringify(after) && !(after.listings ?? []).length, after);
   }
 
   gw.server.close(); upstream.close();
