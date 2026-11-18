@@ -41,6 +41,7 @@ import { treeHash, inclusionProof, consistencyProof, signTreeHead, receiptLeaf, 
 import { createCheckout, verifyWebhook, TOPUP_LIMITS, type StripeConfig } from './stripe.js';
 import { usageStats, sellerStatsMessage } from './usage.js';
 import { verifyBytes } from './keys.js';
+import { FLAGS_PATH, FLAG_LIMITS, flagProblem, type Flag } from './flags.js';
 import { createRail, EvmRail, PayoutPending, PayoutUnknown, LockTimeout, type Rail } from './rails/index.js';
 import type { KeyPair } from './keys.js';
 import { encodeX402, decodeX402, X402_VERSION, type X402PaymentPayload, type X402SettlementResponse } from './x402.js';
@@ -580,10 +581,17 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     return statsCache.map;
   };
   const routeKey = (sv: ServiceSpec, r: RouteSpec) => `${sv.name}|${r.method.toUpperCase()} ${r.path}`;
+  // 3.3: flags per route over the same 7 days, read at most once a minute (and after each new flag)
+  let flagsCache: { at: number; map: Map<string, number> } | null = null;
+  const flagsNow = () => {
+    if (!flagsCache || Date.now() - flagsCache.at > 60_000) flagsCache = { at: Date.now(), map: store.flagCounts(new Date(Date.now() - 7 * 86_400_000).toISOString()) };
+    return flagsCache.map;
+  };
   const statsOf = (sv: ServiceSpec, r: RouteSpec) => {
     const st = routeStatsNow().get(routeKey(sv, r));
     if (!st || st.ok + st.fail === 0) return undefined;
-    return { calls_7d: st.ok + st.fail, ok_rate: Math.round((st.ok * 1000) / (st.ok + st.fail)) / 1000, ...(st.avg_ms !== null ? { avg_ms: st.avg_ms } : {}) };
+    const flags = flagsNow().get(routeKey(sv, r)) ?? 0;
+    return { calls_7d: st.ok + st.fail, ok_rate: Math.round((st.ok * 1000) / (st.ok + st.fail)) / 1000, ...(st.avg_ms !== null ? { avg_ms: st.avg_ms } : {}), ...(flags ? { flags_7d: flags } : {}) };
   };
   // 3.2: metered routes charge per call on the ledger rail too (any unit the upstream reports, or kb the gateway counts)
   const meterPerCall = rail.name === 'ledger';
@@ -625,12 +633,13 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       })),
     })),
     // 3.0: what this gateway takes beyond a plain paid call, and where
-    features: ['revoke', 'delegation', 'approval', 'log', ...(listingsOn ? ['listings'] : []), ...(topupsOn ? ['topup'] : []), ...(referralsOn ? ['referrals'] : []), ...(opts.alerts ? ['alerts'] : []), ...(spec.services.some((s) => s.routes.some((r) => r.escrow)) && canHold ? ['escrow'] : []), ...(channelsOn ? ['channels'] : [])],
+    features: ['revoke', 'delegation', 'approval', 'log', 'flags', ...(listingsOn ? ['listings'] : []), ...(topupsOn ? ['topup'] : []), ...(referralsOn ? ['referrals'] : []), ...(opts.alerts ? ['alerts'] : []), ...(spec.services.some((s) => s.routes.some((r) => r.escrow)) && canHold ? ['escrow'] : []), ...(channelsOn ? ['channels'] : [])],
     revocations: '/.well-known/tab/revocations',
     approvals: '/.well-known/tab/approvals',
     ...(listingsOn ? { listings: LISTING_PATH } : {}),
     ...(opts.alerts ? { alerts: ALERTS_PATH } : {}),
     log: LOG_PATH,
+    flags: FLAGS_PATH,
     ...(topupsOn ? { topup: { path: TOPUP_PATH, min: String(TOPUP_LIMITS.minUsd), max: String(TOPUP_LIMITS.maxUsd) } } : {}),
     ...(channelsOn ? { channels: { open: CHANNEL_PATH, min_deposit: microToUsd(minDeposit), max_ttl_s: maxChannelTtl / 1000 } } : {}),
   });
@@ -1475,6 +1484,22 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     return fresh;
   }
 
+  // 3.3: flags per client address: FLAG_LIMITS.perIpPerHour, as a bucket that refills over the hour
+  const flagBuckets = new Map<string, { tokens: number; at: number }>();
+  function flagAllowed(ip: string): boolean {
+    const perHour = FLAG_LIMITS.perIpPerHour;
+    const now = Date.now();
+    const b = flagBuckets.get(ip) ?? { tokens: perHour, at: now };
+    b.tokens = Math.min(perHour, b.tokens + ((now - b.at) * perHour) / 3_600_000);
+    b.at = now;
+    flagBuckets.delete(ip);
+    flagBuckets.set(ip, b);
+    while (flagBuckets.size > (opts.rateBucketCap ?? 10_000)) flagBuckets.delete(flagBuckets.keys().next().value!);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
   // revocation intake per client address: a bucket of revocationPostsPerMinute
   const revBuckets = new Map<string, { tokens: number; at: number }>();
   function revocationAllowed(ip: string): boolean {
@@ -1865,6 +1890,29 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       }
 
       // -- 3.2: a seller's earnings, for the seller (signed request) ----------------------------
+      // -- 3.3: flags on paid results -------------------------------------------------------------
+      if (pathname === FLAGS_PATH && method === 'POST') {
+        if (!flagAllowed(clientIp(req))) { sendJson(res, 429, { error: 'too many flags from this address; retry later' }); return; }
+        let f: Flag;
+        try {
+          const raw = await readBody(req);
+          if (raw.length > 8_192) throw new Error('too large');
+          f = JSON.parse(raw.toString('utf8')) as Flag;
+        } catch { sendJson(res, 400, { error: 'send a signed flag as JSON (tab flag makes one)' }); return; }
+        const receipt = typeof f?.receipt === 'string' ? store.receiptById(f.receipt) : undefined;
+        const problem = flagProblem(f, { realm: spec.realm, receipt });
+        if (problem) { sendJson(res, problem === 'no such receipt at this gateway' ? 404 : 400, { error: problem }); return; }
+        const [m, ...rest] = receipt!.resource.split(' ');
+        const match = matchRoute(spec, m, rest.join(' ').replace(/\?.*$/, ''));
+        const route = match ? routeKey(match.service, match.route) : receipt!.resource;
+        const fresh = store.addFlag({ receipt: f.receipt, route, payer: f.by, reason: f.reason, note: f.note, at: new Date().toISOString(), doc: JSON.stringify(f) });
+        flagsCache = null;
+        statsCache = null;
+        sendJson(res, fresh ? 201 : 200, { flagged: f.receipt, route: receipt!.resource, reason: f.reason, ...(fresh ? {} : { note: 'this receipt was already flagged' }) });
+        log(`flag ${f.reason} on ${receipt!.resource} (${f.receipt})`);
+        return;
+      }
+
       if (pathname === SELLER_STATS_PATH && method === 'GET') {
         if (!lookupAllowed(clientIp(req))) { sendJson(res, 429, { error: 'too many lookups from this address; retry in a minute' }); return; }
         const seller = u.searchParams.get('seller') ?? '', at = u.searchParams.get('at') ?? '', sig = u.searchParams.get('sig') ?? '';
@@ -1886,6 +1934,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           resources: e.resources.map((r) => ({ resource: r.resource, calls: r.calls, earned: microToUsd(r.amount) })),
           top_buyers: e.buyers.map((b) => ({ owner: b.owner.slice(0, 10), calls: b.calls, paid: microToUsd(b.amount) })),
           by_day: e.days.map((d) => ({ day: d.day, calls: d.calls, earned: microToUsd(d.amount) })),
+          flags: store.flagsOn(mine.flatMap((sv) => sv.routes.map((r) => routeKey(sv, r))), new Date(Date.now() - days * 86_400_000).toISOString())
+            .map((x) => ({ route: x.route.split('|')[1] ?? x.route, reason: x.reason, ...(x.note ? { note: x.note } : {}), at: x.at })),
           ...(referralsOn ? { referrals: (() => { const r = store.referralsBy(seller); return { buyers: r.buyers, earned: microToUsd(r.earned) }; })() } : {}),
         });
         return;

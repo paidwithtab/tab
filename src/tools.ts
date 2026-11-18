@@ -3,6 +3,9 @@
 // to the Messages API. One place, so both agents see the same tools.
 
 import { fixForCode, fixForRefusal, problemCodeOf } from './fixes.js';
+import { FLAG_REASONS, type FlagReason } from './flags.js';
+import { readFileSync } from 'node:fs';
+import { join as joinPath, resolve as resolvePath } from 'node:path';
 import { saveProof, costReport, type CostBy } from './proof.js';
 import { PaidCache, cacheKey, DEFAULT_CACHE_TTL_MS } from './cache.js';
 import { parseChallengeHeader } from './protocol.js';
@@ -12,7 +15,8 @@ import { microToUsd, formatAmount, usdToMicro, normalizeUsd } from './protocol.j
 import { approvalThreshold, delegateMandate, mandateChain, perCallCap, type Mandate } from './mandate.js';
 import type { KeyPair } from './keys.js';
 import type { ApprovalRequest } from './approval.js';
-import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf, approvalRequestOf, type EscrowTicket } from './client.js';
+import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf, approvalRequestOf, flagReceipt, type EscrowTicket } from './client.js';
+import type { Receipt } from './protocol.js';
 
 export interface TabToolOptions {
   agent: KeyPair;
@@ -181,6 +185,19 @@ export const TAB_TOOLS: ToolSpec[] = [
         since: { type: 'string', description: 'ISO date or time, e.g. 2026-11-01' },
         task: { type: 'string', description: 'only this task' },
       },
+    },
+  },
+  {
+    name: 'tab_flag',
+    description: 'Flag a paid result you could not use: wrong, empty, an error that came back as success, or too slow. Pass the proof folder tab_fetch returned. It moves no money; the seller sees the flag and search ranks the route lower, so other agents avoid it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        proof: { type: 'string', description: 'the proof folder from tab_fetch' },
+        reason: { type: 'string', enum: ['wrong', 'empty', 'error', 'slow', 'other'] },
+        note: { type: 'string', description: 'what was wrong, at most 300 characters; the seller reads it' },
+      },
+      required: ['proof', 'reason'],
     },
   },
 ];
@@ -385,6 +402,21 @@ export function createTabTools(opts: TabToolOptions): { list: ToolSpec[]; call: 
             ...(cap !== null ? { over_per_call_cap: rows.filter((x) => typeof (x as { micro?: number }).micro === 'number' && (x as { micro: number }).micro > cap).map((x) => (x as { url: string }).url) } : {}),
             note: 'the budget is the whole mandate; what was already spent this window is counted by each gateway (tab_balance shows funds)',
           });
+        }
+        case 'tab_flag': {
+          const dir = String(args.proof ?? '');
+          const reason = String(args.reason ?? '') as FlagReason;
+          if (!FLAG_REASONS.includes(reason)) return text(`reason must be one of ${FLAG_REASONS.join(', ')}`, true);
+          if (opts.proofDir && !resolvePath(dir).startsWith(resolvePath(opts.proofDir))) return text('proof must be a folder tab_fetch returned', true);
+          let receipt: Receipt, url: string;
+          try {
+            receipt = JSON.parse(readFileSync(joinPath(dir, 'receipt.json'), 'utf8')) as Receipt;
+            url = String((JSON.parse(readFileSync(joinPath(dir, 'request.json'), 'utf8')) as { url?: string }).url ?? '');
+          } catch { return text(`no readable receipt in ${dir}`, true); }
+          if (receipt.payer !== opts.agent.publicKey) return text('only results this agent paid for can be flagged', true);
+          const out = await flagReceipt(opts.agent, receipt, new URL(url).origin, reason, typeof args.note === 'string' ? args.note : undefined, doFetch);
+          if (out.status >= 400) return text(`the gateway did not take the flag: ${String(out.doc.error ?? out.status)}`, true);
+          return text({ flagged: receipt.id, route: receipt.resource, reason, ...(out.doc.note ? { note: out.doc.note } : {}), next: 'nothing was refunded; tab_search finds other sellers for the same job' });
         }
         case 'tab_cost': {
           if (!opts.proofDir) return text('no proof folder: costs come from saved proofs (TAB_PROOFS)', true);

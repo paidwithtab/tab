@@ -157,7 +157,7 @@ interface CatalogRoute {
   /** 3.2: "tab" for a tab gateway's route, "x402" for an x402 seller the agent pays from its own address. */
   kind: 'tab' | 'x402';
   network?: string; // x402: where it is paid, "eip155:8453" is Base
-  stats?: { calls_7d: number; ok_rate: number; avg_ms?: number }; // tab: the gateway's 7-day record
+  stats?: { calls_7d: number; ok_rate: number; avg_ms?: number; flags_7d?: number }; // tab: the gateway's 7-day record
   free_per_day?: number;
   meter?: { unit: string; per_unit: string };
   calls_30d?: number; // x402: paid calls in the last 30 days, from the discovery list
@@ -272,7 +272,7 @@ function routesOf(row: GatewayRow): CatalogRoute[] {
         currency,
         description: String(r.description ?? ''),
         kind: 'tab',
-        ...(r.stats && typeof r.stats === 'object' && Number.isFinite(Number(r.stats.calls_7d)) ? { stats: { calls_7d: Number(r.stats.calls_7d), ok_rate: Number(r.stats.ok_rate), ...(Number.isFinite(Number(r.stats.avg_ms)) ? { avg_ms: Number(r.stats.avg_ms) } : {}) } } : {}),
+        ...(r.stats && typeof r.stats === 'object' && Number.isFinite(Number(r.stats.calls_7d)) ? { stats: { calls_7d: Number(r.stats.calls_7d), ok_rate: Number(r.stats.ok_rate), ...(Number.isFinite(Number(r.stats.avg_ms)) ? { avg_ms: Number(r.stats.avg_ms) } : {}), ...(Number(r.stats.flags_7d) > 0 ? { flags_7d: Math.floor(Number(r.stats.flags_7d)) } : {}) } } : {}),
         ...(Number.isInteger(r.free_per_day) && r.free_per_day > 0 ? { free_per_day: r.free_per_day } : {}),
         ...(r.meter && typeof r.meter.unit === 'string' && typeof r.meter.per_unit === 'string' ? { meter: { unit: String(r.meter.unit).slice(0, 20), per_unit: String(r.meter.per_unit) } } : {}),
         reliability: 0,

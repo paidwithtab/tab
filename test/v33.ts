@@ -29,6 +29,8 @@ import { receiptOf } from '../src/client.js';
 import { saveProof, verifyProof } from '../src/proof.js';
 import { loadSpec } from '../src/gateway.js';
 import { signListing, listingProblem } from '../src/listings.js';
+import { signFlag, FLAGS_PATH } from '../src/flags.js';
+import { reliabilityOf } from '../src/x402-catalog.js';
 
 let passed = 0;
 let failed = 0;
@@ -56,6 +58,10 @@ const gatewayAt = async (spec: Spec, o: Omit<Parameters<typeof createGateway>[1]
   const server = createGateway(spec, { ...o, origin: url });
   await new Promise<void>((r) => server.listen(port, '127.0.0.1', () => r()));
   return { server, url };
+};
+const post = async (url: string, body: unknown) => {
+  const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  return { status: r.status, doc: (await r.json().catch(() => ({}))) as any };
 };
 const getJson = async (url: string, headers: Record<string, string> = {}) => {
   const r = await fetch(url, { headers });
@@ -348,6 +354,51 @@ async function main(): Promise<void> {
     const l = signListing(newKeyPair(), { realm: 'r.local', slug: 'mcp-signed', name: 'm', upstream: 'https://mcp.example.com/mcp', mcp: true, sign: true, routes: [{ method: 'POST', path: '/tools/x', price: '0.01', mcp_tool: 'x' }] });
     check('5: an MCP listing cannot sign yet', /MCP listing cannot sign/.test(listingProblem(l, { realm: 'r.local', rail: 'ledger', allowPrivate: true }) ?? ''));
     sg.server.close(); signedUp.close();
+  }
+
+  // ======================================================================================
+  // 6. flags on paid results
+  {
+    const owner = newKeyPair(), agent = newKeyPair(), other = newKeyPair();
+    store.credit(owner.publicKey, usdToMicro('1.00'));
+    const mandate = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00' });
+    const pdir = join(scratch, 'flagproofs');
+    const tools = createTabTools({ agent, mandate, catalog: 'http://127.0.0.1:9', proofDir: pdir, cacheTtlMs: 0 } as any);
+    const paid = JSON.parse((await tools.call('tab_fetch', { url: `${GW}/api/hello` })).text);
+    check('6: a paid call to flag', paid.status === 200 && !!paid.proof, paid);
+    const rc = paid.receipt;
+    const bal = store.balance(owner.publicKey);
+    const flagged = await tools.call('tab_flag', { proof: paid.proof, reason: 'wrong', note: 'said hello, wanted goodbye' });
+    const fdoc = JSON.parse(flagged.text);
+    check('6: tab_flag flags it at the gateway', !flagged.isError && fdoc.flagged === rc.id && fdoc.reason === 'wrong', flagged.text);
+    check('6: a flag moves no money', store.balance(owner.publicKey) === bal);
+    const twice = JSON.parse((await tools.call('tab_flag', { proof: paid.proof, reason: 'empty' })).text);
+    check('6: one flag per receipt', /already flagged/.test(twice.note ?? ''), twice);
+    const outside = await tools.call('tab_flag', { proof: '/etc', reason: 'wrong' });
+    check('6: tab_flag only reads its own proof folders', outside.isError && /folder tab_fetch returned/.test(outside.text));
+    const byOther = await post(`${GW}${FLAGS_PATH}`, signFlag(other, rc, 'wrong'));
+    check('6: only the agent that paid can flag', byOther.status === 400 && /only the agent that paid/.test(byOther.doc.error), byOther);
+    const forged = { ...signFlag(agent, rc, 'wrong'), reason: 'empty' };
+    const bad = await post(`${GW}${FLAGS_PATH}`, forged);
+    check('6: an altered flag fails its signature', bad.status === 400 && /signature/.test(bad.doc.error), bad);
+    const stale = await post(`${GW}${FLAGS_PATH}`, signFlag(agent, rc, 'wrong', undefined, new Date(Date.now() - 3_600_000)));
+    check('6: an old flag is refused', stale.status === 400 && /10 minutes/.test(stale.doc.error), stale);
+    const nope = await post(`${GW}${FLAGS_PATH}`, signFlag(agent, { ...rc, id: 'no-such-receipt' }, 'wrong'));
+    check('6: a receipt this gateway never issued is a 404', nope.status === 404, nope);
+    const disc = (await getJson(`${GW}/.well-known/tab`)).doc;
+    const hello = disc.services.find((x: any) => x.name === 'api').routes.find((r: any) => r.path === '/hello');
+    check('6: discovery counts flags on the route', hello.stats?.flags_7d === 1 && disc.features.includes('flags') && disc.flags === FLAGS_PATH, { stats: hello.stats, f: disc.features, flags: disc.flags });
+    check('6: a flagged route ranks lower', reliabilityOf({ stats: { calls_7d: 10, ok_rate: 1, flags_7d: 3 } }) === 0.7 && reliabilityOf({ stats: { calls_7d: 10, ok_rate: 1 } }) === 1);
+    // tab flag from the command line, on the latest purchase
+    const home = join(scratch, 'flaghome');
+    mkdirSync(home, { recursive: true });
+    const env = { TAB_HOME: home, TAB_PROOFS: join(home, 'receipts') };
+    await cli(['init', '--dir', home, '--gateway', GW, '--catalog', 'http://127.0.0.1:9', '--no-demo'], env);
+    await cli(['fetch', `${GW}/api/hello`], env);
+    const fl = await cli(['flag', '--reason', 'empty', '--note', 'nothing useful'], env);
+    check('6: tab flag flags the latest purchase', fl.code === 0 && /flagged GET \/api\/hello at v33\.local as empty/.test(fl.out), fl);
+    const usage = await cli(['flag', '--reason', 'meh'], env);
+    check('6: tab flag names the reasons', usage.code !== 0 && /wrong\|empty\|error\|slow\|other/.test(usage.err), usage);
   }
 
   gw.server.close(); upstream.close();

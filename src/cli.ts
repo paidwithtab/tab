@@ -3,6 +3,7 @@
 
 import { nameFetches } from './version.js';
 import { runDoctor, printDoctor } from './doctor.js';
+import { FLAG_REASONS, type FlagReason } from './flags.js';
 import { fixForCode, fixForRefusal, problemCodeOf } from './fixes.js';
 import { parseArgs } from 'node:util';
 import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
@@ -18,7 +19,8 @@ import { usdToMicro, microToUsd, formatAmount, microToBaseUnits, baseUnitsToMicr
 import { Store, CatalogStore } from './store.js';
 import { loadSpec, createGateway, announce } from './gateway.js';
 import { createCatalog, siteReport } from './catalog.js';
-import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf, approvalRequestOf, type EscrowTicket } from './client.js';
+import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf, approvalRequestOf, flagReceipt, type EscrowTicket } from './client.js';
+import type { Receipt } from './protocol.js';
 import { runMcpServer, serveMcpStdio } from './mcp.js';
 import { connectTools, serveMcpHttp, listMcpTools } from './mcp-bridge.js';
 import { signListing, mcpToolPath, LISTING_PATH, LISTING_LIMITS, type ListingRoute } from './listings.js';
@@ -57,6 +59,8 @@ export const VERSION_STRING: string = (() => {
 
 const USAGE = `tab ${VERSION_STRING}: a payment gateway for software agents (HTTP 402 + signed mandates)
 
+  tab flag [proof folder] --reason wrong|empty|error|slow|other [--note text]
+            flags a paid result you could not use at the gateway that sold it; no money moves
   tab doctor [--gateway url] [--catalog url] [--json]
             checks keys, mandate, budget left, balance, clock, catalog, MCP configs, version; names each fix
   tab init  [--dir ~/.tab] [--budget 1.00] [--max-per-call 0.05] [--days 90] [--no-demo]
@@ -599,6 +603,27 @@ async function main(): Promise<void> {
     }
 
     // -- 3.3 ------------------------------------------------------------------------------------
+    case 'flag': {
+      const { values, positionals } = opts(rest, { reason: { type: 'string' }, note: { type: 'string' } }, true);
+      const reason = String(values.reason ?? '') as FlagReason;
+      if (!FLAG_REASONS.includes(reason) || positionals.length > 1) die(`usage: tab flag [proof folder] --reason ${FLAG_REASONS.join('|')} [--note "what was wrong"]\n  flags a paid result at the gateway that sold it (the latest purchase when no folder is named); no money moves`);
+      const root = process.env.TAB_PROOFS || join(TAB_HOME, 'receipts');
+      const dir = positionals[0] ? resolve(positionals[0]) : listProofs(root)[0];
+      if (!dir) die(`no proofs yet in ${root}`);
+      let receipt: Receipt, url: string;
+      try {
+        receipt = JSON.parse(readFileSync(join(dir, 'receipt.json'), 'utf8')) as Receipt;
+        url = String(JSON.parse(readFileSync(join(dir, 'request.json'), 'utf8')).url);
+      } catch { die(`no readable receipt and request in ${dir}`); }
+      const files = defaultAgentFiles(process.env.TAB_AGENT, process.env.TAB_MANDATE);
+      const agent = loadKey(files.agent);
+      if (receipt.payer !== agent.publicKey) die('this receipt was paid by another agent; only the agent that paid can flag it');
+      const out = await flagReceipt(agent, receipt, new URL(url).origin, reason, values.note as string | undefined);
+      if (out.status >= 400) die(String(out.doc.error ?? `HTTP ${out.status}`));
+      console.log(`flagged ${receipt.resource} at ${receipt.realm} as ${reason}${out.doc.note ? ` (${out.doc.note})` : ''}; nothing was refunded, and search ranks the route lower`);
+      return;
+    }
+
     case 'doctor': {
       const { values } = opts(rest, { gateway: { type: 'string', default: PUBLIC_GATEWAY }, catalog: { type: 'string', default: process.env.TAB_CATALOG || PUBLIC_CATALOG }, json: { type: 'boolean', default: false } });
       const checks = await runDoctor({

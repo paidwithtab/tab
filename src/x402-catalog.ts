@@ -149,8 +149,9 @@ export async function importWellKnown(origin: string, send: typeof fetch, max = 
  * How much to trust a route's track record, 0 to 1: tab routes by their gateway's 7-day ok rate,
  * x402 routes by recent paid use in the discovery list. Unknown is 0.7.
  */
-export function reliabilityOf(r: { stats?: { calls_7d: number; ok_rate: number }; payers_30d?: number; last_called?: string }, now = Date.now()): number {
-  if (r.stats && r.stats.calls_7d >= 3) return r.stats.ok_rate;
+export function reliabilityOf(r: { stats?: { calls_7d: number; ok_rate: number; flags_7d?: number }; payers_30d?: number; last_called?: string }, now = Date.now()): number {
+  // 3.3: a flagged result counts against the route like a failed call
+  if (r.stats && r.stats.calls_7d >= 3) return Math.max(0, r.stats.ok_rate - Math.min(r.stats.flags_7d ?? 0, r.stats.calls_7d) / r.stats.calls_7d);
   if (r.last_called) {
     const age = now - Date.parse(r.last_called);
     if (age > 30 * 86_400_000) return 0.4;

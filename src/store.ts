@@ -198,6 +198,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS route_stats (route TEXT NOT NULL, day TEXT NOT NULL, ok INTEGER NOT NULL DEFAULT 0, fail INTEGER NOT NULL DEFAULT 0, ms INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (route, day));
       CREATE TABLE IF NOT EXISTS topups (id TEXT PRIMARY KEY, wallet TEXT NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT);
       CREATE TABLE IF NOT EXISTS referrals (buyer TEXT PRIMARY KEY, referrer TEXT NOT NULL, counted INTEGER NOT NULL DEFAULT 0, earned INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS flags (receipt_id TEXT PRIMARY KEY, route TEXT NOT NULL, payer TEXT NOT NULL, reason TEXT NOT NULL, note TEXT, at TEXT NOT NULL, doc TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS funnel (day TEXT NOT NULL, step TEXT NOT NULL, detail TEXT NOT NULL, who TEXT NOT NULL, client TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (day, step, detail, who, client));
     `);
     try { this.db.exec('ALTER TABLE payouts ADD COLUMN cancels TEXT'); } catch { /* column already exists */ }
@@ -881,6 +882,25 @@ export class Store {
   routeStats(sinceDay: string): Map<string, { ok: number; fail: number; avg_ms: number | null }> {
     const rows = this.db.prepare('SELECT route, SUM(ok) AS ok, SUM(fail) AS fail, SUM(ms) AS ms FROM route_stats WHERE day >= ? GROUP BY route').all(sinceDay) as Array<{ route: string; ok: number; fail: number; ms: number }>;
     return new Map(rows.map((r) => [String(r.route), { ok: Number(r.ok), fail: Number(r.fail), avg_ms: Number(r.ok) ? Math.round(Number(r.ms) / Number(r.ok)) : null }]));
+  }
+
+  /** 3.3: keep a flag; false when the receipt was already flagged. */
+  addFlag(f: { receipt: string; route: string; payer: string; reason: string; note?: string; at: string; doc: string }): boolean {
+    const r = this.db.prepare('INSERT OR IGNORE INTO flags (receipt_id, route, payer, reason, note, at, doc) VALUES (?, ?, ?, ?, ?, ?, ?)').run(f.receipt, f.route, f.payer, f.reason, f.note ?? null, f.at, f.doc);
+    return Number(r.changes) > 0;
+  }
+
+  /** Flags per route since a time. */
+  flagCounts(since: string): Map<string, number> {
+    const rows = this.db.prepare('SELECT route, COUNT(*) AS n FROM flags WHERE at >= ? GROUP BY route').all(since) as Array<{ route: string; n: number }>;
+    return new Map(rows.map((r) => [String(r.route), Number(r.n)]));
+  }
+
+  /** The latest flags on a set of routes, for their seller. */
+  flagsOn(routes: string[], since: string, limit = 50): Array<{ receipt: string; route: string; reason: string; note: string | null; at: string }> {
+    if (!routes.length) return [];
+    const q = `SELECT receipt_id, route, reason, note, at FROM flags WHERE at >= ? AND route IN (${routes.map(() => '?').join(',')}) ORDER BY at DESC LIMIT ?`;
+    return (this.db.prepare(q).all(since, ...routes, limit) as Array<Record<string, unknown>>).map((r) => ({ receipt: String(r.receipt_id), route: String(r.route), reason: String(r.reason), note: r.note == null ? null : String(r.note), at: String(r.at) }));
   }
 
   /**

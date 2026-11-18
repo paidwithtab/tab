@@ -516,7 +516,7 @@ async function main(): Promise<void> {
   check('tab_fetch checked the receipt before the model saw it', toolReceiptVerified === true);
   check('model usage is priced into the run', usdToMicro(run.model_cost) === priceUsage('claude-sonnet-5-5', { input_tokens: 3000, output_tokens: 300 }) && usdToMicro(run.model_cost) === 9_000);
   check('the request carried the company key, the tab tools and finish, and the packet as the user turn', first.headers['x-api-key'] === GOOD_KEY && first.headers['anthropic-version'] === '2023-06-01'
-    && first.body.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,tab_escrow,tab_channel,tab_estimate,tab_cost,finish' && /You are owl/.test(first.body.messages[0].content) && /call finish/.test(first.body.system));
+    && first.body.tools.map((t: any) => t.name).join(',') === 'tab_limits,tab_search,tab_discover,tab_fetch,tab_balance,tab_escrow,tab_channel,tab_estimate,tab_cost,tab_flag,finish' && /You are owl/.test(first.body.messages[0].content) && /call finish/.test(first.body.system));
   const second = antCalls.filter((c) => c.status === 200)[1];
   check('the mandate was capped by the agent budget and tab_limits told the agent its per-call cap', run.mandate.budget === '0.05'
     && /"client_max_per_call_usd": "0\.02"/.test(String(second.body.messages[2].content[0].content)) && /"budget_usd": "0\.05"/.test(String(second.body.messages[2].content[0].content)));

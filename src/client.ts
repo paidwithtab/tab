@@ -26,6 +26,7 @@ import { windowKey } from './rails/budget.js';
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tabUserAgent } from './version.js';
+import { signFlag, FLAGS_PATH, type FlagReason } from './flags.js';
 import { scalarFromSeed } from './evm/secp256k1.js';
 import {
   decodeX402, encodeX402, chainIdOf, signAuthorization, X402_VERSION,
@@ -121,6 +122,17 @@ export interface TabClientOptions {
    * channels opened with openChannel are used. `file` keeps the channels between runs (JSON).
    */
   channels?: { depositUsd?: string; file?: string };
+}
+
+/**
+ * 3.3: flag a paid result this agent could not use (wrong, empty, an error dressed as success),
+ * at the gateway that sold it. Signed by the agent that paid. Moves no money; the seller sees it
+ * and search ranks the route lower.
+ */
+export async function flagReceipt(agent: KeyPair, receipt: Receipt, origin: string, reason: FlagReason, note?: string, f: typeof fetch = fetch): Promise<{ status: number; doc: Record<string, unknown> }> {
+  const flag = signFlag(agent, receipt, reason, note);
+  const r = await f(`${origin.replace(/\/$/, '')}${FLAGS_PATH}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(flag), signal: AbortSignal.timeout(10_000) });
+  return { status: r.status, doc: (await r.json().catch(() => ({}))) as Record<string, unknown> };
 }
 
 /** Per call choices on top of RequestInit. */
