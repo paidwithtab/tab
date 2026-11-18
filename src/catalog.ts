@@ -57,6 +57,47 @@ export interface CatalogOptions {
   log?: (msg: string) => void;
 }
 
+/** 3.3: the status page, as Markdown for the docs shell. Exported for the tests. */
+export function statusMarkdown(rows: GatewayRow[], routesOf: (r: GatewayRow) => CatalogRoute[], x402: number, now = new Date()): string {
+  const esc = (t: string) => String(t).replace(/\|/g, '\\|').replace(/[<>]/g, '');
+  const ago = (iso: string | null | undefined) => {
+    if (!iso) return 'never';
+    const m = Math.round((now.getTime() - Date.parse(iso)) / 60_000);
+    return m < 1 ? 'just now' : m < 120 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+  };
+  const up = rows.filter((r) => r.ok).length;
+  const lines = [
+    '## Status',
+    '',
+    `${up === rows.length && rows.length ? 'All gateways are answering.' : `${up} of ${rows.length} gateways are answering.`} Updated ${now.toISOString().slice(0, 16).replace('T', ' ')} UTC; the catalog reads every gateway every few minutes, and search also covers ${x402.toLocaleString('en-US')} x402 routes from other sellers.`,
+    '',
+    '| Gateway | State | Routes | Last good read | Calls this week | Worked |',
+    '| --- | --- | --- | --- | --- | --- |',
+  ];
+  const bad: Array<{ gw: string; route: string; calls: number; ok: number; flags: number }> = [];
+  for (const r of rows) {
+    const rs = routesOf(r);
+    let calls = 0, ok = 0;
+    for (const x of rs) {
+      const st = x.stats;
+      if (!st) continue;
+      calls += st.calls_7d;
+      ok += st.calls_7d * st.ok_rate;
+      if (st.calls_7d >= 5 && (st.ok_rate < 0.9 || (st.flags_7d ?? 0) > 0)) bad.push({ gw: new URL(r.origin).host, route: `${x.method} ${x.path}`, calls: st.calls_7d, ok: st.ok_rate, flags: st.flags_7d ?? 0 });
+    }
+    const state = r.ok ? 'up' : r.last_ok_at ? `down (${esc(String(r.error ?? 'no answer')).slice(0, 60)})` : 'never answered';
+    lines.push(`| [${esc(new URL(r.origin).host)}](${r.origin}) | ${state} | ${rs.length.toLocaleString('en-US')} | ${ago(r.last_ok_at)} | ${calls.toLocaleString('en-US')} | ${calls ? `${Math.round((ok / calls) * 100)}%` : 'n/a'} |`);
+  }
+  lines.push('', '## Routes to watch', '');
+  if (!bad.length) lines.push('No route with five or more calls this week failed more than one call in ten or was flagged by a buyer.');
+  else {
+    lines.push('Routes with five or more calls this week that failed more than one call in ten, or that a buyer flagged. Failed calls are never charged.', '', '| Gateway | Route | Calls | Worked | Flags |', '| --- | --- | --- | --- | --- |');
+    for (const b of bad.sort((a, z) => a.ok - z.ok || z.flags - a.flags).slice(0, 40)) lines.push(`| ${esc(b.gw)} | \`${esc(b.route)}\` | ${b.calls} | ${Math.round(b.ok * 100)}% | ${b.flags} |`);
+  }
+  lines.push('', '## How this is measured', '', 'Each gateway counts its own routes\' outcomes over seven days and publishes them in its discovery document (`stats`): a call fails when the seller could not be reached or answered 5xx. Flags are buyers\' signed complaints about results they paid for (`tab flag`). Each gateway\'s receipts are in its public log at `/.well-known/tab/log`; `tab log check` watches it for rewrites. Machine readable: [/v1/health](/v1/health).');
+  return lines.join('\n');
+}
+
 /** 3.3: the keyed daily hash the site funnel keeps instead of an address. */
 export function siteVisitor(secret: Uint8Array, day: string, ip: string): string {
   return createHmac('sha256', secret).update(`site\n${day}\n${ip}`).digest('base64url').slice(0, 16);
@@ -538,6 +579,13 @@ export function createCatalog(opts: CatalogOptions): Server {
       }
       if (method === 'GET' && !uiPath && (path === '/' || path === '/catalog')) {
         sendJson(res, 500, { error: 'ui not found: keep web/ next to dist/' });
+        return;
+      }
+
+      // 3.3: a public status page: every gateway the catalog reads, and the routes that did badly this week
+      if (method === 'GET' && (path === '/status' || path === '/status.html')) {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60' });
+        res.end(renderDocsPage(statusMarkdown(store.all().filter((r) => r.last_ok_at || r.ok), routesOf, x402Routes().length), { active: 'docs', title: 'Status' }));
         return;
       }
 

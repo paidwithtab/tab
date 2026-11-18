@@ -14,7 +14,7 @@ import { usdToMicro } from '../src/protocol.js';
 import { issueMandate } from '../src/mandate.js';
 import { Store, CatalogStore } from '../src/store.js';
 import { createGateway, STATS_PATH, funnelStepOf, clientFamily, type Spec } from '../src/gateway.js';
-import { createCatalog, siteStepOf } from '../src/catalog.js';
+import { createCatalog, siteStepOf, statusMarkdown } from '../src/catalog.js';
 import { TabClient } from '../src/client.js';
 import { tabUserAgent, PACKAGE_VERSION } from '../src/version.js';
 import type { UsageReport } from '../src/usage.js';
@@ -223,6 +223,17 @@ async function main(): Promise<void> {
     const ours = await cli(['stats', '--catalog-db', join(scratch, 'catalog-bare.db'), '--house-ip', '198.51.100.9', '--days', '7', '--json'], {});
     const home = (o: string) => (JSON.parse(o || '{}').site ?? []).find((x: any) => x.step === 'page' && x.detail === '/')?.visitors;
     check('2: --catalog-db reads the database; --house-ip leaves the operator out after the fact', home(all.out) === 2 && home(ours.out) === 1, { all: all.out.slice(0, 300), ours: ours.out.slice(0, 300), err: ours.err });
+
+    // the status page
+    const now = new Date('2026-11-18T12:00:00Z');
+    const gwRow = (origin: string, ok: boolean, last: string | null, err?: string) => ({ origin, ok, error: err ?? null, payload: {}, fetched_at: now.toISOString(), last_ok_at: last }) as any;
+    const routes = (r: any) => r.origin.includes('good')
+      ? [{ method: 'GET', path: '/a', stats: { calls_7d: 20, ok_rate: 1 } }, { method: 'GET', path: '/b', stats: { calls_7d: 10, ok_rate: 0.5 } }, { method: 'GET', path: '/c', stats: { calls_7d: 6, ok_rate: 1, flags_7d: 2 } }, { method: 'GET', path: '/d', stats: { calls_7d: 2, ok_rate: 0 } }]
+      : [];
+    const md = statusMarkdown([gwRow('https://good.example', true, '2026-11-18T11:58:00Z'), gwRow('https://down.example', false, '2026-11-18T09:00:00Z', 'HTTP 502')], routes as any, 1234, now);
+    check('2: status names how many gateways answer', /1 of 2 gateways are answering/.test(md) && /1,234 x402 routes/.test(md), md.slice(0, 300));
+    check('2: status shows each gateway with its state and last good read', /good\.example\]\(https:\/\/good\.example\) \| up \| 4 \| 2 min ago \| 38 \| 82% \|/.test(md) && /down \(HTTP 502\) \| 0 \| 3 h ago/.test(md), md);
+    check('2: status lists failing and flagged routes, not quiet ones', /`GET \/b` \| 10 \| 50% \| 0/.test(md) && /`GET \/c` \| 6 \| 100% \| 2/.test(md) && !/`GET \/d`/.test(md) && !/`GET \/a`/.test(md), md);
   }
 
   // ======================================================================================
