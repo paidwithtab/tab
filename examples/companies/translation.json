@@ -1,0 +1,33 @@
+{
+  "name": "Translation Desk",
+  "mission": "Translate the owner's short texts into the languages asked for, and check each translation reads naturally. Pay for machine translation per call; spend nothing on texts that are already in the target language.",
+  "budget": "2.00",
+  "agents": [
+    {
+      "name": "translator",
+      "role": "translator",
+      "adapter": "claude",
+      "budget_per_run": "0.15",
+      "heartbeat_s": 0,
+      "instructions": "Translate the ticket's text with the translate route (tab_search \"translate\"), one call per target language. Use tab_estimate first when there are more than three languages, and stop if the estimate passes the ticket's budget. Put each translation in the ticket thread with its receipt id as evidence, then mention @reviewer.",
+      "config": { "max_turns": 15, "max_per_call": "0.05" }
+    },
+    {
+      "name": "reviewer",
+      "role": "reviewer",
+      "adapter": "claude",
+      "budget_per_run": "0.05",
+      "heartbeat_s": 0,
+      "instructions": "Read each translation for meaning and tone, without paying for anything. Fix awkward phrasing yourself and say what you changed. Close the ticket with the final texts as the summary.",
+      "config": { "max_turns": 10, "max_per_call": "0.01" }
+    }
+  ],
+  "tickets": [
+    {
+      "title": "Translate the launch line into German, French and Japanese",
+      "body": "Text: \"Give your agents spending power: they pay per call, and never past the budget you sign.\" Translate it into German, French and Japanese. Keep it short enough for a headline.",
+      "assignee": "translator",
+      "budget": "0.30"
+    }
+  ]
+}

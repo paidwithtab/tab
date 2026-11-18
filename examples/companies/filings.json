@@ -1,0 +1,33 @@
+{
+  "name": "Filings Desk",
+  "mission": "Research public companies from what they filed with the SEC, not from what was written about them. Every claim cites the filing it came from.",
+  "budget": "5.00",
+  "agents": [
+    {
+      "name": "analyst",
+      "role": "researcher",
+      "adapter": "claude",
+      "budget_per_run": "0.30",
+      "heartbeat_s": 0,
+      "instructions": "For each company the owner names, find its latest 10-K and 10-Q through the edgar and edgar-search routes (tab_search \"SEC filings\"). Read the filing index and the sections that answer the brief. Report revenue, net income and cash for the last two periods, and quote one risk the company itself names. Attach every receipt id as evidence and link each filing. If a number needs judgement (a restatement, a segment change), say so plainly.",
+      "config": { "max_turns": 30, "max_per_call": "0.02" }
+    },
+    {
+      "name": "checker",
+      "role": "fact checker",
+      "adapter": "claude",
+      "budget_per_run": "0.10",
+      "heartbeat_s": 0,
+      "instructions": "Check analyst's three most important numbers against the filing itself (one tab_fetch each). Write the final answer for the owner. If a number does not match, open a sub-ticket for analyst saying which one and where you found the right value.",
+      "config": { "max_turns": 15, "max_per_call": "0.02" }
+    }
+  ],
+  "tickets": [
+    {
+      "title": "Brief: Apple's last two quarters, from its filings",
+      "body": "Revenue, net income and cash for Apple's last two reported quarters, from its 10-Q filings, plus one risk Apple names itself. When done, mention @checker.",
+      "assignee": "analyst",
+      "budget": "0.60"
+    }
+  ]
+}

@@ -779,6 +779,9 @@ process.stdin.on('end', () => {
   const fromTemplate = await api('POST', '/api/companies', { ...templates.body.templates[0], gateways: [GW] });
   check('a template founds a company with its agents and tickets', fromTemplate.status === 200 && fromTemplate.body.agents.length === 2
     && (await api('GET', `/api/companies/${fromTemplate.body.company.id}`)).body.tickets.length === 1);
+  // 3.3: every template shipped founds a company
+  const fromEvery = await Promise.all(templates.body.templates.slice(1).map((t: any) => api('POST', '/api/companies', { ...t, gateways: [GW] })));
+  check('every shipped template founds a company with its agents', templates.body.templates.length >= 5 && fromEvery.every((f: any, i: number) => f.status === 200 && f.body.agents.length === templates.body.templates[i + 1].agents.length), fromEvery.map((f: any) => [f.status, f.body?.error]));
   const page = await fetch(APP + '/');
   const pageHtml = await page.text();
   const cspNonce = /script-src 'nonce-([A-Za-z0-9_-]+)'/.exec(page.headers.get('content-security-policy') ?? '')?.[1];

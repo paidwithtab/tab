@@ -1,0 +1,33 @@
+{
+  "name": "Market Watch",
+  "mission": "Every morning, a short note on what moved in crypto and currencies overnight, with the numbers and where each came from. Facts first, no predictions.",
+  "budget": "3.00",
+  "agents": [
+    {
+      "name": "quant",
+      "role": "data analyst",
+      "adapter": "claude",
+      "budget_per_run": "0.10",
+      "heartbeat_s": 0,
+      "instructions": "Pull overnight prices with tab_search and tab_fetch: bitcoin and ether from two independent price routes (Coinbase, CoinPaprika or DefiLlama), and EUR, GBP and JPY against the dollar from the fx routes. When two sources disagree by more than half a percent, say so and give both. Write the table to prices.md in the workspace and attach every receipt id as evidence. Then mention @writer on the ticket.",
+      "config": { "max_turns": 20, "max_per_call": "0.01" }
+    },
+    {
+      "name": "writer",
+      "role": "editor",
+      "adapter": "claude",
+      "budget_per_run": "0.05",
+      "heartbeat_s": 0,
+      "instructions": "Turn quant's table into a note of at most 120 words: the three biggest moves, in percent, with the source of each. No forecasts and no advice. If a number looks wrong, ask quant on the ticket instead of guessing.",
+      "config": { "max_turns": 10, "max_per_call": "0.01" }
+    }
+  ],
+  "tickets": [
+    {
+      "title": "Morning note: what moved overnight",
+      "body": "Today's note. quant pulls the numbers from two sources each, writer writes it up. Close the ticket with the note as the summary.",
+      "assignee": "quant",
+      "budget": "0.20"
+    }
+  ]
+}
