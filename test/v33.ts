@@ -189,6 +189,19 @@ async function main(): Promise<void> {
     const printed = await cli(['stats', '--catalog', CAT, '--days', '7'], { TAB_STATS_TOKEN: STATS_TOKEN });
     check('2: tab stats --catalog prints the site funnel', printed.code === 0 && /search/.test(printed.out) && /weather/.test(printed.out), printed);
     cat.close();
+
+    // a catalog started without --house-ip, read on the box with the operator's address left out after the fact
+    const bare = new CatalogStore(join(scratch, 'catalog-bare.db'));
+    const cat2 = createCatalog({ store: bare });
+    const CAT2 = await listen(cat2);
+    await fromIp('198.51.100.9', { 'user-agent': 'Mozilla/5.0' })(`${CAT2}/`);
+    await fromIp('203.0.113.30', { 'user-agent': 'Mozilla/5.0' })(`${CAT2}/`);
+    await settle();
+    cat2.close();
+    const all = await cli(['stats', '--catalog-db', join(scratch, 'catalog-bare.db'), '--days', '7', '--json'], {});
+    const ours = await cli(['stats', '--catalog-db', join(scratch, 'catalog-bare.db'), '--house-ip', '198.51.100.9', '--days', '7', '--json'], {});
+    const home = (o: string) => (JSON.parse(o || '{}').site ?? []).find((x: any) => x.step === 'page' && x.detail === '/')?.visitors;
+    check('2: --catalog-db reads the database; --house-ip leaves the operator out after the fact', home(all.out) === 2 && home(ours.out) === 1, { all: all.out.slice(0, 300), ours: ours.out.slice(0, 300), err: ours.err });
   }
 
   gw.server.close(); upstream.close();

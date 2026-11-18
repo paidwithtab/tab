@@ -15,7 +15,7 @@ import { signApproval, approvalRequestValid, type Approval, type ApprovalRequest
 import { usdToMicro, microToUsd, formatAmount, microToBaseUnits, baseUnitsToMicro } from './protocol.js';
 import { Store, CatalogStore } from './store.js';
 import { loadSpec, createGateway, announce } from './gateway.js';
-import { createCatalog } from './catalog.js';
+import { createCatalog, siteReport } from './catalog.js';
 import { TabClient, PaymentRefused, receiptOf, x402ResponseOf, escrowOf, approvalRequestOf, type EscrowTicket } from './client.js';
 import { runMcpServer, serveMcpStdio } from './mcp.js';
 import { connectTools, serveMcpHttp, listMcpTools } from './mcp-bridge.js';
@@ -111,7 +111,7 @@ const USAGE = `tab ${VERSION_STRING}: a payment gateway for software agents (HTT
   tab log head|check [--gateway url]...   the public receipt log: check proves nothing already logged was changed
   tab setup <claude|cursor|windsurf|vscode|codex> [--print] [--github]   put tab in an agent tool's MCP config
   tab topup <dollars> [--gateway url]     add credit by card (on gateways that take it)
-  tab stats (--db pay.db [--house-ip ip]... | --gateway url | --catalog url) [--days 30]   who uses a gateway or the site, the operator's own left out
+  tab stats (--db pay.db [--house-ip ip]... | --gateway url | --catalog url | --catalog-db catalog.db [--house-ip ip]...) [--days 30]   who uses a gateway or the site, the operator's own left out
   tab receipts [--dir ~/.tab/receipts] [--limit 20]      paid calls kept as proof folders
   tab sell <https upstream> --price 0.01 [--name] [--slug] [--description] [--route "GET /path [price]"]... [--gateway url]
             list your API on a hosted gateway, paid to your own wallet; no server of your own
@@ -626,16 +626,23 @@ async function main(): Promise<void> {
     }
 
     case 'stats': {
-      const { values } = opts(rest, { db: { type: 'string' }, gateway: { type: 'string' }, catalog: { type: 'string' }, days: { type: 'string', default: '30' }, 'house-ip': { type: 'string', multiple: true }, 'house-owner': { type: 'string', multiple: true }, json: { type: 'boolean', default: false } });
-      if (values.catalog) {
-        // 3.3: the site funnel, read from the catalog that serves the site
-        const token = process.env.TAB_STATS_TOKEN;
-        if (!token) die('reading a catalog\'s stats takes its token in TAB_STATS_TOKEN');
-        const r = await fetch(`${(values.catalog as string).replace(/\/$/, '')}/v1/stats?days=${Number(values.days) || 30}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
-        if (!r.ok) die(`HTTP ${r.status}`);
-        const doc = (await r.json()) as { days: number; site: Array<{ step: string; detail: string; visitors: number; events: number }> };
+      const { values } = opts(rest, { db: { type: 'string' }, gateway: { type: 'string' }, catalog: { type: 'string' }, 'catalog-db': { type: 'string' }, days: { type: 'string', default: '30' }, 'house-ip': { type: 'string', multiple: true }, 'house-owner': { type: 'string', multiple: true }, json: { type: 'boolean', default: false } });
+      if (values.catalog || values['catalog-db']) {
+        // 3.3: the site funnel, from the catalog that serves the site, or read from its database on the box
+        let doc: { days: number; site: Array<{ step: string; detail: string; visitors: number; events: number }> };
+        const where = (values.catalog ?? values['catalog-db']) as string;
+        if (values['catalog-db']) {
+          const cs = new CatalogStore(values['catalog-db'] as string);
+          doc = siteReport(cs, Number(values.days) || 30, (values['house-ip'] as string[] | undefined) ?? []);
+        } else {
+          const token = process.env.TAB_STATS_TOKEN;
+          if (!token) die('reading a catalog\'s stats takes its token in TAB_STATS_TOKEN');
+          const r = await fetch(`${(values.catalog as string).replace(/\/$/, '')}/v1/stats?days=${Number(values.days) || 30}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
+          if (!r.ok) die(`HTTP ${r.status}`);
+          doc = (await r.json()) as typeof doc;
+        }
         if (values.json) { console.log(JSON.stringify(doc, null, 2)); return; }
-        console.log(`${values.catalog}, last ${doc.days} days, outside visitors a day, summed`);
+        console.log(`${where}, last ${doc.days} days, outside visitors a day, summed`);
         for (const step of ['page', 'ref', 'referer', 'search', 'try', 'announce']) {
           const rows = doc.site.filter((x) => x.step === step);
           if (!rows.length) continue;
@@ -656,7 +663,7 @@ async function main(): Promise<void> {
         const r = await fetch(`${(values.gateway as string).replace(/\/$/, '')}/.well-known/tab/stats?days=${Number(values.days) || 30}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
         if (!r.ok) die(`HTTP ${r.status}`);
         report = (await r.json()) as UsageReport;
-      } else die('usage: tab stats (--db pay.db [--house-ip ip]... | --gateway url | --catalog url) [--days 30] [--json]');
+      } else die('usage: tab stats (--db pay.db [--house-ip ip]... | --gateway url | --catalog url | --catalog-db catalog.db [--house-ip ip]...) [--days 30] [--json]');
       if (values.json) { console.log(JSON.stringify(report, null, 2)); return; }
       const o = report.outside;
       console.log(`${report.realm}, last ${report.days} days`);

@@ -57,6 +57,38 @@ export interface CatalogOptions {
   log?: (msg: string) => void;
 }
 
+/** 3.3: the keyed daily hash the site funnel keeps instead of an address. */
+export function siteVisitor(secret: Uint8Array, day: string, ip: string): string {
+  return createHmac('sha256', secret).update(`site\n${day}\n${ip}`).digest('base64url').slice(0, 16);
+}
+
+/**
+ * 3.3: the site funnel over the last `days`: visitors (distinct per day, summed over days) and
+ * events per step and detail. `houseIps` are left out after the fact, by hashing them for each day,
+ * so a catalog started without --house-ip can still be read without the operator's own visits.
+ */
+export function siteReport(store: CatalogStore, days: number, houseIps: string[] = [], now = new Date()): { days: number; since: string; site: Array<{ step: string; detail: string; visitors: number; events: number }> } {
+  const since = new Date(now.getTime() - days * 86_400_000).toISOString().slice(0, 10);
+  const rows = store.siteRows(since);
+  const houseByDay = new Map<string, Set<string>>();
+  const isHouse = (day: string, who: string) => {
+    if (!houseIps.length) return false;
+    let set = houseByDay.get(day);
+    if (!set) houseByDay.set(day, (set = new Set(houseIps.map((ip) => siteVisitor(store.secret, day, ip)))));
+    return set.has(who);
+  };
+  const m = new Map<string, { step: string; detail: string; visitors: number; events: number }>();
+  for (const r of rows) {
+    if (isHouse(r.day, r.who)) continue;
+    const k = `${r.step}\n${r.detail}`;
+    const e = m.get(k) ?? { step: r.step, detail: r.detail, visitors: 0, events: 0 };
+    e.visitors++;
+    e.events += r.n;
+    m.set(k, e);
+  }
+  return { days, since, site: [...m.values()].sort((a, b) => b.visitors - a.visitors || b.events - a.events) };
+}
+
 /** 3.3: the site funnel step a finished request stands for, or null. Exported for the tests. */
 export function siteStepOf(method: string, path: string, status: number, contentType: string, q: URLSearchParams, referer: string, ownHosts: string[]): Array<{ step: string; detail: string }> {
   const out: Array<{ step: string; detail: string }> = [];
@@ -417,7 +449,7 @@ export function createCatalog(opts: CatalogOptions): Server {
         const steps = siteStepOf(method, u.pathname, res.statusCode, String(res.getHeader('content-type') ?? ''), u.searchParams, String(req.headers.referer ?? ''), OWN_HOSTS);
         if (!steps.length) return;
         const day = new Date().toISOString().slice(0, 10);
-        const who = createHmac('sha256', store.secret).update(`site\n${day}\n${ip}`).digest('base64url').slice(0, 16);
+        const who = siteVisitor(store.secret, day, ip);
         for (const s of steps) store.siteStep(day, s.step, s.detail, who);
       } catch { /* the funnel never fails a request */ }
     });
@@ -555,8 +587,7 @@ export function createCatalog(opts: CatalogOptions): Server {
         const want = opts.statsToken ? `Bearer ${opts.statsToken}` : '';
         if (!want || auth.length !== want.length || !timingSafeEqual(Buffer.from(auth), Buffer.from(want))) { sendJson(res, 404, { error: 'not found' }); return; }
         const days = Math.min(90, Math.max(1, Number(u.searchParams.get('days')) || 30));
-        const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
-        sendJson(res, 200, { days, since, site: store.siteSince(since) });
+        sendJson(res, 200, siteReport(store, days, opts.houseIps ?? []));
         return;
       }
 

@@ -1090,10 +1090,10 @@ export class CatalogStore {
     this.db.prepare('INSERT OR IGNORE INTO site_funnel (day, step, detail, who) VALUES (?, ?, ?, ?)').run(day, step, detail, who);
   }
 
-  /** Per step and detail since a day: visitors (distinct per day, summed over days) and events. */
-  siteSince(sinceDay: string): Array<{ step: string; detail: string; visitors: number; events: number }> {
-    return (this.db.prepare('SELECT step, detail, COUNT(*) AS visitors, SUM(n) AS events FROM site_funnel WHERE day >= ? GROUP BY step, detail ORDER BY visitors DESC, events DESC').all(sinceDay) as Array<Record<string, unknown>>)
-      .map((r) => ({ step: String(r.step), detail: String(r.detail), visitors: Number(r.visitors), events: Number(r.events) }));
+  /** Every row since a day, for a report that leaves out the operator's own addresses after the fact. */
+  siteRows(sinceDay: string): Array<{ day: string; step: string; detail: string; who: string; n: number }> {
+    return (this.db.prepare('SELECT day, step, detail, who, n FROM site_funnel WHERE day >= ?').all(sinceDay) as Array<Record<string, unknown>>)
+      .map((r) => ({ day: String(r.day), step: String(r.step), detail: String(r.detail), who: String(r.who), n: Number(r.n) }));
   }
 
   pruneSite(beforeDay: string): void {
