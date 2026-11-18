@@ -2,6 +2,8 @@
 // (pays), gateway/catalog (sells). See DEPLOY.md section 7 for the reference.
 
 import { nameFetches } from './version.js';
+import { runDoctor, printDoctor } from './doctor.js';
+import { fixForCode, fixForRefusal, problemCodeOf } from './fixes.js';
 import { parseArgs } from 'node:util';
 import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -55,7 +57,9 @@ export const VERSION_STRING: string = (() => {
 
 const USAGE = `tab ${VERSION_STRING}: a payment gateway for software agents (HTTP 402 + signed mandates)
 
-  tab init  [--dir ~/.tab] [--budget 1.00] [--max-per-call 0.05] [--days 90]
+  tab doctor [--gateway url] [--catalog url] [--json]
+            checks keys, mandate, budget left, balance, clock, catalog, MCP configs, version; names each fix
+  tab init  [--dir ~/.tab] [--budget 1.00] [--max-per-call 0.05] [--days 90] [--no-demo]
             [--gateway https://pay.paidwithtab.com] [--catalog https://paidwithtab.com]
             give an agent a tab: keys, a mandate, starter credits, the Claude Code line
   tab key new [--out file]
@@ -178,8 +182,10 @@ async function main(): Promise<void> {
         days: { type: 'string', default: '90' },
         gateway: { type: 'string', default: PUBLIC_GATEWAY },
         catalog: { type: 'string', default: PUBLIC_CATALOG },
+        'no-demo': { type: 'boolean', default: false },
       });
       await initTab({
+        demo: !values['no-demo'],
         dir: resolve(values.dir as string),
         budgetUsd: values.budget as string,
         maxPerCallUsd: values['max-per-call'] as string,
@@ -500,10 +506,16 @@ async function main(): Promise<void> {
           }
         }
         process.stdout.write(body.endsWith('\n') || body === '' ? body : body + '\n');
+        if (!res.ok && !receipt) {
+          const f = fixForCode(problemCodeOf(res.headers.get('content-type'), body));
+          if (f) console.error(`${f.what}: ${f.fix}`);
+        }
         process.exit(res.ok ? 0 : 1);
       } catch (err) {
         if (err instanceof PaymentRefused) {
           console.error(`refused: ${err.reason}`);
+          const f = fixForRefusal(err.reason);
+          if (f) console.error(`fix: ${f.fix}`);
           process.exit(2);
         }
         throw err;
@@ -583,6 +595,22 @@ async function main(): Promise<void> {
         proofDir: process.env.TAB_PROOFS === 'off' ? undefined : process.env.TAB_PROOFS || join(dirname(files.mandate), 'receipts'),
       });
       return;
+    }
+
+    // -- 3.3 ------------------------------------------------------------------------------------
+    case 'doctor': {
+      const { values } = opts(rest, { gateway: { type: 'string', default: PUBLIC_GATEWAY }, catalog: { type: 'string', default: process.env.TAB_CATALOG || PUBLIC_CATALOG }, json: { type: 'boolean', default: false } });
+      const checks = await runDoctor({
+        dir: TAB_HOME,
+        agentFile: process.env.TAB_AGENT || undefined,
+        mandateFile: process.env.TAB_MANDATE || undefined,
+        gateway: (values.gateway as string).replace(/\/$/, ''),
+        catalog: (values.catalog as string).replace(/\/$/, ''),
+        ...(process.env.TAB_DOCTOR_HOME ? { home: process.env.TAB_DOCTOR_HOME } : {}),
+        ...(process.env.TAB_DOCTOR_OFFLINE_VERSION ? { latestRelease: async () => null } : {}),
+      });
+      if (values.json) { console.log(JSON.stringify(checks, null, 2)); process.exit(checks.some((c) => c.state === 'fail') ? 1 : 0); }
+      process.exit(printDoctor(checks) ? 0 : 1);
     }
 
     // -- 3.2 ------------------------------------------------------------------------------------
@@ -939,6 +967,32 @@ interface InitOptions {
   catalog: string;
   say?: (line: string) => void; // default stdout
   brief?: boolean; // skip the closing instructions (the MCP server sets itself up this way)
+  demo?: boolean; // 3.3: make one first call (free where the gateway offers it) and check its proof
+}
+
+/** 3.3: the call `tab init` makes so the first thing a new user sees is a purchase that worked and a proof that holds. */
+export const DEMO_PATH = '/wikipedia/api/rest_v1/page/summary/HTTP_402';
+
+async function demoCall(o: { gateway: string; agent: KeyPair; mandate: Mandate; dir: string; say: (m: string) => void }): Promise<void> {
+  const url = o.gateway + DEMO_PATH;
+  try {
+    const client = new TabClient({ agent: o.agent, mandate: o.mandate });
+    const res = await client.fetch(url, { signal: AbortSignal.timeout(20_000) });
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    const receipt = receiptOf(res);
+    if (!res.ok || !receipt) { o.say(`first call  ${url} answered ${res.status}; tab doctor says why`); return; }
+    const kept = saveProof(process.env.TAB_PROOFS || join(o.dir, 'receipts'), { url, method: 'GET', task: 'tab init' }, { status: res.status, contentType: res.headers.get('content-type') }, bytes, receipt, o.mandate);
+    let title = '';
+    try { title = String((JSON.parse(Buffer.from(bytes).toString('utf8')) as { title?: string }).title ?? ''); } catch { /* not JSON */ }
+    const paid = receipt.free ? 'free' : `paid ${formatAmount(Number(receipt.amount), receipt.currency)}`;
+    o.say(`first call  ${title ? `Wikipedia "${title}"` : DEMO_PATH}, ${paid}, signed receipt`);
+    if (!kept) return;
+    const report = await verifyProof(kept.dir, { publishedKey: publishedReceiptKey, logProof: fetchLogProof });
+    const failedChecks = report.checks.filter((c) => c.ok === false).map((c) => c.name);
+    o.say(report.ok ? `proof       ${kept.dir}: holds (gateway key, body, request, your agent's signature${report.checks.some((c) => c.name.includes('log') && c.ok) ? ', public log' : ''})` : `proof       ${kept.dir}: does NOT hold (${failedChecks.join(', ')})`);
+  } catch (err) {
+    o.say(`first call  could not make it (${(err as Error).message}); tab doctor says why`);
+  }
 }
 
 async function initTab(o: InitOptions): Promise<void> {
@@ -1007,6 +1061,8 @@ async function initTab(o: InitOptions): Promise<void> {
   } catch (err) {
     say(`credits     could not reach ${o.gateway} (${(err as Error).message}); run tab init again later`);
   }
+
+  if (o.demo && available !== null) await demoCall({ gateway: o.gateway, agent, mandate, dir: o.dir, say });
 
   if (o.brief) return;
   say(`

@@ -5,7 +5,7 @@
 import { createServer, type Server } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,6 +18,11 @@ import { createCatalog, siteStepOf } from '../src/catalog.js';
 import { TabClient } from '../src/client.js';
 import { tabUserAgent, PACKAGE_VERSION } from '../src/version.js';
 import type { UsageReport } from '../src/usage.js';
+import { fixForCode, fixForRefusal, problemCodeOf } from '../src/fixes.js';
+import { runDoctor } from '../src/doctor.js';
+import { createTabTools } from '../src/tools.js';
+import { listProofs } from '../src/proof.js';
+import { MCP_INSTRUCTIONS } from '../src/mcp.js';
 
 let passed = 0;
 let failed = 0;
@@ -78,6 +83,7 @@ async function main(): Promise<void> {
     const send = (s: number, d: unknown) => { res.writeHead(s, { 'content-type': 'application/json' }); res.end(JSON.stringify(d)); };
     if (u.pathname === '/hello') return send(200, { hello: 'world' });
     if (u.pathname === '/boom') return send(500, { error: 'down' });
+    if (u.pathname.startsWith('/api/rest_v1/page/summary/')) return send(200, { title: decodeURIComponent(u.pathname.split('/').pop()!).replace(/_/g, ' '), extract: 'a status code' });
     send(404, { error: 'no' });
   });
   const UP = await listen(upstream);
@@ -93,6 +99,9 @@ async function main(): Promise<void> {
         { method: 'GET', path: '/boom', price: '0.001', description: 'always fails' },
         { method: 'GET', path: '/dear', price: '0.50', description: 'expensive' },
       ],
+    }, {
+      name: 'wikipedia', prefix: '/wikipedia', upstream: UP, description: 'Wikipedia',
+      routes: [{ method: 'GET', path: '/api/rest_v1/page/summary/:title', price: '0.001', description: 'summary', free_per_day: 3 }],
     }],
   };
   const store = new Store(join(scratch, 'gw.db'));
@@ -202,6 +211,56 @@ async function main(): Promise<void> {
     const ours = await cli(['stats', '--catalog-db', join(scratch, 'catalog-bare.db'), '--house-ip', '198.51.100.9', '--days', '7', '--json'], {});
     const home = (o: string) => (JSON.parse(o || '{}').site ?? []).find((x: any) => x.step === 'page' && x.detail === '/')?.visitors;
     check('2: --catalog-db reads the database; --house-ip leaves the operator out after the fact', home(all.out) === 2 && home(ours.out) === 1, { all: all.out.slice(0, 300), ours: ours.out.slice(0, 300), err: ours.err });
+  }
+
+  // ======================================================================================
+  // 3. the first paid call: tab init's demo, fixes that name the command, tab doctor
+  {
+    const home = join(scratch, 'newuser');
+    const env = { TAB_HOME: home, TAB_PROOFS: join(home, 'receipts') };
+    const init = await cli(['init', '--dir', home, '--gateway', GW, '--catalog', 'http://127.0.0.1:9'], env);
+    check('3: tab init makes a first call and says so', init.code === 0 && /first call\s+Wikipedia "HTTP 402", free, signed receipt/.test(init.out), init);
+    check('3: and checks its proof', /proof\s+.*: holds/.test(init.out), init.out);
+    const proofs = listProofs(join(home, 'receipts'));
+    check('3: the first call is kept as a proof folder tagged tab init', proofs.length === 1 && JSON.parse(readFileSync(join(proofs[0], 'request.json'), 'utf8')).task === 'tab init', proofs);
+    const again = await cli(['init', '--dir', home, '--gateway', GW, '--no-demo'], env);
+    check('3: --no-demo skips it', again.code === 0 && !/first call/.test(again.out), again.out);
+
+    // fixes
+    check('3: a gateway code has a fix naming a command', /tab mandate issue/.test(fixForCode('mandate-exceeded')?.fix ?? '') && /tab topup/.test(fixForCode('insufficient-funds')?.fix ?? ''));
+    check('3: a client refusal maps to the same fix', fixForRefusal('realm x.example is not in the mandate\'s allow list')?.what === fixForCode('mandate-denied')?.what && fixForRefusal('price $0.50 exceeds the mandate\'s per-call cap $0.05') === fixForCode('mandate-exceeded'));
+    check('3: unknown reasons have none', fixForRefusal('something else') === null && fixForCode('nope') === null);
+    check('3: problemCodeOf reads a problem body', problemCodeOf('application/problem+json', JSON.stringify({ type: 'urn:tab:problem:mandate-denied', title: 'mandate-denied' })) === 'mandate-denied' && problemCodeOf('text/plain', 'x') === null);
+    const capped = await cli(['fetch', `${GW}/api/dear`], env);
+    check('3: tab fetch prints the fix when the client refuses', capped.code === 2 && /refused: price .* per-call cap/.test(capped.err) && /fix: .*tab mandate issue/.test(capped.err), capped);
+    const owner = newKeyPair(), agent = newKeyPair();
+    const narrow = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00', allow: ['elsewhere.example'] });
+    const tools = createTabTools({ agent, mandate: narrow, catalog: 'http://127.0.0.1:9' });
+    const denied = await tools.call('tab_fetch', { url: `${GW}/api/hello` });
+    check('3: tab_fetch returns the fix with a refusal', denied.isError && /fix: .*--allow/.test(denied.text), denied.text);
+    const poor = issueMandate(newKeyPair(), { agent: agent.publicKey, budgetUsd: '1.00' });
+    const broke = await createTabTools({ agent, mandate: poor, catalog: 'http://127.0.0.1:9' }).call('tab_fetch', { url: `${GW}/api/hello` });
+    const bdoc = JSON.parse(broke.text);
+    check('3: tab_fetch names the problem and fix for a gateway refusal', bdoc.problem === 'insufficient-funds' && /tab topup/.test(bdoc.fix), bdoc);
+
+    // tab doctor
+    const toolsHome = join(scratch, 'toolshome');
+    mkdirSync(join(toolsHome, '.cursor'), { recursive: true });
+    writeFileSync(join(toolsHome, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { tab: { command: 'npx' } } }));
+    const doc = await runDoctor({ dir: home, gateway: GW, catalog: 'http://127.0.0.1:9', home: toolsHome, latestRelease: async () => '99.0.0' });
+    const st = (n: string) => doc.find((c) => c.name === n);
+    check('3: doctor: keys and mandate ok', st('agent key')?.state === 'ok' && st('mandate')?.state === 'ok', doc);
+    check('3: doctor: gateway, clock, budget, balance', st('gateway')?.state === 'ok' && st('clock')?.state === 'ok' && st('budget left')?.state === 'ok' && st('balance')?.state === 'ok', doc);
+    check('3: doctor: a dead catalog is a warning with a fix', st('catalog')?.state === 'warn' && !!st('catalog')?.fix, st('catalog'));
+    check('3: doctor: finds tab in the Cursor config', st('agent tools')?.state === 'ok' && /cursor/.test(st('agent tools')?.detail ?? ''), st('agent tools'));
+    check('3: doctor: says a newer release is out', st('version')?.state === 'warn' && /99\.0\.0 is out/.test(st('version')?.detail ?? ''), st('version'));
+    const lost = await runDoctor({ dir: join(scratch, 'nobody'), gateway: 'http://127.0.0.1:9', catalog: 'http://127.0.0.1:9', home: join(scratch, 'nobody'), latestRelease: async () => null });
+    check('3: doctor on an empty machine fails with fixes', lost.filter((c) => c.state === 'fail').length >= 3 && lost.every((c) => c.state !== 'fail' || !!c.fix), lost);
+    const printed = await cli(['doctor', '--gateway', GW, '--catalog', 'http://127.0.0.1:9'], { ...env, TAB_DOCTOR_HOME: toolsHome, TAB_DOCTOR_OFFLINE_VERSION: '1' });
+    check('3: tab doctor prints and exits 0 when a call should work', printed.code === 0 && /ready: a paid call should work/.test(printed.out), printed);
+
+    // the MCP server tells the model how to use it
+    check('3: MCP instructions say search, then fetch', /tab_search/.test(MCP_INSTRUCTIONS) && /tab_fetch/.test(MCP_INSTRUCTIONS) && MCP_INSTRUCTIONS.length < 1200);
   }
 
   gw.server.close(); upstream.close();

@@ -18,6 +18,18 @@ const PKG_VERSION: string = (() => {
   try { return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json'), 'utf8')).version; } catch { return '0'; }
 })();
 
+/**
+ * 3.3: what the MCP client tells the model about this server. It says when to reach for tab and
+ * in what order, so a model with these tools makes a first purchase instead of guessing at them.
+ */
+export const MCP_INSTRUCTIONS = [
+  'tab lets you pay for web APIs per call (search, reading pages, data, translation, speech and thousands more) from a budget the user signed. You cannot spend past it.',
+  'When a task needs data or a service you do not have, call tab_search with a few words for what you need; it returns priced routes that work, cheapest working first.',
+  'Then call tab_fetch with the route\'s URL. It pays, returns the response and a signed receipt. Failed calls are not charged.',
+  'tab_limits shows what is left of the budget; tab_estimate prices a plan of several calls before you spend.',
+  'Say what you bought and what it cost when you use a paid result.',
+].join(' ');
+
 export interface McpOptions {
   agent: KeyPair;
   mandate: Mandate;
@@ -103,6 +115,7 @@ export function serveMcpStdio(tools: McpToolSet, name = 'tab'): void {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: { name, version: PKG_VERSION },
+        instructions: MCP_INSTRUCTIONS,
       });
     } else if (method === 'notifications/initialized' || String(method ?? '').startsWith('notifications/')) {
       // notifications need no reply

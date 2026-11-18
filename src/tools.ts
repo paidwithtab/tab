@@ -2,6 +2,7 @@
 // MCP server exposes to Claude Code and what the company's model adapter hands
 // to the Messages API. One place, so both agents see the same tools.
 
+import { fixForCode, fixForRefusal, problemCodeOf } from './fixes.js';
 import { saveProof, costReport, type CostBy } from './proof.js';
 import { PaidCache, cacheKey, DEFAULT_CACHE_TTL_MS } from './cache.js';
 import { parseChallengeHeader } from './protocol.js';
@@ -321,10 +322,14 @@ export function createTabTools(opts: TabToolOptions): { list: ToolSpec[]; call: 
               ...(ticket ? { escrow: { order: ticket.id, state: ticket.state, deadline: ticket.deadline, status: ticket.status, token: ticket.token } } : {}),
               ...(task && receipt ? { task } : {}),
               ...(alternatives && alternatives.length ? { alternatives, next: 'this seller failed and nothing was charged; these routes do the same job, working and cheapest first' } : {}),
+              ...(!receipt && r.status >= 400 ? (() => { const code = problemCodeOf(r.headers.get('content-type'), bodyText); const f = fixForCode(code); return f ? { problem: code, fix: f.fix } : {}; })() : {}),
               body: bodyText.slice(0, 50_000),
             });
           } catch (err) {
-            if (err instanceof PaymentRefused) return text(`payment refused before paying: ${err.reason}`, true);
+            if (err instanceof PaymentRefused) {
+              const f = fixForRefusal(err.reason);
+              return text(`payment refused before paying: ${err.reason}${f ? `\nfix: ${f.fix}` : ''}`, true);
+            }
             throw err;
           }
         }
