@@ -119,10 +119,11 @@ npx tsc --noEmit            # type-check; clean on the dev box
 npm test                    # 90 passed, 0 failed on the dev box
 npm run test:v3             # 109 passed, 0 failed: revoke (and gateways sharing it), sub-mandates, approval above a threshold, pay on delivery, payment channels and metered routes, the 3.0 MCP tools
 npm run test:v31            # 69 passed, 0 failed: MCP self setup, proofs and tab verify, hosted listings, MCP selling, spend alerts
-npm run test:v32            # 127 passed, 0 failed: mandate rules, free calls, size pricing, reliability, the receipt log, seller stats, card top-ups, referrals, usage stats, the cache, cost per task, x402 sellers in the catalog, tab setup
+npm run test:v32            # 128 passed, 0 failed: mandate rules, free calls, size pricing, reliability, the receipt log, seller stats, card top-ups, referrals, usage stats, the cache, cost per task, x402 sellers in the catalog, tab setup
+npm run test:v33            # 85 passed, 0 failed: the funnel, tab init's first call, fixes for refusals, tab doctor, tab sell --dry-run, seller signatures, flags, the status page
 npm run test:adversarial    # 68 passed, 0 failed: replay, concurrency, mutation, SSRF, forgery, body smuggling, tampered receipts, voucher floods, sibling sub-mandates racing one budget
 npm run test:evm            # 99 passed, 0 failed: keccak/secp256k1 vectors, mock chain, rpc failover, escrow and channels through an escrow address, live testnet and Base reads
-npm run test:company        # 144 passed, 0 failed: accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests (with model and per call cap), signed board log, sealed model keys, the claude adapter against a fake Messages API, payment approvals, revoke, delegated budgets, orders, channels, agents' route and hour rules
+npm run test:company        # 152 passed, 0 failed: every shipped template, shared runs, accounts, host and origin checks, runs that pay, evidence, verified receipts, budgets, hire requests (with model and per call cap), signed board log, sealed model keys, the claude adapter against a fake Messages API, payment approvals, revoke, delegated budgets, orders, channels, agents' route and hour rules
 npm run test:dashboard      # 40 passed, 0 failed: tab OS in headless Chromium end to end, including a payment approved at phone width, a revoked run, a channel opened and settled, an order released (npx playwright install chromium first); --live also loads the public site and app
 GANACHE=/path/to/ganache/dist/node/cli.js npm run test:contract   # 20 passed, 0 failed: TabChannel.sol on a real EVM (npm i ganache@7.9.2 outside the repo)
 ```
@@ -597,6 +598,8 @@ Then add `--stripe` to `tab serve`. Discovery lists `topup`; `tab topup 5` (or `
 | `POST /v1/mandate/verify {mandate, realm}` | check a mandate's signature, expiry and realm, return it decoded |
 | `GET /v1/wallet?origin=&wallet=` | proxy a balance lookup to a gateway |
 | `GET /v1/receipts?limit=` | receipts aggregated from every gateway with `public_receipts` |
+| `GET /status` | 3.3: the public status page: every gateway, its state, calls and success this week, routes that failed or were flagged |
+| `GET /v1/stats?days=` | 3.3, with `TAB_STATS_TOKEN`: the site funnel (pages, `?ref=` sources, outside referers, searches, try-it calls), house and bots left out |
 | `GET /v1/try` | is the try-it agent configured, and its limits |
 | `POST /v1/try {url, method, body}` | pay for a catalogued route with the try-it agent, return status, receipt and body |
 
@@ -624,7 +627,8 @@ The front end is static files under `web/` with no build step and no external sc
 | `GET /.well-known/tab/log/consistency?from=<m>` | 3.2: proof that the log of size m is a prefix of the current one |
 | `GET /.well-known/tab/seller/stats?seller=&at=&sig=` | 3.2: a seller's earnings, routes and top buyers, signed by the seller key within 10 minutes (`tab sell stats`) |
 | `POST /.well-known/tab/topup {wallet, usd}` | 3.2, with `--stripe`: opens a Stripe Checkout Session; `GET …/topup/<id>` its state (a page for a person); `POST …/topup/webhook` Stripe's signed event |
-| `GET /.well-known/tab/stats?days=` | 3.2, with `TAB_STATS_TOKEN`: outside use with the house left out (`Authorization: Bearer …`) |
+| `GET /.well-known/tab/stats?days=` | 3.2, with `TAB_STATS_TOKEN`: outside use with the house left out (`Authorization: Bearer …`); 3.3 adds `funnel`: outside visitors per step (home, discover, claim, challenge, refused, paid), refusals by code, clients, and routes asked and paid |
+| `POST /.well-known/tab/flags` | 3.3: a flag on a paid result, signed by the agent that paid it (SPEC §5.11); 30 per address an hour |
 | `GET /.well-known/tab/revocations?since=` | 3.0: revocations in the order received, for peers that poll |
 | `GET /.well-known/tab/revocations/<mandate id>` | 3.0: what is held against one mandate |
 | `POST /.well-known/tab/approvals {request, approval}` | 3.0: the owner's approval for one payment above a threshold, for the agent's retry to find |
@@ -645,6 +649,8 @@ Every 402 body is an RFC 9457 problem with `type: urn:tab:problem:<code>` and a 
 Payouts are never signed again on a spent nonce alone (a lagging node looks the same): such a payout is marked stuck at once, and the sweeper checks stuck payouts every minute and books any that landed. A payout the node keeps refusing frees its nonce with a zero-value cancel to the escrow address itself, so later payouts are not stalled behind it.
 
 **3.2 in a spec.** `"free_per_day": 3` on a route gives each buyer three successful calls a day for nothing (per agent key, and three times that per client address). `"meter": {"unit": "kb", "per_unit": "0.0005"}` charges by the response size the gateway counts; on the ledger rail per-call buyers now pay what a metered call used. Route outcomes (`route_stats`) and the receipt log (`receipt_log`) are kept in the gateway database with no flag; receipts from before 3.2 join the log in order at the first start. `--house-ip` and `--house-owner` name the operator's own for the stats; wallets that claimed starter credits from them, or from loopback, count as the house.
+
+**3.3 in a spec.** `"seller_key": "<Ed25519 public key>"` on a service makes the gateway require `Tab-Seller-Signature` on every paid 2xx answer from it (SPEC §3.3); an answer without a valid one is released and answered 502. Flags (`flags`) and the funnel (`funnel`) are kept in the gateway database with no flag; the funnel stores a keyed hash of each address that changes every day, never the address, at most 50,000 rows a day, for 90 days, and skips `--house-ip` addresses and loopback. Route stats are pruned after 31 days. The catalog keeps the site funnel the same way in `site_funnel`; read it on the box with `tab stats --catalog-db catalog.db --house-ip <your ip>` (the operator's addresses are left out after the fact), or start the catalog with `TAB_STATS_TOKEN` and `--house-ip` and use `tab stats --catalog https://...`.
 
 **Revocations** are taken only when a mandate authorizes them (sent with the revocation, or one the gateway was paid under), 60 posts per minute per client address, and listed for peers by sequence number. `tab mandate revoke --mandate file` sends the mandate along, so any gateway can check it. On the evm rail a revocation binds gateways, not the chain: add `--token <0x> --evm-agent <key.json|0x>` to zero the agent's allowance in the same step. `tab mcp` offers `tab_delegate` only with `TAB_ALLOW_DELEGATE=1`. An upstream that takes long jobs answers 202 and later POSTs the result to the `Tab-Deliver` URL it was sent, with the `Tab-Delivery-Token` header; a metered upstream reports its usage in a `Tab-Units` response header. A body that breaks a route's `body_allow` or `body_fixed` rule (section 8.3) is 400 `bad-request` before any challenge. Upstream unreachable is 502 `upstream-failed`, nothing charged. Upstream non-2xx is passed through with a `Tab-Void` header and the hold released.
 

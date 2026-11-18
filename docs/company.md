@@ -195,7 +195,11 @@ The client commands keep the server URL, the session token and the last company 
 
 ## Templates
 
-`examples/companies/research.json` founds Field Notes: a scout that searches and reads through tab and an editor that checks and writes up, with one brief already open. `examples/companies/seller.json` founds Quote Desk: a listing writer and a support agent for a company that sells through its own gateway. A template is just the body of `POST /api/companies`: name, mission, budget, `agents` (hire payloads) and `tickets`.
+`examples/companies/research.json` founds Field Notes: a scout that searches and reads through tab and an editor that checks and writes up, with one brief already open. `examples/companies/seller.json` founds Quote Desk: a listing writer and a support agent for a company that sells through its own gateway. Since 3.3: `markets.json` founds Market Watch (a morning note on what moved, each price from two sources), `filings.json` founds Filings Desk (company research from SEC filings, checked against the filing), and `translation.json` founds Translation Desk (machine translation per language, reviewed for tone). A template is just the body of `POST /api/companies`: name, mission, budget, `agents` (hire payloads) and `tickets`.
+
+## Sharing a run (3.3)
+
+In a run's detail, Share this run makes a read-only page at `/r/<token>`: the agent, the ticket, why it woke, what it paid for and what the model cost, and every receipt exactly as the gateway signed it (`/r/<token>.json` gives them as data, for `tab verify`). It shows no keys, no response bodies and no ticket thread, and it is not indexed. Stop sharing takes the page down. From the API: `POST /api/companies/<id>/runs/<run>/share` and `.../unshare`.
 
 ## What 3.0 does not do
 

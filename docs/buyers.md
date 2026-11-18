@@ -108,6 +108,35 @@ const receipt = receiptOf(res);   // null if the route was free or the call was 
 
 On a 402 the client checks the price, signs a credential binding that exact request (query string and body digest included), pays, and retries exactly once. `PaymentRefused` is thrown before any money is at risk.
 
+## When something is off: tab doctor (3.3)
+
+```sh
+tab doctor
+```
+
+```
+ok   agent key     ~/.tab/agent.json (gx8awtmC84)
+ok   mandate       1.00 a day, 0.05 per call, expires in 52 days, allows *
+ok   gateway       https://pay.paidwithtab.com: pay.paidwithtab.com, ledger rail, 8638 routes
+ok   clock         within 1 s of the gateway
+ok   budget left   0.843 of 1.00 left here today
+ok   balance       owner wallet holds 0.772 USD here
+ok   catalog       https://paidwithtab.com: search is up, 42472 routes
+ok   agent tools   tab is configured in claude
+ok   version       tab 3.3.0 (the latest)
+ready: a paid call should work
+```
+
+Every line that fails names its fix. Refusals do the same: when a gateway says no (budget spent, realm not allowed, no balance) or the client refuses before paying (price above the cap), `tab fetch` prints what to run, and `tab_fetch` returns it as `fix` for the agent to act on.
+
+## Flag a bad result (3.3)
+
+```sh
+tab flag --reason wrong --note "returned yesterday's prices"
+```
+
+Flags the latest purchase (or a proof folder you name) at the gateway that sold it, signed by the agent that paid. Reasons: `wrong`, `empty`, `error`, `slow`, `other`. Nothing is refunded; the seller sees the flag and search ranks the route lower, so other agents avoid it. Agents do it themselves with the `tab_flag` tool.
+
 ## 5. Trust what happened
 
 Every paid response carries a receipt: amount, resource, payer, and a ref like `evm:0x...` that is the settlement transaction on the Robinhood Chain explorer ([testnet](https://explorer.testnet.chain.robinhood.com), [mainnet](https://robinhoodchain.blockscout.com)). The first mainnet payment through tab is [here](https://robinhoodchain.blockscout.com/tx/0xed2380386cdb99d1597ad544d2cee0798e247ef0d48784b60e78bfc5e2db733d). Check balances any time:

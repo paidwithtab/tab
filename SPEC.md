@@ -1,6 +1,6 @@
 # The tab protocol, draft 0.9
 
-How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail for Robinhood Chain and the `evm_owner` mandate field, draft 0.3 made `evm` the sole settlement rail, draft 0.4 let a gateway charge in a token of any decimals and name it in `currency`, draft 0.5 made receipts signed statements that bind the policy, the request, the response and the payment, draft 0.6 added x402 in both directions, §5.3, and draft 0.7, shipped with tab 3.0, added sub-mandates and approval thresholds (§2.1, §2.2), instant revocation (§5.4), pay on delivery (§5.5) and payment channels with metered routes (§5.6), draft 0.8, shipped with tab 3.1, added per-service recipients, hosted listings (§5.7), spend alerts (§5.8) and proof folders (§3.4), and draft 0.9, shipped with tab 3.2, added spending rules in mandates (§2.3), the public receipt log (§5.9), free calls and per-call metering (§5.6), receipts that name what was authorized, route reliability in discovery, and card top-ups and referrals (§5.10). Every 0.7, 0.8 and 0.9 member is optional: a 0.6 mandate, credential or receipt is a valid 0.7 one, and a credential without the new members signs exactly the bytes it signed before).
+How an agent pays a gateway for one HTTP request, under a spending grant its owner signed offline. Wire format and verification rules. `README.md` is the pitch, `DEPLOY.md` the operator's manual; this document is normative for `ver: "tab/0"` (the wire version is unchanged from draft 0; draft 0.1 made the request commitment of §3.2 mandatory, draft 0.2 added the `evm` rail for Robinhood Chain and the `evm_owner` mandate field, draft 0.3 made `evm` the sole settlement rail, draft 0.4 let a gateway charge in a token of any decimals and name it in `currency`, draft 0.5 made receipts signed statements that bind the policy, the request, the response and the payment, draft 0.6 added x402 in both directions, §5.3, and draft 0.7, shipped with tab 3.0, added sub-mandates and approval thresholds (§2.1, §2.2), instant revocation (§5.4), pay on delivery (§5.5) and payment channels with metered routes (§5.6), draft 0.8, shipped with tab 3.1, added per-service recipients, hosted listings (§5.7), spend alerts (§5.8) and proof folders (§3.4), draft 0.9, shipped with tab 3.2, added spending rules in mandates (§2.3), the public receipt log (§5.9), free calls and per-call metering (§5.6), receipts that name what was authorized, route reliability in discovery, and card top-ups and referrals (§5.10), and draft 1.0, shipped with tab 3.3, added seller signatures over results (§3.3) and flags (§5.11). Every 0.7, 0.8, 0.9 and 1.0 member is optional: a 0.6 mandate, credential or receipt is a valid 0.7 one, and a credential without the new members signs exactly the bytes it signed before).
 
 ## 1. Model and terms
 
@@ -159,6 +159,14 @@ Draft 0.9 adds three members, present only when the charge differs from the pric
 
 `ref` is `ledger:<hold id>` or `evm:<tx hash>`. `mandate` is the policy the payment ran under and `challenge` the id that fixed price, route and recipient. `request` and `credential` are the commitment and signature the agent sent (§3.2), so the receipt can be traced back to an authorization only the agent could give. `response.body_sha256` is the SHA-256 (base64url) of the body bytes the gateway relayed, after any transfer encoding is removed. `gateway` is the gateway's Ed25519 **receipt key**, published in discovery (§6), and `sig` is its signature over the canonical JSON of the receipt minus `sig`. The gateway reads the whole upstream body before capture, so the response is fixed before any money moves.
 
+**Seller signatures (draft 1.0).** A service MAY name its seller's Ed25519 public key as `seller_key` (base64url); discovery publishes it on the service. The gateway then requires every paid 2xx answer from that service to carry `Tab-Seller-Signature: <base64url signature>` by that key over the bytes
+
+```
+tab-seller-result/0\n<realm>\n<id>\n<status>\n<body_sha256>
+```
+
+where `id` is the payment id the gateway sent upstream as `Tab-Hold` (it becomes the receipt's `id`; a channel call gets its own), `status` the decimal HTTP status, and `body_sha256` the SHA-256 (base64url) of the body bytes as relayed, before any content encoding. An answer without a valid signature is treated as an upstream failure: the hold is released, nothing is charged, and the buyer gets `502 upstream-failed`. With a valid one the receipt carries `seller: {key, sig}`, inside the gateway's signature. A checker verifies `sig` under `key` and compares `key` with the `seller_key` the realm publishes for the service whose prefix matches `resource`. Since the id is fresh per call, a seller's signature cannot be replayed onto another purchase, and a gateway cannot alter a signed body without the seller's key. A hosted listing (§5.7) signs with its seller key when it is posted with `sign: true`; MCP listings cannot sign in draft 1.0.
+
 A client SHOULD verify every receipt: `gateway` equals the `receipt_key` in the gateway's discovery document, `sig` verifies, `mandate` is its own mandate, `request` is what it sent, `response.status` is the status it got, and `response.body_sha256` matches the bytes it read. A receipt that fails any of these is evidence of tampering, not of a purchase. Gateways before draft 0.5 sent receipts without the commitment members and `sig`; those never count as verified. If the upstream answered non-2xx, the response is passed through unchanged plus `Tab-Void: <hold id>` and nothing is charged. The upstream itself receives `Tab-Payer`, `Tab-Owner` and `Tab-Hold` request headers for attribution; the buyer's `Authorization` header is stripped and the gateway's `upstream_headers` are injected.
 
 ### 3.4 Proof folders (draft 0.8, informative)
@@ -294,6 +302,17 @@ A checker verifies inclusion with §2.1.3.2 against a head signed by the key tha
 
 A `ledger` gateway MAY sell credit: `POST /.well-known/tab/topup` with `{wallet, usd}` (whole dollars, the reference gateway 1 to 100) answers `201 {id, pay, status}` where `pay` is a payment page of the card processor (Stripe Checkout in the reference gateway) and `status` is `GET /.well-known/tab/topup/<id>`. The processor's signed notice to `/.well-known/tab/topup/webhook` credits the wallet once, only for the amount and currency the top-up named. Discovery lists `topup` in `features` and as `{path, min, max}`. A gateway MAY take referrals: a starter-credit claim `{wallet, ref}` names the referrer once, and the referrer is credited a share of that wallet's later captured spend, counted only against card money the wallet put in (the reference gateway: 10% of up to $5); `referrals` in `features`. `GET /.well-known/tab/stats`, behind an operator token, reports outside use with the operator's own addresses and wallets left out. None of these change a payment.
 
+### 5.11 Flags (draft 1.0)
+
+The agent that paid for a result it could not use MAY flag it at the gateway that sold it: `POST /.well-known/tab/flags` with
+
+```json
+{ "ver": "tab/0", "kind": "flag", "receipt": "<receipt id>", "realm": "…", "reason": "wrong|empty|error|slow|other",
+  "note": "at most 300 characters", "at": "…ISO 8601…", "by": "<the receipt's payer>", "sig": "<by `by`, over the canonical flag minus sig>" }
+```
+
+The gateway accepts a flag only for a receipt it issued, at most 30 days old, for a paid call (not a channel's deposit or settlement), signed by that receipt's `payer`, with `at` within 10 minutes of its clock; it keeps one flag per receipt (`201`, or `200` with a note when the receipt was already flagged) and limits flags per client address. A flag moves no money. Discovery counts flags per route over 7 days as `stats.flags_7d`; the seller of a hosted listing sees each flag, its reason and note in its signed stats; a catalog SHOULD rank a route lower by its flagged share of calls. `features` names `flags` and discovery gives its path.
+
 ## 6. Discovery
 
 `GET /.well-known/tab` on a gateway:
@@ -354,6 +373,6 @@ The catalog's own API (`/v1/catalog.json`, `/v1/search`, `/v1/announce`, `/v1/re
 - **Hosted listings (draft 0.8).** The gateway relays to a URL a stranger chose, so it only connects to public addresses (resolved and checked at connect time, which defeats DNS rebinding), never follows redirects, caps bodies and time, and rate limits each listing. A buyer trusts the seller as with any API, and the gateway's receipt still binds the request, the response body and the payee; the listing names who is paid, and the challenge carries it before the agent signs. Listing and subscription signatures are bound to one realm and a 10 minute window, so they cannot be replayed elsewhere or later.
 
 
-## Not in draft 0.9
+## Not in draft 1.0
 
-x402 schemes other than `exact`, transfer methods other than EIP-3009 (Permit2, ERC-7710), version 1 on the gateway side · gateways settling channels through the TabChannel contract · approvals by a delegating agent rather than the owner · windowed budgets enforced on-chain · header binding · upstream-signed responses and results · subscriptions · fee splits · EIP-4337 / gas sponsorship.
+x402 schemes other than `exact`, transfer methods other than EIP-3009 (Permit2, ERC-7710), version 1 on the gateway side · gateways settling channels through the TabChannel contract · approvals by a delegating agent rather than the owner · windowed budgets enforced on-chain · header binding · MCP listings that sign their results · budgets shared across gateways · subscriptions · fee splits · EIP-4337 / gas sponsorship.

@@ -26,9 +26,10 @@ npx tsc --noEmit       # must stay clean
 npm test               # 90 end-to-end checks, in-process, temp DB
 npm run test:adversarial   # 68 hostile checks: the money invariants and receipt forgery
 npm run test:v31       # 69 checks: 3.1 self setup, proofs, hosted listings, MCP selling, alerts
-npm run test:v32       # 127 checks: 3.2 rules, free calls, size pricing, the receipt log, top-ups, the cache, x402 in the catalog
+npm run test:v32       # 128 checks: 3.2 rules, free calls, size pricing, the receipt log, top-ups, the cache, x402 in the catalog
+npm run test:v33       # 85 checks: the funnel, the first call, fixes, tab doctor, seller signatures, flags, the status page
 npm run test:evm       # 99 checks: crypto vectors, mock EVM node, x402, live testnet and Base reads
-npm run test:company   # 144 checks: the company orchestrator against a real gateway
+npm run test:company   # 152 checks: the company orchestrator against a real gateway
 npm run test:dashboard # 40 checks in headless Chromium (npx playwright install chromium once)
 npm run demo           # full local sandbox: gateway :1402, catalog + site :1403
 ```

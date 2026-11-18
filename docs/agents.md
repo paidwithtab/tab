@@ -247,3 +247,9 @@ Besides `tab_limits`, `tab_search`, `tab_discover`, `tab_fetch` and `tab_balance
 - `tab_channel`: opens, lists and closes payment channels; while one is open at a gateway, `tab_fetch` there pays by voucher.
 
 When a payment is above the mandate's approval threshold, `tab_fetch` returns `approval_required` with the amount and the request. Tell the owner; once they approve (`tab mandate approve`, or the Inbox in tab OS), make exactly the same call again and it pays. `tab_limits` reports the threshold as `approve_above` and, for a sub-mandate, the chain above it as `delegated_from`.
+
+## The 3.3 tool, and what the server tells the model
+
+`tab_flag` flags a paid result the agent could not use (wrong, empty, an error that came back as success, too slow), given the proof folder `tab_fetch` returned. It moves no money; the seller sees it and search ranks the route lower. `tab_fetch` now returns `problem` and `fix` with a refusal, naming what to do about it.
+
+The MCP server's `initialize` answer carries instructions for the model: reach for `tab_search` when a task needs data it does not have, then `tab_fetch` the route it picks, check `tab_limits` or `tab_estimate` before a run of calls, and say what it bought and what it cost.

@@ -13,7 +13,14 @@ npm i -g https://github.com/paidwithtab/tab/releases/latest/download/paidwithtab
 tab init
 ```
 
-That writes an owner key, an agent key and a signed mandate to `~/.tab` ($1.00 per day, $0.05 per call) and claims $1.00 of starter credits on the public gateway, `pay.paidwithtab.com`, which fronts real APIs: web search, translation, speech to text, web page reading, Wikipedia, weather, exchange rates. Then:
+That writes an owner key, an agent key and a signed mandate to `~/.tab` ($1.00 per day, $0.05 per call), claims $1.00 of starter credits on the public gateway, `pay.paidwithtab.com`, which fronts real APIs (web search, translation, speech to text, web page reading, Wikipedia, weather, exchange rates), and makes a first call, free, whose proof it checks:
+
+```
+first call  Wikipedia "HTTP 402", free, signed receipt
+proof       ~/.tab/receipts/...: holds (gateway key, body, request, your agent's signature, public log)
+```
+
+If a later call fails, `tab doctor` checks everything a paid call needs and names each fix. Then:
 
 ```sh
 tab fetch "https://pay.paidwithtab.com/weather/forecast?latitude=38.72&longitude=-9.14&current=temperature_2m"
@@ -21,6 +28,20 @@ claude mcp add --scope user tab -- npx -y https://github.com/paidwithtab/tab/rel
 ```
 
 The second line gives Claude Code the tab tools. Ask it to look something up and it will search [paidwithtab.com/catalog](https://paidwithtab.com/catalog), pay, and show you the receipt. Running `init` again is safe: it keeps your keys and tells you the credits were already claimed. Every paid call is kept in `~/.tab/receipts/`; `tab verify` proves what was bought (the latest purchase, or any folder you name), `tab cost` shows what each task or branch spent, and the same request again within ten minutes is answered from the cache for nothing.
+
+## Five things to ask for
+
+Each is one prompt for Claude Code with tab added, and what it costs at today's prices.
+
+| Ask | What it buys | About |
+| --- | --- | --- |
+| "Through tab, find Apple's revenue and net income in its last two 10-Q filings, and cite them." | SEC EDGAR filing index and documents | $0.01 |
+| "Through tab, read these five URLs and summarize what they agree on." | web page reading, one call per page | $0.015 |
+| "Through tab, translate this paragraph into German, French and Japanese." | machine translation, one call per language | $0.06 |
+| "Through tab, what are bitcoin and ether trading at on two different exchanges right now?" | price routes from two sources each | $0.004 |
+| "Through tab, search for the three most recent papers on HTTP 402 payments and summarize each." | web search and arXiv | $0.012 |
+
+`tab cost --by task` shows what each one actually spent; `tab_estimate` prices a plan before the agent pays for any of it.
 
 ## What the starter credits buy
 

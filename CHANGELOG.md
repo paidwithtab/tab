@@ -1,5 +1,22 @@
 # Changelog
 
+## 3.3.0 (2026-11)
+
+A first paid call that works and says so, sellers who can prove what they sent, buyers who can say when a result was bad, and numbers for the operator on where strangers stop. Protocol draft 1.0; the wire version stays `tab/0` and every new member is optional.
+
+- **A first call on setup.** `tab init` ends with one paid call (free on the public gateway's Wikipedia summary route, which now has three free calls a day), keeps its proof and checks it: gateway key, body, request, the agent's signature and the public log. `--no-demo` skips it.
+- **`tab doctor`.** One line per thing a paid call depends on: the agent key, the mandate (budget, cap, expiry, allow list), whether it allows this gateway, the budget left there today, the owner's balance, the clock against the gateway's, the catalog, which agent tools (Claude Code, Cursor, Windsurf, VS Code, Codex) have tab in their MCP config, and whether a newer release is out. Each failure names its fix; it exits 1 when a paid call would not work.
+- **Errors that name the fix.** Every gateway problem code and every refusal the client makes before paying maps to one sentence naming the command that fixes it. `tab fetch` prints it; `tab_fetch` returns it as `problem` and `fix`.
+- **The MCP server explains itself.** `initialize` carries instructions: search, then fetch, then check limits, and say what was bought.
+- **Sellers sign their results.** A service with `seller_key` in the spec, or a hosted listing posted with `tab sell --sign`, must answer each paid call with `Tab-Seller-Signature` over the realm, the call's id (sent upstream as `Tab-Hold`), the status and the body's SHA-256. The signature goes into the receipt as `seller`, discovery publishes the key, and the client and `tab verify` check it against what the realm publishes. An answer without a valid signature is a 502 and is not charged. `paidwithtab/seller` exports `resultSignatureHeaders` for the seller's side. This covers per-call payments, free calls, channels and x402.
+- **Flags.** `tab flag --reason wrong|empty|error|slow|other` (or the `tab_flag` tool) flags a paid result at the gateway that sold it, signed by the agent that paid; one per receipt, at most 30 days old, rate limited per address. No money moves. Discovery counts `stats.flags_7d` per route, the seller sees each flag in `tab sell stats`, and search ranks a route lower by its flagged share.
+- **`tab sell --dry-run`.** Prints the listing as buyers would find it, each route with its price and what 1,000 calls earn, and the not-charged rule, and lists nothing.
+- **Status page.** `paidwithtab.com/status`: every gateway the catalog reads, its state and last good read, calls and success this week, and the routes that failed more than one call in ten or were flagged.
+- **Shared runs.** In tab OS, Share this run makes a read-only page at `/r/<token>`: what the agent was asked, what it paid for and cost, and every receipt as signed (also as JSON for `tab verify`). No keys, bodies or ticket thread. Stop sharing takes it down.
+- **Company templates.** Market Watch, Filings Desk and Translation Desk, beside Field Notes and Quote Desk.
+- **The funnel, for operators.** Gateways count, per day, how far outside visitors get (home, discovery, claim, 402, refused by code, paid, failed) and which client they used; the site counts pages, `?ref=` sources, outside referers, searches and try-it calls. Addresses are kept only as a keyed hash that changes daily; the operator's addresses and bots are left out. `tab stats` prints the gateway funnel; `tab stats --catalog-db catalog.db --house-ip <ip>` reads the site's on the box. tab's own clients send `User-Agent: tab/<version> (cli|mcp|os|sdk)`.
+- Route stats older than 31 days are now pruned. New suite `test:v33` (85 checks); `tab_flag` comes after the existing tools.
+
 ## 3.2.0 (2026-11)
 
 tab inside the x402 market that already exists, buyers saving money they can see, more reasons to sell, and every charge publicly checkable. Protocol draft 0.9; the wire version stays `tab/0` and every new member is optional.

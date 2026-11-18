@@ -75,6 +75,40 @@ tab sell stats
 
 `--free 3` gives each buyer three calls a day per route before they pay, counted per agent key and per address; a free call's receipt says `free: true`. `--notify-ntfy` (or `--notify https://your-webhook`) tells you of your first sale and sends each day's earnings. `tab sell stats` signs a request with your seller key and shows earnings per listing and route, each route's reliability this week, and your top buyers, shortened.
 
+### See it before you list it (3.3)
+
+```sh
+tab sell https://api.example.com --price 0.004 --route "GET /forecast" --route "GET /history 0.02" --name Weather --dry-run
+```
+
+`--dry-run` prints the listing as buyers would find it in search, each route with its price and what 1,000 calls earn, and the rule you are paid under, and lists nothing. You keep the whole price. On `pay.paidwithtab.com` you earn credits that spend on that gateway; to be paid in USDG, list with `--gateway https://mainnet.paidwithtab.com`.
+
+### Sign what you send (3.3)
+
+A receipt always proves what the gateway relayed. With a seller key it also proves what you sent: your API signs each paid answer, the gateway checks the signature and puts it in the buyer's receipt, and `tab verify` checks it against the key the gateway publishes for your service. A gateway cannot then alter your answer without your key, and nobody can pass off another answer as yours.
+
+```sh
+tab sell https://api.example.com --price 0.01 --route "GET /quote" --sign
+```
+
+`--sign` uses your seller key (`~/.tab/seller.json`). On a gateway you run, put `"seller_key": "<public key>"` on the service in the spec. Your API then answers paid calls like this:
+
+```js
+import { loadKey, resultSignatureHeaders } from 'paidwithtab/seller';
+
+const key = loadKey('seller.json');
+// in your handler: the gateway names the paid call in the Tab-Hold request header
+const body = JSON.stringify(result);
+res.writeHead(200, { 'content-type': 'application/json', ...resultSignatureHeaders(key, 'pay.paidwithtab.com', req.headers, 200, body) });
+res.end(body);
+```
+
+The signature covers the gateway's realm, the call's id from `Tab-Hold`, the status and the SHA-256 of the body bytes before any compression. An answer without a valid signature is not charged and the buyer gets a 502, so turn signing on only when every paid route signs. MCP listings cannot sign yet. The format is in SPEC.md §3.3.
+
+### Flags (3.3)
+
+A buyer that paid for something it could not use can flag the receipt: wrong, empty, an error dressed as a 200, or too slow. A flag moves no money. You see each one, with its reason and note, in `tab sell stats`; discovery counts them per route as `stats.flags_7d`, and search ranks a route lower by the share of its calls that were flagged. A route that answers well is never hurt by them.
+
 ### Already selling over x402? (3.2)
 
 The tab catalog lists x402 sellers too, so tab agents find and pay you as you are. If your API is in the public x402 discovery list it is already there; otherwise:
