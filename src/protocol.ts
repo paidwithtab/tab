@@ -312,7 +312,46 @@ export interface Receipt {
   authorized?: string; // micro units the agent's credential authorized
   units?: { n: number; unit: string }; // a metered call: what it used
   free?: boolean; // one of the route's free calls: nothing was charged
+  // 3.3, present when the seller signs its results: its own signature over this paid call's result
+  seller?: SellerSignature;
   sig?: string; // gateway signature over the canonical receipt minus sig
+}
+
+/**
+ * 3.3 (draft 1.0): a seller's own signature over what it answered to one paid call. The seller
+ * signs sellerResultMessage with the Ed25519 key its gateway publishes for the service, so a
+ * receipt proves what the seller sent, not only what the gateway relayed.
+ */
+export interface SellerSignature {
+  key: string; // the seller's Ed25519 public key, base64url, as discovery publishes it
+  sig: string; // signature over sellerResultMessage(realm, id, status, body_sha256)
+}
+
+/** The response header a seller's API sets on a paid answer: the signature, base64url. */
+export const SELLER_SIGNATURE_HEADER = 'tab-seller-signature';
+
+/**
+ * What a seller signs: the gateway's realm, the payment id the gateway sent as Tab-Hold (the
+ * receipt's id), the status and the SHA-256 (base64url) of the body bytes it answered with, before
+ * any content encoding. The payment id is fresh per call, so a signature cannot be reused.
+ */
+export function sellerResultMessage(realm: string, id: string, status: number, bodySha256: string): Uint8Array {
+  return Buffer.from(`tab-seller-result/0\n${realm}\n${id}\n${status}\n${bodySha256}`);
+}
+
+/** For sellers: the Tab-Seller-Signature value for an answer to the call the gateway named in Tab-Hold. */
+export function signSellerResult(key: KeyPair, o: { realm: string; hold: string; status: number; body: string | Uint8Array }): string {
+  return signBytes(key, sellerResultMessage(o.realm, o.hold, o.status, bodyDigest(o.body)));
+}
+
+/** Whether a receipt's seller signature holds, and (when given) is by the key the seller publishes. */
+export function verifySellerSignature(r: Receipt, publishedKey?: string | null): { ok: boolean; reason?: string } {
+  if (!r.seller) return { ok: false, reason: 'the receipt carries no seller signature' };
+  if (!r.response) return { ok: false, reason: 'the receipt lacks its response commitment' };
+  if (!verifyBytes(r.seller.key, sellerResultMessage(r.realm, r.id, r.response.status, r.response.body_sha256), r.seller.sig)) return { ok: false, reason: 'the seller signature does not verify' };
+  if (publishedKey === null) return { ok: false, reason: 'the gateway publishes no seller key for this route' };
+  if (publishedKey !== undefined && publishedKey !== r.seller.key) return { ok: false, reason: 'signed by a key the gateway does not publish for this seller' };
+  return { ok: true };
 }
 
 export interface EscrowInfo {

@@ -10,6 +10,7 @@
   "exports": {
     ".": "./dist/src/client.js",
     "./client": "./dist/src/client.js",
+    "./seller": "./dist/src/seller.js",
     "./package.json": "./package.json"
   },
   "files": [

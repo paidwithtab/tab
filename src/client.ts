@@ -13,6 +13,7 @@ import {
   signCredential,
   usdToMicro,
   verifyReceipt,
+  verifySellerSignature,
   type Challenge,
   type Receipt,
 } from './protocol.js';
@@ -440,13 +441,19 @@ export class TabClient {
     if (sentBody != null && typeof sentBody !== 'string' && !(sentBody instanceof Uint8Array)) {
       return { ok: false, reason: 'cannot check a request body that is not a string or bytes' };
     }
-    return verifyReceipt(receipt, {
+    const checked = verifyReceipt(receipt, {
       key: await this.receiptKey(new URL(url).origin),
       body,
       status: res.status,
       mandate: this.opts.mandate.id,
       request: { query: new URL(url).search, body_sha256: bodyDigest(sentBody) },
     });
+    // 3.3: a seller's signature, when there is one, must hold too
+    if (checked.ok && receipt.seller) {
+      const sv = verifySellerSignature(receipt);
+      if (!sv.ok) return { ok: false, reason: sv.reason };
+    }
+    return checked;
   }
 
   // -- 3.0: pay on delivery --------------------------------------------------------------

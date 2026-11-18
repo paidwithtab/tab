@@ -23,6 +23,12 @@ import { runDoctor } from '../src/doctor.js';
 import { createTabTools } from '../src/tools.js';
 import { listProofs } from '../src/proof.js';
 import { MCP_INSTRUCTIONS } from '../src/mcp.js';
+import { resultSignatureHeaders } from '../src/seller.js';
+import { verifySellerSignature } from '../src/protocol.js';
+import { receiptOf } from '../src/client.js';
+import { saveProof, verifyProof } from '../src/proof.js';
+import { loadSpec } from '../src/gateway.js';
+import { signListing, listingProblem } from '../src/listings.js';
 
 let passed = 0;
 let failed = 0;
@@ -274,6 +280,74 @@ async function main(): Promise<void> {
     check('4: and the not-charged rule', /charged only when your API answers 2xx/.test(dry.out), dry.out);
     const after = (await getJson(`${GW}/.well-known/tab/listings`)).doc;
     check('4: nothing was listed', JSON.stringify(before) === JSON.stringify(after) && !(after.listings ?? []).length, after);
+  }
+
+  // ======================================================================================
+  // 5. sellers sign their results
+  {
+    const sk = newKeyPair();
+    const signedUp = createServer(async (req, res) => {
+      for await (const _ of req) { /* drain */ }
+      const u = new URL(req.url ?? '/', 'http://x');
+      const body = JSON.stringify({ quote: 'signed', path: u.pathname });
+      const h: Record<string, string> = { 'content-type': 'application/json' };
+      if (u.pathname === '/good') Object.assign(h, resultSignatureHeaders(sk, 'v33s.local', req.headers, 200, body));
+      if (u.pathname === '/other') Object.assign(h, resultSignatureHeaders(newKeyPair(), 'v33s.local', req.headers, 200, body));
+      if (u.pathname === '/stale') Object.assign(h, resultSignatureHeaders(sk, 'v33s.local', { 'tab-hold': 'an-old-call' }, 200, body));
+      res.writeHead(200, h);
+      res.end(body);
+    });
+    const SUP = await listen(signedUp);
+    const sstore = new Store(join(scratch, 'signed.db'));
+    const sspec: Spec = {
+      realm: 'v33s.local', recipient: newKeyPair().publicKey, rail: 'ledger',
+      services: [{ name: 'quotes', prefix: '/q', upstream: SUP, seller_key: sk.publicKey, routes: [
+        { method: 'GET', path: '/good', price: '0.01' }, { method: 'GET', path: '/other', price: '0.01' },
+        { method: 'GET', path: '/none', price: '0.01' }, { method: 'GET', path: '/stale', price: '0.01' },
+      ] }],
+    };
+    const sg = await gatewayAt(sspec, { store: sstore });
+    const owner = newKeyPair(), agent = newKeyPair();
+    sstore.credit(owner.publicKey, usdToMicro('1.00'));
+    const mandate = issueMandate(owner, { agent: agent.publicKey, budgetUsd: '1.00' });
+    const client = new TabClient({ agent, mandate });
+    const disc = (await getJson(`${sg.url}/.well-known/tab`)).doc;
+    check('5: discovery publishes the seller key', disc.services?.[0]?.seller_key === sk.publicKey, disc.services?.[0]);
+
+    const good = await client.fetch(`${sg.url}/q/good`);
+    const gbody = new Uint8Array(await good.arrayBuffer());
+    const rc = receiptOf(good)!;
+    check('5: a signed answer is paid and its receipt carries the seller signature', good.status === 200 && rc?.seller?.key === sk.publicKey && verifySellerSignature(rc, sk.publicKey).ok, rc);
+    check('5: the client checks it with the rest of the receipt', (await client.verify(`${sg.url}/q/good`, good, gbody))?.ok === true);
+    const forged = { ...rc, response: { ...rc.response!, body_sha256: 'x'.repeat(43) } };
+    check('5: the signature binds the body', !verifySellerSignature(forged).ok);
+    check('5: and the published key', !verifySellerSignature(rc, newKeyPair().publicKey).ok && verifySellerSignature(rc, null).ok === false);
+    const bal = sstore.balance(owner.publicKey);
+    for (const path of ['/q/other', '/q/none', '/q/stale']) {
+      const r = await client.fetch(`${sg.url}${path}`);
+      const doc = await r.json().catch(() => ({})) as any;
+      check(`5: ${path}: a wrong, missing or reused signature is a 502 and not charged`, r.status === 502 && /Tab-Seller-Signature/.test(doc.detail ?? '') && !receiptOf(r), { status: r.status, doc });
+    }
+    check('5: the owner paid only for the signed answer', sstore.balance(owner.publicKey) === bal, { before: bal, after: sstore.balance(owner.publicKey) });
+
+    // tab verify reports it
+    const pdir = join(scratch, 'sproofs');
+    const kept = saveProof(pdir, { url: `${sg.url}/q/good`, method: 'GET' }, { status: 200, contentType: 'application/json' }, gbody, rc, mandate)!;
+    const rep = await verifyProof(kept.dir, { sellerKey: async () => sk.publicKey });
+    const sc = rep.checks.find((c) => c.name === 'seller signature');
+    check('5: tab verify checks the seller signature against the published key', rep.ok && sc?.ok === true && /the key v33s\.local publishes/.test(sc?.detail ?? ''), rep.checks);
+    const rep2 = await verifyProof(kept.dir, { sellerKey: async () => newKeyPair().publicKey });
+    check('5: and fails when the realm publishes another key', !rep2.ok && rep2.checks.find((c) => c.name === 'seller signature')?.ok === false);
+
+    // a spec with a malformed key is refused at load; an MCP listing cannot sign
+    const bad = join(scratch, 'bad-spec.json');
+    writeFileSync(bad, JSON.stringify({ realm: 'x.local', recipient: 'r', services: [{ name: 's', prefix: '', upstream: 'http://x', seller_key: 'nope', routes: [] }] }));
+    let threw = '';
+    try { loadSpec(bad); } catch (err) { threw = (err as Error).message; }
+    check('5: loadSpec refuses a malformed seller_key', /seller_key must be an Ed25519 public key/.test(threw), threw);
+    const l = signListing(newKeyPair(), { realm: 'r.local', slug: 'mcp-signed', name: 'm', upstream: 'https://mcp.example.com/mcp', mcp: true, sign: true, routes: [{ method: 'POST', path: '/tools/x', price: '0.01', mcp_tool: 'x' }] });
+    check('5: an MCP listing cannot sign yet', /MCP listing cannot sign/.test(listingProblem(l, { realm: 'r.local', rail: 'ledger', allowPrivate: true }) ?? ''));
+    sg.server.close(); signedUp.close();
   }
 
   gw.server.close(); upstream.close();

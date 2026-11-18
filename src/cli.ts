@@ -545,6 +545,7 @@ async function main(): Promise<void> {
         key: values.key as string | undefined,
         publishedKey: values.offline ? undefined : publishedReceiptKey,
         logProof: values.offline ? undefined : fetchLogProof,
+        sellerKey: values.offline ? undefined : publishedSellerKey,
       });
       if (values.json) console.log(JSON.stringify(report, null, 2));
       else {
@@ -927,6 +928,18 @@ async function channelCommand(args: string[]): Promise<void> {
 }
 
 /** The receipt key a gateway publishes in its discovery document; null when it cannot be read. */
+/** 3.3: the seller key a realm publishes for the service that sells `resource` ("GET /path"), or null. */
+async function publishedSellerKey(realm: string, resource: string): Promise<string | null> {
+  const origin = /^(localhost|127\.|\[::1\])/.test(realm) ? `http://${realm}` : `https://${realm}`;
+  const r = await fetch(origin + '/.well-known/tab', { signal: AbortSignal.timeout(10_000) });
+  if (!r.ok) return null;
+  const doc = (await r.json()) as { services?: Array<{ prefix?: string; seller_key?: string }> };
+  const path = resource.replace(/^[A-Z]+ /, '').replace(/\?.*$/, '');
+  const sv = (doc.services ?? []).filter((x) => typeof x.prefix === 'string' && (path === x.prefix || path.startsWith(x.prefix.endsWith('/') ? x.prefix : `${x.prefix}/`) || x.prefix === ''))
+    .sort((a, b) => String(b.prefix).length - String(a.prefix).length)[0];
+  return typeof sv?.seller_key === 'string' ? sv.seller_key : null;
+}
+
 async function publishedReceiptKey(realm: string): Promise<string | null> {
   const origin = /^(localhost|127\.|\[::1\])/.test(realm) ? `http://${realm}` : `https://${realm}`;
   const r = await fetch(origin + '/.well-known/tab', { signal: AbortSignal.timeout(10_000) });
@@ -1298,6 +1311,7 @@ async function sellCommand(rest: string[]): Promise<void> {
     'notify-ntfy': { type: 'boolean', default: false },
     days: { type: 'string', default: '30' },
     'dry-run': { type: 'boolean', default: false },
+    sign: { type: 'boolean', default: false },
   }, true);
   const gateway = (values.gateway as string).replace(/\/$/, '');
   if (sub === 'stats') {
@@ -1374,7 +1388,7 @@ async function sellCommand(rest: string[]): Promise<void> {
   const slug = (values.slug as string) || slugOf(name);
   if (values['dry-run']) {
     // 3.3: what would be listed and what buyers would see, before anything is sent
-    console.log(sellPreview({ realm: disc.realm, gateway, slug, name, upstream, routes, mcp: !!values.mcp, description: values.description as string | undefined, rail: String(disc.rail ?? 'ledger'), paidTo: evmPayout ?? seller.publicKey }));
+    console.log(sellPreview({ realm: disc.realm, gateway, slug, name, upstream, routes, mcp: !!values.mcp, description: values.description as string | undefined, rail: String(disc.rail ?? 'ledger'), paidTo: evmPayout ?? seller.publicKey, sign: !!values.sign, sellerKey: seller.publicKey }));
     return;
   }
   const listing = signListing(seller, {
@@ -1383,6 +1397,7 @@ async function sellCommand(rest: string[]): Promise<void> {
     ...(values.mcp ? { mcp: true } : {}),
     ...(evmPayout ? { evm_payout: evmPayout } : {}),
     ...(notify ? { notify } : {}),
+    ...(values.sign ? { sign: true } : {}),
   });
   const out = (await postSigned(gateway + LISTING_PATH, listing)) as { url: string; routes: Array<{ method: string; url: string; price: string; mcp_tool?: string }>; paid_to: string };
   console.log(`listed at ${out.url}, paid to ${out.paid_to}\n`);
@@ -1394,7 +1409,7 @@ ${values.mcp ? '  claude mcp add ' + slug + ' -- npx -y ' + RELEASE_TGZ + ' mcp 
 }
 
 /** 3.3: `tab sell --dry-run`: the listing as buyers would find it, what it earns, and the rules it is paid under. */
-export function sellPreview(o: { realm: string; gateway: string; slug: string; name: string; upstream: string; routes: ListingRoute[]; mcp: boolean; description?: string; rail: string; paidTo: string }): string {
+export function sellPreview(o: { realm: string; gateway: string; slug: string; name: string; upstream: string; routes: ListingRoute[]; mcp: boolean; description?: string; rail: string; paidTo: string; sign?: boolean; sellerKey?: string }): string {
   const base = `${o.gateway}/s/${o.slug}`;
   const lines = [
     `dry run: nothing was listed. This is what ${o.realm} would publish.`,
@@ -1414,6 +1429,7 @@ export function sellPreview(o: { realm: string; gateway: string; slug: string; n
     '',
     '  Buyers find it in tab_search and paidwithtab.com/catalog by the words in its name and descriptions.',
     `  You keep the whole price. A call is charged only when ${o.mcp ? 'the tool succeeds: a result with isError: true comes back as a 422 and' : 'your API answers 2xx: any other status'} costs the buyer nothing.`,
+    ...(o.sign ? [`  Your API signs each paid answer: Tab-Seller-Signature, by key ${o.sellerKey}, over the call named in Tab-Hold (signSellerResult in paidwithtab/seller). An unsigned answer is not charged.`] : []),
     '  Run it again without --dry-run to list it.',
   );
   return lines.join('\n');

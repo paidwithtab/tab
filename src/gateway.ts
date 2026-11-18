@@ -28,6 +28,9 @@ import {
   type Credential,
   type ProblemCode,
   type Receipt,
+  type SellerSignature,
+  SELLER_SIGNATURE_HEADER,
+  sellerResultMessage,
 } from './protocol.js';
 import { mandateExpired, realmAllowed, verifyMandate, mandateChain, approvalThreshold, perCallCap, ruleProblem, type Mandate } from './mandate.js';
 import { checkAndSpendChain, refundChain } from './rails/budget.js';
@@ -126,6 +129,12 @@ export interface ServiceSpec {
   evm_recipient?: string;
   /** 3.1: a hosted listing a seller signed and posted; served under /s/<slug>/ through the guarded fetch. */
   hosted?: { seller: string; slug: string; mcp?: boolean; listed_at: string; notify?: string };
+  /**
+   * 3.3: the seller's Ed25519 public key (base64url). When set, every paid 2xx answer must carry a
+   * Tab-Seller-Signature by this key over the call's result (protocol.ts sellerResultMessage); an
+   * answer without a valid one is not charged. The signature goes into the receipt.
+   */
+  seller_key?: string;
   routes: RouteSpec[];
 }
 
@@ -192,6 +201,7 @@ export function loadSpec(path: string): Spec {
     if (s.rate_limit_group !== undefined && !s.rate_limit_per_minute) {
       throw new Error(`service ${s.name}: rate_limit_group needs rate_limit_per_minute`);
     }
+    if (s.seller_key !== undefined && !/^[A-Za-z0-9_-]{43}$/.test(String(s.seller_key))) throw new Error(`service ${s.name}: seller_key must be an Ed25519 public key, base64url (tab key new prints one)`);
     for (const r of s.routes) {
       if (r.body_allow !== undefined && (!Array.isArray(r.body_allow) || !r.body_allow.every((k) => typeof k === 'string'))) {
         throw new Error(`service ${s.name} route ${r.path}: body_allow must be a list of key names`);
@@ -473,6 +483,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       recipient: l.seller,
       ...(l.evm_payout ? { evm_recipient: l.evm_payout.toLowerCase() } : {}),
       hosted: { seller: l.seller, slug: l.slug, ...(l.mcp ? { mcp: true } : {}), listed_at: listedAt, ...(l.notify ? { notify: l.notify } : {}) },
+      ...(l.sign ? { seller_key: l.seller } : {}),
       routes: l.routes.map((r) => ({
         method: r.method.toUpperCase(), path: r.path, price: r.price, description: r.description,
         ...(r.mcp_tool ? { mcp_tool: r.mcp_tool } : {}), ...(r.input_schema ? { input_schema: r.input_schema } : {}),
@@ -599,6 +610,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       ...(s.recipient ? { recipient: s.recipient } : {}),
       ...(s.evm_recipient ? { evm_recipient: s.evm_recipient } : {}),
       ...(s.hosted ? { hosted: { seller: s.hosted.seller, ...(s.hosted.mcp ? { mcp: true } : {}), listed_at: s.hosted.listed_at } } : {}),
+      ...(s.seller_key ? { seller_key: s.seller_key } : {}),
       routes: s.routes.map((r) => ({
         method: r.method.toUpperCase(),
         path: r.path,
@@ -1051,6 +1063,17 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     });
   }
 
+  /**
+   * 3.3: the seller's signature over a paid answer, when the service has a seller key. `undefined`
+   * when the service does not sign; null when it should and the answer's signature is missing or bad.
+   */
+  function sellerSignatureOf(sv: ServiceSpec, id: string, upstream: Response, delivered: Buffer): SellerSignature | null | undefined {
+    if (!sv.seller_key) return undefined;
+    const sig = upstream.headers.get(SELLER_SIGNATURE_HEADER) ?? '';
+    if (!sig || !verifyBytes(sv.seller_key, sellerResultMessage(spec.realm, id, upstream.status, sha256b64url(delivered)), sig)) return null;
+    return { key: sv.seller_key, sig };
+  }
+
   async function relayResponse(
     res: ServerResponse,
     upstream: Response,
@@ -1369,7 +1392,10 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       throw err;
     }
     const stateHeader = () => Buffer.from(JSON.stringify(channelState(store.channel(c.id)!, spec.realm, spec.currency ?? 'USD'))).toString('base64url');
-    const holdLike = { payer: c.agent, owner: c.owner, id: c.id } as HoldRow;
+    // each call gets its own id: the upstream sees it as Tab-Hold and the receipt carries it, so a
+    // seller's signature binds to this call and no other on the channel
+    const callId = randomId();
+    const holdLike = { payer: c.agent, owner: c.owner, id: callId } as HoldRow;
     let upstream: Response;
     let delivered: Buffer;
     try {
@@ -1388,6 +1414,13 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       log(`${label} -> ${upstream.status} voucher voided (channel ${c.id})`);
       return;
     }
+    const sellerSig = sellerSignatureOf(match.service, callId, upstream, delivered);
+    if (sellerSig === null) {
+      store.channelSettleCall(c.id, priceMicro, 0);
+      await respondProblem(res, 'upstream-failed', 'the seller signs its results and this answer carries no valid Tab-Seller-Signature; nothing was charged', 502, undefined, { 'tab-channel': stateHeader() });
+      log(`${label} -> ${upstream.status} seller signature missing or invalid (channel ${c.id})`);
+      return;
+    }
     // metered: what the upstream says it used, at the route's unit price, never above the price
     let units: number | undefined;
     let charged = priceMicro;
@@ -1400,11 +1433,12 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     store.channelSettleCall(c.id, priceMicro, charged);
     const after = store.channel(c.id)!;
     const receipt = signReceipt(store.receiptKey, {
-      id: randomId(), realm: spec.realm, resource, amount: String(charged), currency: spec.currency ?? 'USD', rail: rail.name,
+      id: callId, realm: spec.realm, resource, amount: String(charged), currency: spec.currency ?? 'USD', rail: rail.name,
       payer: c.agent, owner: c.owner, recipient: spec.recipient, ref: `channel:${c.id}`, at: new Date().toISOString(),
       mandate: c.mandate_id, challenge: `voucher:${v.nonce}`, request: { query: search, body_sha256: v.body_sha256 }, credential: v.sig,
       response: { status: upstream.status, body_sha256: sha256b64url(delivered) },
       channel: { id: c.id, kind: 'call', spent: String(after.spent), ...(units !== undefined ? { units } : {}) },
+      ...(sellerSig ? { seller: sellerSig } : {}),
     });
     store.addReceipt(receipt);
     await relayResponse(res, upstream, { 'tab-receipt': encodeReceiptHeader(receipt), 'tab-channel': stateHeader() }, delivered);
@@ -2300,6 +2334,13 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           await respondProblem(res, 'upstream-failed', `upstream body failed: ${(err as Error).message}`, 502);
           return;
         }
+        const sellerSig = sellerSignatureOf(match.service, hold.id, upstream, delivered);
+        if (sellerSig === null) {
+          await releaseHold(hold);
+          noteOutcome(match, false, started);
+          await refuse('unexpected_settle_error', 'the seller signs its results and this answer carries no valid Tab-Seller-Signature; nothing was charged', 502);
+          return;
+        }
         let hash: string;
         try {
           hash = await x402.x402Settle(accepted);
@@ -2318,6 +2359,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           mandate: `x402:${accepted.payer}`, challenge: nonce,
           request: { query: u.search, body_sha256: sha256b64url(body) }, credential: accepted.signature,
           response: { status: upstream.status, body_sha256: sha256b64url(delivered) },
+          ...(sellerSig ? { seller: sellerSig } : {}),
         });
         store.setHoldState(hold.id, 'captured', ref);
         store.addReceipt(receipt);
@@ -2417,6 +2459,15 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           log(`${method} ${pathname} -> 502 upstream body failed (hold ${hold.id} released)`);
           return;
         }
+        // 3.3: a service that signs its results must sign this one, or the call is not charged
+        const sellerSig = sellerSignatureOf(match.service, hold.id, upstream, delivered);
+        if (sellerSig === null) {
+          await releaseHold(hold);
+          noteOutcome(match, false, started);
+          await respondProblem(res, 'upstream-failed', 'the seller signs its results and this answer carries no valid Tab-Seller-Signature; nothing was charged', 502);
+          log(`${method} ${pathname} -> ${upstream.status} seller signature missing or invalid (hold ${hold.id} released)`);
+          return;
+        }
         let redact: string | undefined;
         if (escrow) {
           // an upstream that echoes its request headers must not hand the seller's delivery token to the buyer
@@ -2468,6 +2519,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
             payer: hold.payer, owner: hold.owner, recipient: hold.recipient, ref: `free:${hold.id}`, at: new Date().toISOString(),
             mandate: hold.mandate_id, challenge: hold.challenge_id, request: cred.request, credential: cred.sig,
             response: { status: upstream.status, body_sha256: sha256b64url(delivered) }, authorized: String(priceMicro), free: true,
+            ...(sellerSig ? { seller: sellerSig } : {}),
           });
           store.addReceipt(receipt);
           await relayResponse(res, upstream, { 'tab-receipt': encodeReceiptHeader(receipt) }, delivered);
@@ -2525,6 +2577,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
           response: { status: upstream.status, body_sha256: sha256b64url(delivered) },
           ...(hold.amount !== priceMicro ? { authorized: String(priceMicro) } : {}),
           ...(units ? { units } : {}),
+          ...(sellerSig ? { seller: sellerSig } : {}),
         });
         store.setHoldState(hold.id, 'captured', ref);
         store.addReceipt(receipt);

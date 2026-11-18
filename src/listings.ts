@@ -41,6 +41,7 @@ export interface Listing {
   routes: ListingRoute[];
   evm_payout?: string; // 0x address paid on an evm gateway
   notify?: string; // 3.2: an https webhook (an ntfy.sh topic works) told of the first sale and each day's earnings
+  sign?: boolean; // 3.3: the upstream signs each paid answer with the seller key (Tab-Seller-Signature); unsigned answers are not charged
   remove?: boolean; // a signed request to take the listing down
   at: string; // ISO time; must be recent, and newer than the listing it replaces
   sig: string;
@@ -104,6 +105,8 @@ export function listingProblem(l: Listing, o: { realm: string; rail: 'ledger' | 
   if (l.description !== undefined && (typeof l.description !== 'string' || l.description.length > 300)) return 'description must be at most 300 characters';
   const up = o.allowPrivate ? (/^https?:\/\/[^/]+/.test(String(l.upstream ?? '')) ? null : 'upstream is not a URL') : upstreamProblem(String(l.upstream ?? ''), o.realm);
   if (up) return up;
+  if (l.sign !== undefined && typeof l.sign !== 'boolean') return 'sign must be true or false';
+  if (l.sign && l.mcp) return 'an MCP listing cannot sign its results yet; list it without sign';
   if (l.notify !== undefined) {
     const np = o.allowPrivate ? (/^https?:\/\/[^/]+/.test(String(l.notify)) ? null : 'notify is not a URL') : upstreamProblem(String(l.notify).replace(/\?.*$/, ''), o.realm);
     if (np) return np.replace('upstream', 'notify');

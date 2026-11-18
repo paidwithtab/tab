@@ -5,6 +5,7 @@
 // the one the agent signed, the agent's own signature authorizes the payment, and the
 // mandate is signed by its owner. Anyone can run it; nothing in the folder is secret.
 
+import { verifySellerSignature } from './protocol.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { bodyDigest, credentialMessage, verifyReceipt, type Receipt, type Challenge } from './protocol.js';
@@ -73,7 +74,14 @@ export function listProofs(root: string): string[] {
  */
 export async function verifyProof(
   path: string,
-  o: { bodyPath?: string; key?: string; publishedKey?: (realm: string) => Promise<string | null>; logProof?: (origin: string, receiptId: string) => Promise<LogProof | null> } = {},
+  o: {
+    bodyPath?: string;
+    key?: string;
+    publishedKey?: (realm: string) => Promise<string | null>;
+    logProof?: (origin: string, receiptId: string) => Promise<LogProof | null>;
+    /** 3.3: the seller key the realm publishes for the service that sold `resource`, or null for none. */
+    sellerKey?: (realm: string, resource: string) => Promise<string | null>;
+  } = {},
 ): Promise<ProofReport> {
   const dir = path.endsWith('.json') ? dirname(path) : path;
   const receiptFile = path.endsWith('.json') ? path : join(dir, 'receipt.json');
@@ -131,6 +139,13 @@ export async function verifyProof(
     const mv = verifyMandate(mandate);
     const matches = mandate.id === receipt.mandate && mandate.agent === receipt.payer;
     add('mandate', mv.ok && matches, !mv.ok ? `mandate: ${mv.error}` : !matches ? 'saved mandate is not the one the receipt names' : `owner ${mandate.owner} signed it for this agent`);
+  }
+
+  // 5b. 3.3: the seller's own signature over its answer, when the seller signs
+  if (receipt.seller) {
+    const published = o.sellerKey ? await o.sellerKey(receipt.realm, receipt.resource).catch(() => undefined) : undefined;
+    const sv = verifySellerSignature(receipt, published === undefined ? undefined : published);
+    add('seller signature', sv.ok, sv.ok ? `the seller signed this answer with ${receipt.seller.key}${published === undefined ? ' (not compared with the published key)' : `, the key ${receipt.realm} publishes for it`}` : sv.reason);
   }
 
   // 6. 3.2: the receipt is in the gateway's public log, under a tree head signed by the same key
