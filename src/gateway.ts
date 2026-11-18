@@ -400,6 +400,38 @@ const CORS = {
   'access-control-expose-headers': 'Tab-Receipt, Tab-Void, Tab-Escrow, Tab-Channel, WWW-Authenticate, PAYMENT-REQUIRED, PAYMENT-RESPONSE',
 };
 
+/** 3.3: what the funnel learns about a response while the gateway writes it. */
+type FunnelTagged = ServerResponse & { tabProblem?: string; tabRoute?: string; tabPaid?: boolean };
+
+/** 3.3: the funnel step a finished response stands for, or null for traffic that is not one. */
+export function funnelStepOf(method: string, pathname: string, status: number, res: { tabProblem?: string; tabRoute?: string }, receipt: boolean): { step: string; detail: string } | null {
+  if (method === 'GET' && pathname === '/.well-known/tab') return { step: 'discover', detail: '' };
+  if (method === 'GET' && pathname === '/') return { step: 'home', detail: '' };
+  if (pathname === '/.well-known/tab/faucet' && method === 'POST') return status >= 200 && status < 300 ? { step: 'claim', detail: '' } : { step: 'claim-refused', detail: String(status) };
+  if (pathname === '/.well-known/tab/topup' && method === 'POST' && status >= 200 && status < 300) return { step: 'topup-start', detail: '' };
+  const route = res.tabRoute ?? '';
+  if (!route) return null;
+  if (receipt && status >= 200 && status < 300) return { step: 'paid', detail: route };
+  if (res.tabProblem === 'payment-required') return { step: 'challenge', detail: route };
+  if (res.tabProblem) return { step: 'refused', detail: res.tabProblem };
+  if (status >= 500) return { step: 'failed', detail: route };
+  if (status >= 400) return { step: 'upstream-4xx', detail: route };
+  return null;
+}
+
+/** 3.3: a short name for the program that made a request: tab's own clients name themselves. */
+export function clientFamily(ua: string): string {
+  const tab = /^tab\/[\d.]+ \((\w+)\)/.exec(ua);
+  if (tab) return `tab-${tab[1]}`;
+  if (/^tab\//.test(ua)) return 'tab';
+  if (/bot|crawl|spider|preview|monitor|check/i.test(ua)) return 'bot';
+  if (/^curl\//i.test(ua)) return 'curl';
+  if (/Mozilla\//.test(ua)) return 'browser';
+  if (/^node|undici/i.test(ua)) return 'node';
+  if (/python|httpx|aiohttp|requests/i.test(ua)) return 'python';
+  return ua ? 'other' : 'none';
+}
+
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
   const data = JSON.stringify(body, null, 1);
   res.writeHead(status, { 'content-type': 'application/json', ...CORS });
@@ -621,6 +653,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     members?: Record<string, unknown>,
   ): Promise<void> {
     const headers: Record<string, string> = { 'content-type': 'application/problem+json', ...CORS, ...extra };
+    (res as FunnelTagged).tabProblem = code;
     if (challenge) headers['www-authenticate'] = encodeChallengeHeader(challenge);
     res.writeHead(status, headers);
     res.end(problemBody(code, detail, status, members));
@@ -1027,6 +1060,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   ): Promise<void> {
     // the upstream may not speak for the gateway: its tab-* headers (a forged receipt) and the
     // hop-by-hop set are dropped, and the gateway's own headers are applied last
+    if (extra['tab-receipt']) (res as FunnelTagged).tabPaid = true;
     const headers: Record<string, string> = {};
     upstream.headers.forEach((v, k) => {
       if (HOP_BY_HOP.has(k) || k.startsWith('tab-') || k.startsWith('access-control-')) return;
@@ -1531,6 +1565,25 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     }
   }
 
+  // -- 3.3: the funnel. Which steps outside visitors reach on the way to a first paid call, and
+  // why they stop. Addresses are kept only as a keyed hash that changes every day, so a visitor
+  // can be counted once per day without being followed across days. The operator's own
+  // addresses and loopback are left out, as in the usage stats.
+  const funnelHouse = new Set([...(opts.houseIps ?? []), '127.0.0.1', '::1', '::ffff:127.0.0.1']);
+  function funnelWatch(req: IncomingMessage, res: ServerResponse, method: string, pathname: string): void {
+    const ip = clientIp(req);
+    if (funnelHouse.has(ip)) return;
+    res.on('finish', () => {
+      try {
+        const step = funnelStepOf(method, pathname, res.statusCode, res as FunnelTagged, !!(res as FunnelTagged).tabPaid);
+        if (!step) return;
+        const day = new Date().toISOString().slice(0, 10);
+        const who = createHmac('sha256', store.secret).update(`funnel\n${day}\n${ip}`).digest('base64url').slice(0, 16);
+        store.funnelStep(day, step.step, step.detail, who, clientFamily(String(req.headers['user-agent'] ?? '')));
+      } catch { /* the funnel never fails a call */ }
+    });
+  }
+
   const server = createServer(async (req, res) => {
     const started = Date.now();
     const method = (req.method ?? 'GET').toUpperCase();
@@ -1538,6 +1591,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
     // routes match and requests forward on the path as sent, still percent-encoded: decoding
     // first let a :param carry ..%2F and walk the upstream to paths nobody priced
     const pathname = u.pathname;
+    funnelWatch(req, res, method, pathname);
     try {
       if (!safePath(pathname)) {
         sendJson(res, 400, { error: 'path segments may not encode /, \\, ?, #, . or ..' });
@@ -2134,6 +2188,7 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
       }
 
       const match = matchRoute(spec, method, pathname);
+      if (match) (res as FunnelTagged).tabRoute = routeKey(match.service, match.route);
       if (!match && method === 'GET' && pathname === '/') {
         // the root, when nothing is priced there: a page for a person, the terms for a program
         const origin = (opts.origin ?? `https://${spec.realm}`).replace(/\/$/, '');
@@ -2499,6 +2554,8 @@ export function createGateway(spec: Spec, opts: GatewayOptions): Server {
   const prune = setInterval(() => {
     try {
       store.pruneRedeemed(new Date(Date.now() - 3_600_000).toISOString());
+      store.pruneRouteStats(new Date(Date.now() - 31 * 86_400_000).toISOString().slice(0, 10));
+      store.pruneFunnel(new Date(Date.now() - 91 * 86_400_000).toISOString().slice(0, 10));
     } catch {
       /* ignore */
     }

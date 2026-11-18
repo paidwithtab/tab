@@ -1,6 +1,7 @@
 // The `tab` command. One binary, three roles: owner (issues mandates), agent
 // (pays), gateway/catalog (sells). See DEPLOY.md section 7 for the reference.
 
+import { nameFetches } from './version.js';
 import { parseArgs } from 'node:util';
 import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -110,7 +111,7 @@ const USAGE = `tab ${VERSION_STRING}: a payment gateway for software agents (HTT
   tab log head|check [--gateway url]...   the public receipt log: check proves nothing already logged was changed
   tab setup <claude|cursor|windsurf|vscode|codex> [--print] [--github]   put tab in an agent tool's MCP config
   tab topup <dollars> [--gateway url]     add credit by card (on gateways that take it)
-  tab stats (--db pay.db [--house-ip ip]... | --gateway url) [--days 30]   who uses a gateway, the operator's own left out
+  tab stats (--db pay.db [--house-ip ip]... | --gateway url | --catalog url) [--days 30]   who uses a gateway or the site, the operator's own left out
   tab receipts [--dir ~/.tab/receipts] [--limit 20]      paid calls kept as proof folders
   tab sell <https upstream> --price 0.01 [--name] [--slug] [--description] [--route "GET /path [price]"]... [--gateway url]
             list your API on a hosted gateway, paid to your own wallet; no server of your own
@@ -159,6 +160,8 @@ async function main(): Promise<void> {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
   const rest = argv.slice(1);
+  if (!process.env.TAB_SURFACE) process.env.TAB_SURFACE = cmd === 'mcp' ? 'mcp' : cmd === 'company' && rest[0] === 'serve' ? 'os' : cmd === 'catalog' ? 'catalog' : 'cli';
+  nameFetches(process.env.TAB_SURFACE);
 
   switch (cmd) {
     case 'version':
@@ -364,6 +367,7 @@ async function main(): Promise<void> {
         'allow-private-origins': { type: 'boolean', default: false },
         seed: { type: 'string', multiple: true },
         'x402-list': { type: 'string', multiple: true },
+        'house-ip': { type: 'string', multiple: true },
       });
       const store = new CatalogStore(values.db as string);
       let tryAgent: KeyPair | undefined;
@@ -383,6 +387,8 @@ async function main(): Promise<void> {
         allowPrivateOrigins: values['allow-private-origins'] as boolean,
         // 3.2: "bazaar" is the public x402 discovery list
         x402Lists: ((values['x402-list'] as string[] | undefined) ?? []).map((l) => (l === 'bazaar' ? BAZAAR_URL : l)),
+        houseIps: values['house-ip'] as string[] | undefined,
+        statsToken: process.env.TAB_STATS_TOKEN || undefined,
         log,
       });
       const port = Number(values.port);
@@ -620,7 +626,25 @@ async function main(): Promise<void> {
     }
 
     case 'stats': {
-      const { values } = opts(rest, { db: { type: 'string' }, gateway: { type: 'string' }, days: { type: 'string', default: '30' }, 'house-ip': { type: 'string', multiple: true }, 'house-owner': { type: 'string', multiple: true }, json: { type: 'boolean', default: false } });
+      const { values } = opts(rest, { db: { type: 'string' }, gateway: { type: 'string' }, catalog: { type: 'string' }, days: { type: 'string', default: '30' }, 'house-ip': { type: 'string', multiple: true }, 'house-owner': { type: 'string', multiple: true }, json: { type: 'boolean', default: false } });
+      if (values.catalog) {
+        // 3.3: the site funnel, read from the catalog that serves the site
+        const token = process.env.TAB_STATS_TOKEN;
+        if (!token) die('reading a catalog\'s stats takes its token in TAB_STATS_TOKEN');
+        const r = await fetch(`${(values.catalog as string).replace(/\/$/, '')}/v1/stats?days=${Number(values.days) || 30}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
+        if (!r.ok) die(`HTTP ${r.status}`);
+        const doc = (await r.json()) as { days: number; site: Array<{ step: string; detail: string; visitors: number; events: number }> };
+        if (values.json) { console.log(JSON.stringify(doc, null, 2)); return; }
+        console.log(`${values.catalog}, last ${doc.days} days, outside visitors a day, summed`);
+        for (const step of ['page', 'ref', 'referer', 'search', 'try', 'announce']) {
+          const rows = doc.site.filter((x) => x.step === step);
+          if (!rows.length) continue;
+          const total = rows.reduce((a, x) => a + x.visitors, 0);
+          console.log(`  ${step.padEnd(9)} ${String(total).padStart(6)}`);
+          for (const x of rows.slice(0, step === 'search' ? 15 : 10)) if (x.detail) console.log(`    ${x.detail.slice(0, 48).padEnd(48)} ${String(x.visitors).padStart(5)}`);
+        }
+        return;
+      }
       let report: UsageReport;
       if (values.db) {
         const store = new Store(values.db as string);
@@ -632,7 +656,7 @@ async function main(): Promise<void> {
         const r = await fetch(`${(values.gateway as string).replace(/\/$/, '')}/.well-known/tab/stats?days=${Number(values.days) || 30}`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
         if (!r.ok) die(`HTTP ${r.status}`);
         report = (await r.json()) as UsageReport;
-      } else die('usage: tab stats (--db pay.db [--house-ip ip]... | --gateway url) [--days 30] [--json]');
+      } else die('usage: tab stats (--db pay.db [--house-ip ip]... | --gateway url | --catalog url) [--days 30] [--json]');
       if (values.json) { console.log(JSON.stringify(report, null, 2)); return; }
       const o = report.outside;
       console.log(`${report.realm}, last ${report.days} days`);
@@ -641,6 +665,15 @@ async function main(): Promise<void> {
       console.log(`  house           ${report.house.owners} owners, ${report.house.calls} calls, $${report.house.spend}`);
       console.log(`  listings        ${report.listings}`);
       for (const t of o.top.slice(0, 10)) console.log(`    ${t.owner}  ${String(t.calls).padStart(5)} calls  $${t.spend.padStart(8)}  ${t.first.slice(0, 10)} to ${t.last.slice(0, 10)}`);
+      const f = report.funnel;
+      if (f) {
+        console.log('  funnel          outside visitors a day, summed (one visitor on three days counts 3)');
+        for (const s of f.steps) console.log(`    ${s.step.padEnd(10)} ${String(s.visitors).padStart(6)}`);
+        if (f.refused.length) console.log(`  refused         ${f.refused.map((r) => `${r.code} ${r.events}`).join(', ')}`);
+        if (f.clients.length) console.log(`  clients         ${f.clients.map((c) => `${c.client} ${c.visitors}`).join(', ')}`);
+        for (const r of f.routes.slice(0, 8)) console.log(`    ${r.route.slice(0, 48).padEnd(48)} asked ${String(r.challenged).padStart(4)}  paid ${String(r.paid).padStart(4)}`);
+        for (const x of f.other.slice(0, 8)) console.log(`    ${x.step} ${x.detail} ${x.visitors} visitors, ${x.events} times`);
+      }
       return;
     }
 

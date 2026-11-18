@@ -24,6 +24,7 @@ import {
 import { windowKey } from './rails/budget.js';
 import { readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { tabUserAgent } from './version.js';
 import { scalarFromSeed } from './evm/secp256k1.js';
 import {
   decodeX402, encodeX402, chainIdOf, signAuthorization, X402_VERSION,
@@ -101,6 +102,8 @@ export interface TabClientOptions {
   /** Optional veto; amounts in micro-USD. Return false to refuse. */
   onChallenge?: (challenge: Challenge, request: ChallengeRequest) => boolean | Promise<boolean>;
   fetch?: typeof fetch;
+  /** 3.3: names this client in the User-Agent of every request it makes, as `tab/<version> (<surface>)`: cli, mcp, os or sdk (the default, or TAB_SURFACE). A User-Agent set on the request wins. */
+  surface?: string;
   /** Extra tokens to pay in on the evm rail, beside KNOWN_EVM_TOKENS and TAB_EVM_TOKENS. */
   evmTokens?: EvmTokenPin[];
   /**
@@ -154,7 +157,16 @@ export class TabClient {
   private channelBook: Record<string, HeldChannel> = {}; // origin -> open channel
   private channelSupport = new Map<string, boolean>();
 
+  private readonly http: typeof fetch;
+
   constructor(private opts: TabClientOptions) {
+    const base = opts.fetch ?? fetch;
+    const ua = tabUserAgent(opts.surface);
+    this.http = ((url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      if (!headers.has('user-agent')) headers.set('user-agent', ua);
+      return base(url, { ...init, headers });
+    }) as typeof fetch;
     if (opts.channels?.file && existsSync(opts.channels.file)) {
       try { this.channelBook = JSON.parse(readFileSync(opts.channels.file, 'utf8')) as Record<string, HeldChannel>; } catch { /* start fresh */ }
     }
@@ -175,7 +187,7 @@ export class TabClient {
     // above the approval threshold: wait for the owner, then ask again
     const request = await approvalRequestOf(res);
     if (!request) return res;
-    const doFetch = this.opts.fetch ?? fetch;
+    const doFetch = this.http;
     const deadline = Date.now() + pay.waitForApprovalMs;
     const origin = new URL(url).origin;
     while (Date.now() < deadline) {
@@ -189,7 +201,7 @@ export class TabClient {
   }
 
   private async fetchOnce(url: string | URL, init: RequestInit, pay: PayOptions): Promise<Response> {
-    const doFetch = this.opts.fetch ?? fetch;
+    const doFetch = this.http;
     const first = await doFetch(url, init);
     if (first.status !== 402) return first;
     const chal = parseChallengeHeader(first.headers.get('www-authenticate'));
@@ -444,7 +456,7 @@ export class TabClient {
    * result and check its receipt. `waitMs` 0 asks once.
    */
   async escrowResult(ticket: EscrowTicket, waitMs = 0): Promise<{ state: string; order: Record<string, unknown>; body?: Uint8Array; contentType?: string | null; receipt?: Receipt | null; verified?: { ok: boolean; reason?: string } }> {
-    const doFetch = this.opts.fetch ?? fetch;
+    const doFetch = this.http;
     const deadline = Date.now() + waitMs;
     for (;;) {
       // the token rides in a header, not the URL, so it stays out of logs and referrers
@@ -496,7 +508,7 @@ export class TabClient {
     origin = origin.replace(/\/$/, '');
     const ch = this.channelBook[origin];
     if (!ch) throw new Error(`no channel held at ${origin}`);
-    const doFetch = this.opts.fetch ?? fetch;
+    const doFetch = this.http;
     const r = await doFetch(`${origin}${CHANNEL_PATH}/${ch.id}/close`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sig: signClose(this.opts.agent, ch.id) }),
     });
@@ -520,7 +532,7 @@ export class TabClient {
     if (!deposit || currency !== this.accepts) return null;
     if (!this.channelSupport.has(origin)) {
       try {
-        const d = await (this.opts.fetch ?? fetch)(`${origin}/.well-known/tab`, { signal: AbortSignal.timeout(10_000) });
+        const d = await (this.http)(`${origin}/.well-known/tab`, { signal: AbortSignal.timeout(10_000) });
         this.channelSupport.set(origin, d.ok && !!((await d.json()) as { channels?: unknown }).channels);
       } catch { return null; }
     }
@@ -549,7 +561,7 @@ export class TabClient {
   private async receiptKey(origin: string): Promise<string | null> {
     if (this.receiptKeys.has(origin)) return this.receiptKeys.get(origin)!;
     try {
-      const r = await (this.opts.fetch ?? fetch)(`${origin}/.well-known/tab`, { signal: AbortSignal.timeout(10_000) });
+      const r = await (this.http)(`${origin}/.well-known/tab`, { signal: AbortSignal.timeout(10_000) });
       if (!r.ok) return null;
       const key = ((await r.json()) as { receipt_key?: unknown }).receipt_key;
       const found = typeof key === 'string' ? key : null;

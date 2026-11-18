@@ -33,6 +33,7 @@
     "test:v3": "node --no-warnings=ExperimentalWarning --import tsx test/v3.ts",
     "test:v31": "node --no-warnings=ExperimentalWarning --import tsx test/v31.ts",
     "test:v32": "node --no-warnings=ExperimentalWarning --import tsx test/v32.ts",
+    "test:v33": "node --no-warnings=ExperimentalWarning --import tsx test/v33.ts",
     "test:evm": "node --no-warnings=ExperimentalWarning --import tsx test/evm.ts",
     "test:contract": "node --no-warnings=ExperimentalWarning --import tsx test/contract.ts",
     "test:company": "node --no-warnings=ExperimentalWarning --import tsx test/company.ts",

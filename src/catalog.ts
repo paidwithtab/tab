@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { usdToMicro, microToUsd, type Receipt } from './protocol.js';
 import { verifyMandate, mandateExpired, realmAllowed, type Mandate } from './mandate.js';
 import type { KeyPair } from './keys.js';
@@ -49,7 +50,30 @@ export interface CatalogOptions {
   x402RefreshMs?: number;
   /** 3.2: most x402 routes kept per list; default 40,000. */
   x402Max?: number;
+  /** 3.3: the operator's own addresses, left out of the site funnel. */
+  houseIps?: string[];
+  /** 3.3: GET /v1/stats answers only with this bearer token; unset means it is off. */
+  statsToken?: string;
   log?: (msg: string) => void;
+}
+
+/** 3.3: the site funnel step a finished request stands for, or null. Exported for the tests. */
+export function siteStepOf(method: string, path: string, status: number, contentType: string, q: URLSearchParams, referer: string, ownHosts: string[]): Array<{ step: string; detail: string }> {
+  const out: Array<{ step: string; detail: string }> = [];
+  if (status < 200 || status >= 300) return out;
+  if (method === 'GET' && /^text\/html/.test(contentType)) {
+    out.push({ step: 'page', detail: (path.replace(/\.html$/, '').replace(/\/index$/, '/') || '/').slice(0, 48) });
+    const ref = (q.get('ref') ?? q.get('utm_source') ?? '').toLowerCase().replace(/[^a-z0-9_.-]/g, '').slice(0, 24);
+    if (ref) out.push({ step: 'ref', detail: ref });
+    try {
+      const host = referer ? new URL(referer).hostname.toLowerCase() : '';
+      if (host && !ownHosts.some((h) => host === h || host.endsWith(`.${h}`))) out.push({ step: 'referer', detail: host.slice(0, 64) });
+    } catch { /* not a URL */ }
+  }
+  if (method === 'GET' && path === '/v1/search') out.push({ step: 'search', detail: (q.get('q') ?? '').trim().toLowerCase().replace(/\s+/g, ' ').slice(0, 40) });
+  if (method === 'POST' && path === '/v1/try') out.push({ step: 'try', detail: '' });
+  if (method === 'POST' && (path === '/v1/announce' || path === '/v1/x402/announce')) out.push({ step: 'announce', detail: '' });
+  return out;
 }
 
 const MAX_DISCOVERY_BYTES = 16_000_000; // about 40,000 routes
@@ -378,11 +402,35 @@ export function createCatalog(opts: CatalogOptions): Server {
     return true;
   }
 
+  // -- 3.3: the site funnel: pages, where visitors came from, searches, try-it calls. Addresses
+  // become a keyed hash that changes every day; the operator's own addresses are left out.
+  const siteHouse = new Set([...(opts.houseIps ?? []), '127.0.0.1', '::1', '::ffff:127.0.0.1']);
+  const OWN_HOSTS = ['paidwithtab.com'];
+  function siteWatch(req: IncomingMessage, res: ServerResponse, method: string, u: URL): void {
+    const peer = req.socket.remoteAddress ?? '';
+    const viaLocalProxy = peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1';
+    const ip = (viaLocalProxy ? String(req.headers['cf-connecting-ip'] ?? req.headers['x-forwarded-for'] ?? peer) : peer).split(',')[0].trim();
+    if (siteHouse.has(ip)) return;
+    if (/bot|crawl|spider|preview|monitor|uptime|headless/i.test(String(req.headers['user-agent'] ?? ''))) return;
+    res.on('finish', () => {
+      try {
+        const steps = siteStepOf(method, u.pathname, res.statusCode, String(res.getHeader('content-type') ?? ''), u.searchParams, String(req.headers.referer ?? ''), OWN_HOSTS);
+        if (!steps.length) return;
+        const day = new Date().toISOString().slice(0, 10);
+        const who = createHmac('sha256', store.secret).update(`site\n${day}\n${ip}`).digest('base64url').slice(0, 16);
+        for (const s of steps) store.siteStep(day, s.step, s.detail, who);
+      } catch { /* the funnel never fails a request */ }
+    });
+  }
+  const sitePrune = setInterval(() => { try { store.pruneSite(new Date(Date.now() - 91 * 86_400_000).toISOString().slice(0, 10)); } catch { /* ignore */ } }, 3_600_000);
+  sitePrune.unref();
+
   const server = createServer(async (req, res) => {
     // HEAD is GET without the body (node drops it), so monitors and link checkers see real pages
     const method = req.method === 'HEAD' ? 'GET' : (req.method ?? 'GET').toUpperCase();
     const u = new URL(req.url ?? '/', 'http://localhost');
     const path = u.pathname;
+    if (req.method !== 'HEAD') siteWatch(req, res, method, u);
     res.setHeader('x-content-type-options', 'nosniff');
     res.setHeader('referrer-policy', 'strict-origin-when-cross-origin');
     res.setHeader('x-frame-options', 'DENY');
@@ -498,6 +546,17 @@ export function createCatalog(opts: CatalogOptions): Server {
             };
           }),
         });
+        return;
+      }
+
+      // 3.3: the site funnel, for the operator
+      if (method === 'GET' && path === '/v1/stats') {
+        const auth = String(req.headers.authorization ?? '');
+        const want = opts.statsToken ? `Bearer ${opts.statsToken}` : '';
+        if (!want || auth.length !== want.length || !timingSafeEqual(Buffer.from(auth), Buffer.from(want))) { sendJson(res, 404, { error: 'not found' }); return; }
+        const days = Math.min(90, Math.max(1, Number(u.searchParams.get('days')) || 30));
+        const since = new Date(Date.now() - days * 86_400_000).toISOString().slice(0, 10);
+        sendJson(res, 200, { days, since, site: store.siteSince(since) });
         return;
       }
 

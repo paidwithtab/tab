@@ -27,6 +27,48 @@ export interface UsageReport {
   };
   house: { owners: number; calls: number; spend: string };
   listings: number;
+  /** 3.3: how far outside visitors got, counted as distinct visitors per day and summed over the days. */
+  funnel?: FunnelReport;
+}
+
+export const FUNNEL_STEPS = ['home', 'discover', 'claim', 'challenge', 'refused', 'paid'] as const;
+
+export interface FunnelReport {
+  steps: Array<{ step: string; visitors: number }>;
+  refused: Array<{ code: string; visitors: number; events: number }>;
+  clients: Array<{ client: string; visitors: number }>;
+  routes: Array<{ route: string; challenged: number; paid: number }>;
+  other: Array<{ step: string; detail: string; visitors: number; events: number }>;
+}
+
+type FunnelRow = { step: string; detail: string; client: string; visitors: number; events: number };
+
+function sumBy(xs: FunnelRow[], key: (r: FunnelRow) => string): Map<string, { visitors: number; events: number }> {
+  const m = new Map<string, { visitors: number; events: number }>();
+  for (const r of xs) {
+    const k = key(r);
+    const e = m.get(k) ?? { visitors: 0, events: 0 };
+    e.visitors += r.visitors;
+    e.events += r.events;
+    m.set(k, e);
+  }
+  return m;
+}
+
+export function funnelReport(store: Store, sinceDay: string): FunnelReport {
+  const rows = store.funnelSince(sinceDay);
+  const visitors = store.funnelVisitors(sinceDay);
+  const refused = [...sumBy(rows.filter((r) => r.step === 'refused'), (r) => r.detail)].map(([code, v]) => ({ code, ...v })).sort((a, b) => b.events - a.events);
+  const clients = [...sumBy(rows, (r) => r.client)].map(([client, v]) => ({ client, visitors: v.visitors })).sort((a, b) => b.visitors - a.visitors);
+  const ch = sumBy(rows.filter((r) => r.step === 'challenge'), (r) => r.detail);
+  const pd = sumBy(rows.filter((r) => r.step === 'paid'), (r) => r.detail);
+  const routes = [...new Set([...ch.keys(), ...pd.keys()])]
+    .map((route) => ({ route, challenged: ch.get(route)?.visitors ?? 0, paid: pd.get(route)?.visitors ?? 0 }))
+    .sort((a, b) => b.paid - a.paid || b.challenged - a.challenged)
+    .slice(0, 20);
+  const known = new Set<string>(FUNNEL_STEPS);
+  const other = rows.filter((r) => !known.has(r.step)).map((r) => ({ step: r.step, detail: r.detail, visitors: r.visitors, events: r.events }));
+  return { steps: FUNNEL_STEPS.map((step) => ({ step, visitors: visitors.get(step) ?? 0 })), refused, clients, routes, other };
 }
 
 export function usageStats(store: Store, o: { days: number; houseIps: string[]; houseOwners: string[]; realm: string; listings: number; now?: Date }): UsageReport {
@@ -56,5 +98,6 @@ export function usageStats(store: Store, o: { days: number; houseIps: string[]; 
     },
     house: { owners: ours.length, calls: sum(ours, 'calls'), spend: microToUsd(sum(ours, 'amount')) },
     listings: o.listings,
+    funnel: funnelReport(store, since.slice(0, 10)),
   };
 }

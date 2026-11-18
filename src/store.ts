@@ -198,6 +198,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS route_stats (route TEXT NOT NULL, day TEXT NOT NULL, ok INTEGER NOT NULL DEFAULT 0, fail INTEGER NOT NULL DEFAULT 0, ms INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (route, day));
       CREATE TABLE IF NOT EXISTS topups (id TEXT PRIMARY KEY, wallet TEXT NOT NULL, amount INTEGER NOT NULL, state TEXT NOT NULL, ip TEXT NOT NULL, created_at TEXT NOT NULL, paid_at TEXT);
       CREATE TABLE IF NOT EXISTS referrals (buyer TEXT PRIMARY KEY, referrer TEXT NOT NULL, counted INTEGER NOT NULL DEFAULT 0, earned INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS funnel (day TEXT NOT NULL, step TEXT NOT NULL, detail TEXT NOT NULL, who TEXT NOT NULL, client TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (day, step, detail, who, client));
     `);
     try { this.db.exec('ALTER TABLE payouts ADD COLUMN cancels TEXT'); } catch { /* column already exists */ }
     // 3.0: revocations keep the mandate that authorizes them, so peers can check it too
@@ -882,6 +883,34 @@ export class Store {
     return new Map(rows.map((r) => [String(r.route), { ok: Number(r.ok), fail: Number(r.fail), avg_ms: Number(r.ok) ? Math.round(Number(r.ms) / Number(r.ok)) : null }]));
   }
 
+  /**
+   * 3.3: one step of an outside visitor's way to a first paid call. `who` is a keyed hash of the
+   * address, never the address. A day keeps at most `cap` rows, so a flood cannot fill the disk.
+   */
+  funnelStep(day: string, step: string, detail: string, who: string, client: string, cap = 50_000): void {
+    const bump = this.db.prepare('UPDATE funnel SET n = n + 1 WHERE day = ? AND step = ? AND detail = ? AND who = ? AND client = ?').run(day, step, detail, who, client);
+    if (Number(bump.changes) > 0) return;
+    const rows = Number((this.db.prepare('SELECT COUNT(*) AS n FROM funnel WHERE day = ?').get(day) as { n: number }).n);
+    if (rows >= cap) return;
+    this.db.prepare('INSERT OR IGNORE INTO funnel (day, step, detail, who, client) VALUES (?, ?, ?, ?, ?)').run(day, step, detail, who, client);
+  }
+
+  /** Per step and detail since a day: distinct visitors and events, and which clients they used. */
+  funnelSince(sinceDay: string): Array<{ step: string; detail: string; client: string; visitors: number; events: number }> {
+    return (this.db.prepare('SELECT step, detail, client, COUNT(DISTINCT who) AS visitors, SUM(n) AS events FROM funnel WHERE day >= ? GROUP BY step, detail, client').all(sinceDay) as Array<Record<string, unknown>>)
+      .map((r) => ({ step: String(r.step), detail: String(r.detail), client: String(r.client), visitors: Number(r.visitors), events: Number(r.events) }));
+  }
+
+  /** Distinct visitors that reached each step since a day, whatever the detail or client. */
+  funnelVisitors(sinceDay: string): Map<string, number> {
+    const rows = this.db.prepare('SELECT step, COUNT(DISTINCT who) AS v FROM funnel WHERE day >= ? GROUP BY step').all(sinceDay) as Array<{ step: string; v: number }>;
+    return new Map(rows.map((r) => [String(r.step), Number(r.v)]));
+  }
+
+  pruneFunnel(beforeDay: string): void {
+    this.db.prepare('DELETE FROM funnel WHERE day < ?').run(beforeDay);
+  }
+
   pruneRouteStats(beforeDay: string): void {
     this.db.prepare('DELETE FROM route_stats WHERE day < ?').run(beforeDay);
   }
@@ -1037,6 +1066,38 @@ export class CatalogStore {
     } catch {
       /* column already exists */
     }
+    // 3.3: the site's funnel, and the key that turns a visitor's address into a daily hash
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS catalog_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS site_funnel (day TEXT NOT NULL, step TEXT NOT NULL, detail TEXT NOT NULL, who TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (day, step, detail, who));
+    `);
+    const row = this.db.prepare("SELECT value FROM catalog_meta WHERE key = 'secret'").get() as { value: string } | undefined;
+    if (row) this.secret = Buffer.from(row.value, 'hex');
+    else {
+      this.secret = randomBytes(32);
+      this.db.prepare("INSERT INTO catalog_meta (key, value) VALUES ('secret', ?)").run(Buffer.from(this.secret).toString('hex'));
+    }
+  }
+
+  readonly secret: Uint8Array;
+
+  /** 3.3: one step of an outside visitor on the site. A day keeps at most `cap` rows. */
+  siteStep(day: string, step: string, detail: string, who: string, cap = 50_000): void {
+    const bump = this.db.prepare('UPDATE site_funnel SET n = n + 1 WHERE day = ? AND step = ? AND detail = ? AND who = ?').run(day, step, detail, who);
+    if (Number(bump.changes) > 0) return;
+    const rows = Number((this.db.prepare('SELECT COUNT(*) AS n FROM site_funnel WHERE day = ?').get(day) as { n: number }).n);
+    if (rows >= cap) return;
+    this.db.prepare('INSERT OR IGNORE INTO site_funnel (day, step, detail, who) VALUES (?, ?, ?, ?)').run(day, step, detail, who);
+  }
+
+  /** Per step and detail since a day: visitors (distinct per day, summed over days) and events. */
+  siteSince(sinceDay: string): Array<{ step: string; detail: string; visitors: number; events: number }> {
+    return (this.db.prepare('SELECT step, detail, COUNT(*) AS visitors, SUM(n) AS events FROM site_funnel WHERE day >= ? GROUP BY step, detail ORDER BY visitors DESC, events DESC').all(sinceDay) as Array<Record<string, unknown>>)
+      .map((r) => ({ step: String(r.step), detail: String(r.detail), visitors: Number(r.visitors), events: Number(r.events) }));
+  }
+
+  pruneSite(beforeDay: string): void {
+    this.db.prepare('DELETE FROM site_funnel WHERE day < ?').run(beforeDay);
   }
 
   private cached: GatewayRow[] | null = null; // all() parses every payload; search calls it per request
