@@ -161,7 +161,7 @@ async function main(): Promise<void> {
     await page.locator('#n-template').waitFor();
     check('the switcher starts a new company, with a way back', /New company/.test(await text('#gate h1')) && await page.locator('#n-cancel').isVisible());
     check('templates are offered', (await page.locator('#n-template option').count()) >= 3);
-    await page.selectOption('#n-template', '0');
+    await page.selectOption('#n-template', { label: (await page.locator('#n-template option').allTextContents()).find((t) => t.startsWith('Field Notes'))! });
     check('choosing a template fills the form', /Field Notes/.test(await page.inputValue('#n-name')) && (await page.inputValue('#n-mission')).length > 20);
     await page.fill('#n-gateway', GW);
     await page.click('#n-go');
