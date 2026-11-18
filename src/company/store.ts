@@ -263,6 +263,7 @@ export class CompanyStore {
         realm TEXT NOT NULL, resource TEXT NOT NULL, amount INTEGER NOT NULL, currency TEXT NOT NULL, at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS limits (key TEXT NOT NULL, at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS run_shares (token TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE, company_id TEXT NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS revocations (
         mandate_id TEXT PRIMARY KEY, company_id TEXT NOT NULL, run_id TEXT, agent_id TEXT, scope TEXT NOT NULL,
         reason TEXT NOT NULL, doc TEXT NOT NULL, results TEXT NOT NULL, at TEXT NOT NULL
@@ -726,6 +727,32 @@ export class CompanyStore {
       company_id: String(r.company_id), seq: Number(r.seq), id: String(r.id), action: String(r.action),
       payload: parse(r.payload, null), at: String(r.at), sig: String(r.sig),
     }));
+  }
+
+  // -- 3.3: shared runs ----------------------------------------------------
+
+  /** The share token of a run, made once and kept until the owner stops sharing it. */
+  shareRun(companyId: string, runId: string, token: string): string {
+    const had = this.db.prepare('SELECT token FROM run_shares WHERE run_id = ?').get(runId) as { token: string } | undefined;
+    if (had) return had.token;
+    this.db.prepare('INSERT INTO run_shares (token, run_id, company_id, created_at) VALUES (?, ?, ?, ?)').run(token, runId, companyId, new Date().toISOString());
+    return token;
+  }
+
+  unshareRun(runId: string): boolean {
+    return Number(this.db.prepare('DELETE FROM run_shares WHERE run_id = ?').run(runId).changes) > 0;
+  }
+
+  sharedRun(token: string): { run_id: string; company_id: string; created_at: string } | undefined {
+    return this.db.prepare('SELECT run_id, company_id, created_at FROM run_shares WHERE token = ?').get(token) as { run_id: string; company_id: string; created_at: string } | undefined;
+  }
+
+  runShareToken(runId: string): string | null {
+    return (this.db.prepare('SELECT token FROM run_shares WHERE run_id = ?').get(runId) as { token: string } | undefined)?.token ?? null;
+  }
+
+  receiptsOfRun(runId: string, limit = 500): CompanyReceipt[] {
+    return (this.db.prepare('SELECT * FROM receipts WHERE run_id = ? ORDER BY at LIMIT ?').all(runId, limit) as Record<string, unknown>[]).map((r) => this.receiptRow(r));
   }
 
   // -- receipts ------------------------------------------------------------

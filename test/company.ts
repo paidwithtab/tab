@@ -282,6 +282,23 @@ async function main(): Promise<void> {
   check('one receipt comes back exactly as the gateway signed it', oneReceipt.status === 200 && oneReceipt.body.verified === true
     && verifyReceipt(oneReceipt.body.receipt, { mandate: run.mandate.id }).ok && oneReceipt.body.receipt.response.status === 200);
   check('events tell the story', v.events.some((e: any) => e.kind === 'run-started') && v.events.some((e: any) => e.kind === 'run' && e.body.status === 'done') && v.events.some((e: any) => e.kind === 'evidence'));
+  // 3.3: the owner shares the run as a read-only page
+  const shareOut = await api('POST', `/api/companies/${cid}/runs/${run.id}/share`, {});
+  const shareUrl = new URL(String(shareOut.body.url ?? ''), APP).pathname;
+  check('the owner shares a run and gets a link', shareOut.status === 200 && /^\/r\/[A-Za-z0-9_-]{20,}$/.test(shareUrl), shareOut.body);
+  const shareAgain = await api('POST', `/api/companies/${cid}/runs/${run.id}/share`, {});
+  check('sharing again keeps the same link', new URL(String(shareAgain.body.url), APP).pathname === shareUrl);
+  const sharedJson = await (await fetch(APP + shareUrl + '.json')).json() as any;
+  check('the shared run shows what it paid for, with the receipts as signed, and no keys', sharedJson.agent === 'ant' && sharedJson.paid === '0.01' && sharedJson.calls.length === 1
+    && verifyReceipt(sharedJson.calls[0].receipt, { mandate: run.mandate.id }).ok && !JSON.stringify(sharedJson).includes('priv') && sharedJson.output === undefined, sharedJson);
+  const sharedHtml = await fetch(APP + shareUrl, { headers: { accept: 'text/html' } });
+  const sharedText = await sharedHtml.text();
+  check('the shared page is HTML that loads nothing from elsewhere', sharedHtml.status === 200 && /ant at /.test(sharedText) && /default-src 'none'/.test(sharedHtml.headers.get('content-security-policy') ?? '') && /noindex/.test(sharedText));
+  check('the run detail names its shared link', (await api('GET', `/api/companies/${cid}/runs/${run.id}`)).body.run.shared === shareUrl);
+  const stranger = await fetch(APP + '/r/' + 'x'.repeat(24));
+  check('an unknown link is a 404', stranger.status === 404);
+  await api('POST', `/api/companies/${cid}/runs/${run.id}/unshare`, {});
+  check('unsharing takes the page down', (await fetch(APP + shareUrl + '.json')).status === 404);
   check('the packet carries the contract and the mandate for this agent', lastPacket.ver === 'tab-company/0' && lastPacket.budget.mandate.agent === A.publicKey
     && lastPacket.contract.status && /Nothing closes without evidence/.test(lastPacket.prompt) && lastPacket.ticket.title === 'buy a quote');
   const runsBefore = v.runs.length;

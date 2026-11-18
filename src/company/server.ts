@@ -27,7 +27,7 @@ import { ADAPTERS, type AdapterName } from './adapters.js';
 import { ANTHROPIC_URL } from './model.js';
 import type { Engine } from './engine.js';
 import type { Secrets } from './secrets.js';
-import type { AgentRow, CompanyRow, CompanyStore, TicketRow, TicketState, UserRow, OrderRow } from './store.js';
+import type { AgentRow, CompanyRow, CompanyStore, TicketRow, TicketState, UserRow, OrderRow, RunRow, CompanyReceipt } from './store.js';
 
 export interface CompanyServerOptions {
   store: CompanyStore;
@@ -724,6 +724,21 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         sendJson(res, 421, { error: 'this server does not answer to that host' });
         return;
       }
+      // 3.3: a run the owner chose to share: what it was asked, what it paid for, what it cost.
+      // Read only, no keys, no response bodies, no ticket thread; the receipts are as signed.
+      const shared = method === 'GET' ? /^\/r\/([A-Za-z0-9_-]{16,64})(\.json)?$/.exec(path) : null;
+      if (shared) {
+        const share = store.sharedRun(shared[1]);
+        const run = share ? store.run(share.run_id) : undefined;
+        const company = run ? store.company(run.company_id) : undefined;
+        if (!share || !run || !company) { sendJson(res, 404, { error: 'no such shared run (the owner may have stopped sharing it)' }); return; }
+        const view = sharedRunView(run, company.name, store.agent(run.agent_id)?.name ?? 'agent', run.ticket_id ? store.ticket(run.ticket_id)?.title ?? null : null, store.receiptsOfRun(run.id));
+        if (shared[2] || !/text\/html/.test(String(req.headers.accept ?? ''))) { sendJson(res, 200, view); return; }
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'referrer-policy': 'no-referrer', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'" });
+        res.end(sharedRunPage(view, `/r/${shared[1]}.json`));
+        return;
+      }
+
       // static: the dashboard and the site assets it shares with the catalog page
       if (method === 'GET' && !path.startsWith('/api/')) {
         if (!web) { sendJson(res, 500, { error: 'ui not found: keep web/ next to dist/' }); return; }
@@ -871,7 +886,8 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         if (rm) {
           const run = store.run(rm[1]);
           if (!run || run.company_id !== c.id) { sendJson(res, 404, { error: 'no such run' }); return; }
-          sendJson(res, 200, { run: { ...run, spent: microToUsd(run.spent), model_cost: microToUsd(run.model_cost) } });
+          const token = store.runShareToken(run.id);
+          sendJson(res, 200, { run: { ...run, spent: microToUsd(run.spent), model_cost: microToUsd(run.model_cost), ...(token ? { shared: `/r/${token}` } : {}) } });
           return;
         }
         // one receipt exactly as the gateway signed it, for anyone to check offline
@@ -973,6 +989,17 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
         // a retired agent's runs in flight lose their money at once
         await revokeMandates(c, runMandates(c, am[1]), 'run', 'the agent was retired', { agent_id: am[1] }, [am[1]]);
         sendJson(res, 200, out);
+        return;
+      }
+      // 3.3: share a run as a read-only page, or stop sharing it
+      const rsm = /^runs\/([A-Za-z0-9_-]+)\/(share|unshare)$/.exec(sub);
+      if (rsm) {
+        const run = store.run(rsm[1]);
+        if (!run || run.company_id !== c.id) throw new HttpError(404, 'no such run');
+        if (rsm[2] === 'unshare') { sendJson(res, 200, { shared: false, removed: store.unshareRun(run.id) }); return; }
+        const token = store.shareRun(c.id, run.id, randomBytes(18).toString('base64url'));
+        const origin = opts.hosts?.[0] ? `https://${opts.hosts[0]}` : '';
+        sendJson(res, 200, { shared: true, url: `${origin}/r/${token}`, json: `${origin}/r/${token}.json` });
         return;
       }
       // 3.0: revoke a run's mandate, every mandate an agent holds now, or a delegated budget
@@ -1202,4 +1229,42 @@ export function createCompanyServer(opts: CompanyServerOptions): Server {
     }
   });
   return server;
+}
+
+// -- 3.3: shared runs ---------------------------------------------------------------------
+
+export interface SharedRunView {
+  company: string;
+  agent: string;
+  ticket: string | null;
+  reason: string;
+  state: string;
+  started_at: string;
+  ended_at: string | null;
+  paid: string;
+  model_cost: string;
+  summary: string | null;
+  calls: Array<{ at: string; realm: string; resource: string; amount: string; currency: string; verified: boolean; receipt: unknown }>;
+}
+
+export function sharedRunView(run: RunRow, company: string, agent: string, ticket: string | null, receipts: CompanyReceipt[]): SharedRunView {
+  const summary = run.result && typeof run.result === 'object' && typeof (run.result as { summary?: unknown }).summary === 'string' ? String((run.result as { summary: string }).summary).slice(0, 2000) : null;
+  return {
+    company, agent, ticket, reason: run.reason, state: run.state, started_at: run.started_at, ended_at: run.ended_at,
+    paid: microToUsd(run.spent), model_cost: microToUsd(run.model_cost), summary,
+    calls: receipts.map((r) => ({ at: r.at, realm: r.realm, resource: r.resource, amount: microToUsd(r.amount), currency: r.currency, verified: r.verified, receipt: r.doc })),
+  };
+}
+
+export function sharedRunPage(v: SharedRunView, jsonUrl: string): string {
+  const e = (t: unknown) => String(t ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!);
+  const mins = v.ended_at ? Math.max(1, Math.round((Date.parse(v.ended_at) - Date.parse(v.started_at)) / 60_000)) : null;
+  const rows = v.calls.map((c) => `<tr><td>${e(c.at.slice(11, 19))}</td><td>${e(c.realm)}</td><td><code>${e(c.resource)}</code></td><td class="n">$${e(c.amount)}</td><td>${c.verified ? 'verified' : 'not verified'}</td></tr>`).join('');
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>${e(v.agent)} at ${e(v.company)}: a tab run</title>
+<style>:root{color-scheme:dark}body{margin:0;background:#0b0b0c;color:#e8e8ea;font:15px/1.55 system-ui,-apple-system,sans-serif}main{max-width:820px;margin:0 auto;padding:32px 16px}h1{font-size:22px;margin:0 0 4px}p.m{color:#9a9aa2;margin:0 0 20px}.k{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 24px}.k div{background:#151518;border:1px solid #26262b;border-radius:10px;padding:10px 14px;min-width:120px}.k b{display:block;font-size:18px}.k span{color:#9a9aa2;font-size:12px}table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid #26262b;padding:8px 6px;text-align:left;vertical-align:top}th{color:#9a9aa2;font-weight:500}td.n{text-align:right;white-space:nowrap}code{font:12px ui-monospace,monospace;word-break:break-all}.s{background:#151518;border:1px solid #26262b;border-radius:10px;padding:12px 14px;white-space:pre-wrap;margin:0 0 24px}a{color:#9ecbff}footer{color:#6d6d75;font-size:12px;margin-top:28px}</style></head>
+<body><main><h1>${e(v.agent)} at ${e(v.company)}</h1><p class="m">${v.ticket ? `${e(v.ticket)} · ` : ''}woke on ${e(v.reason)} · ${e(v.started_at.slice(0, 16).replace('T', ' '))} UTC · ${e(v.state)}${mins ? ` in ${mins} min` : ''}</p>
+<div class="k"><div><b>$${e(v.paid)}</b><span>paid for data</span></div><div><b>$${e(v.model_cost)}</b><span>model</span></div><div><b>${v.calls.length}</b><span>paid calls</span></div></div>
+${v.summary ? `<div class="s">${e(v.summary)}</div>` : ''}
+<table><thead><tr><th>Time</th><th>Gateway</th><th>Route</th><th class="n">Paid</th><th>Receipt</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No paid calls in this run.</td></tr>'}</tbody></table>
+<footer>Every paid call above has a receipt signed by the gateway that sold it. The receipts, exactly as signed, are at <a href="${e(jsonUrl)}">${e(jsonUrl)}</a>; save one and run <code>tab verify</code> on it. Shared by the company's owner from tab OS. <a href="https://paidwithtab.com">paidwithtab.com</a></footer></main></body></html>`;
 }
