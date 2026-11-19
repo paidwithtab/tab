@@ -585,7 +585,7 @@ export function createCatalog(opts: CatalogOptions): Server {
       // 3.3: a public status page: every gateway the catalog reads, and the routes that did badly this week
       if (method === 'GET' && (path === '/status' || path === '/status.html')) {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'public, max-age=60' });
-        res.end(renderDocsPage(statusMarkdown(store.all().filter((r) => r.last_ok_at || r.ok), routesOf, x402Routes().length), { active: 'docs', title: 'Status' }));
+        res.end(renderDocsPage(statusMarkdown(store.all().filter((r) => r.last_ok_at || r.ok), routesOf, x402Routes().length), { active: 'docs', title: 'Status', pageTitle: 'Status' }));
         return;
       }
 
